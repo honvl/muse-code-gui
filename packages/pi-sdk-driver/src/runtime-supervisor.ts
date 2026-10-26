@@ -31,6 +31,7 @@ import type {
 import type { WorkspaceRef } from "@pi-gui/session-driver";
 import { createRuntimeDependencies } from "./runtime-deps.js";
 import { sanitizeSuggestedPrompt, SUGGESTION_SYSTEM_PROMPT } from "./suggestion-prompt.js";
+import { supportedThinkingLevels } from "./thinking-levels.js";
 import {
   createSettingsManagerWithoutNpmPackages,
   isGlobalNpmLookupError,
@@ -887,6 +888,7 @@ export class RuntimeSupervisor implements RuntimeResourceDriver {
           authType: provider?.authType ?? "none",
           reasoning: Boolean(model.reasoning),
           supportsImages: model.input.includes("image"),
+          thinkingLevels: supportedThinkingLevels(model),
         };
       })
       .sort((left, right) =>
