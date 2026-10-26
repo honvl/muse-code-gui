@@ -212,8 +212,9 @@ function TimelineMessage({
     );
   }
 
-  // The row stays while a run streams (Fork is disabled then), so the transcript never
-  // shifts by the row's height when a run starts or ends.
+  // The row stays while a run streams, so the transcript never shifts by the
+  // row's height when a run starts or ends. Forking mid-run branches the settled
+  // history; the running turn continues untouched in its own thread.
   const forkable = sourceMessageIndex !== undefined;
   return (
     <article className="timeline-item timeline-item--assistant" ref={articleRef}>
