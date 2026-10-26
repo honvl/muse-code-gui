@@ -76,6 +76,7 @@ import {
   appendAssistantDelta,
   clearActiveAssistantMessage,
   timelineFromDriverTranscript,
+  preserveLiveTimings,
 } from "../conversation/app-store-timeline";
 import {
   applySessionEventState,
@@ -2681,7 +2682,10 @@ export class DesktopAppStore {
       extensionToolLabels(this.runtimeByWorkspace.get(sessionRef.workspaceId)),
     );
     this.sessionState.loadedTranscriptKeys.add(key);
-    this.sessionState.transcriptCache.set(key, transcript);
+    this.sessionState.transcriptCache.set(
+      key,
+      preserveLiveTimings(transcript, this.sessionState.transcriptCache.get(key) ?? []),
+    );
     await this.recordSelectedTranscriptFileStat(sessionRef);
     this.publishSelectedTranscriptFor(sessionRef);
   }
@@ -3435,11 +3439,14 @@ export class DesktopAppStore {
 
       switch (event.type) {
         case "assistantDelta":
+        case "assistantThinkingDelta":
           appendAssistantDelta(
             this.sessionState.transcriptCache,
             this.sessionState.activeAssistantMessageBySession,
             event.sessionRef,
             event.text,
+            event.timestamp,
+            event.type === "assistantThinkingDelta",
           );
           break;
         case "sessionOpened":
