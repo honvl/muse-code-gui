@@ -4,7 +4,6 @@ import {
   useContext,
   useEffect,
   useLayoutEffect,
-  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -71,23 +70,14 @@ import {
   threadHistoryPreview,
   visibleThreadShortcutOrder,
   workspaceHistoryExpansionKey,
-  formatBilledCost,
-  formatCompactTokens,
-  formatPlanWindow,
   type RecencyThreadSection,
   type ThreadSidebarModel,
   type ThreadListEntry,
-  type SidebarUsageSummary,
   type WorkspaceThreadGroup,
 } from "./thread-groups";
 import { useThreadShortcutHintsVisible } from "./thread-shortcut-hints";
-import { useSidebarActivity } from "./use-sidebar-activity";
-import { useActivityAutoOpen } from "./use-activity-auto-open";
-import { LONG_RUN_MS, formatElapsed, truncateCommand } from "../conversation/session-task-format";
 import type { Dispatch, SetStateAction } from "react";
 import type { DesktopAppState } from "../../../contracts/desktop-state";
-import type { DesktopExtensionViewInfo } from "../../../contracts/extension-views";
-import type { ToolRef } from "../../../contracts/workbench";
 
 interface SidebarProps {
   readonly activeView: AppView;
@@ -119,8 +109,6 @@ interface SidebarProps {
   ) => void;
   readonly onUnarchiveSession: (target: { workspaceId: string; sessionId: string }) => void;
   readonly threadShortcutOrderRef: MutableRefObject<readonly ThreadListEntry[] | null>;
-  readonly activityExtensionViews?: readonly DesktopExtensionViewInfo[];
-  readonly onOpenActivityTool?: (tool: ToolRef) => void;
 }
 
 const SIDEBAR_WIDTH_RANGE = { min: 200, max: 520 } as const;
@@ -168,8 +156,6 @@ export function Sidebar(props: SidebarProps) {
     onSetSessionPinned,
     onUnarchiveSession,
     threadShortcutOrderRef,
-    activityExtensionViews,
-    onOpenActivityTool,
   } = props;
 
   const [sidebarWidth, setSidebarWidth] = usePersistedPaneWidth(
@@ -247,47 +233,6 @@ export function Sidebar(props: SidebarProps) {
     }
     // Reveal once per rename; later list changes should not reopen groups.
   }, [renameSessionId]);
-
-  const runningThreads = useMemo(() => {
-    const seen = new Set<string>();
-    const running: ThreadListEntry[] = [];
-    const collect = (threads: readonly ThreadListEntry[]) => {
-      for (const thread of threads) {
-        if (thread.session.status !== "running") continue;
-        const key = `${thread.workspaceId}:${thread.session.id}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        running.push(thread);
-      }
-    };
-    collect(threadSidebarModel.pinnedThreads);
-    for (const group of threadSidebarModel.workspaceGroups) collect(group.threads);
-    for (const section of threadSidebarModel.recencySections) collect(section.threads);
-    return running;
-  }, [threadSidebarModel]);
-
-  const activityTargets = useMemo(
-    () =>
-      runningThreads.map((thread) => ({
-        workspaceId: thread.workspaceId,
-        sessionId: thread.session.id,
-        title: thread.session.title,
-      })),
-    [runningThreads],
-  );
-  const sidebarActivity = useSidebarActivity(api, activityTargets);
-  const activeBackgroundTasks = sidebarActivity.runningTasks;
-  const activityCount = runningThreads.length + activeBackgroundTasks.length;
-  const activitySubagentsView = activityExtensionViews?.find((view) => view.id === "subagents");
-  useActivityAutoOpen({
-    api,
-    workspaceId: selectedWorkspace?.id,
-    sessionId: selectedSession?.id,
-    sessionKey:
-      selectedWorkspace && selectedSession ? `${selectedWorkspace.id}:${selectedSession.id}` : "",
-    subagentsView: activitySubagentsView,
-    onOpenActivityTool,
-  });
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
   const pinnedSortableId = (thread: ThreadListEntry) => `pinned:${sessionThreadKey(thread)}`;
@@ -468,7 +413,9 @@ export function Sidebar(props: SidebarProps) {
           <PlusIcon />
           <span>New thread</span>
         </button>
+      </div>
 
+      <div className="sidebar__section">
         <div className="sidebar__nav">
           <button
             className={`sidebar__nav-item ${activeView === "threads" ? "sidebar__nav-item--active" : ""}`}
@@ -518,107 +465,6 @@ export function Sidebar(props: SidebarProps) {
             <span>Settings</span>
           </button>
         </div>
-      </div>
-
-      <div className="sidebar__section">
-        {activityCount > 0 ? (
-          <section
-            className="sidebar__activity"
-            aria-label="Active work"
-            data-testid="sidebar-activity"
-          >
-            <div className="section__head">
-              <span>Active</span>
-              <span className="sidebar__activity-count" data-testid="sidebar-activity-count">
-                {activityCount}
-              </span>
-            </div>
-            <div className="session-list session-list--activity">
-              {runningThreads.map((thread) => {
-                // Selection highlight lives with the main list (which asserts a
-                // single .session-row--active); this section marks running state.
-                const elapsed = formatElapsed(thread.session.runningSince);
-                return (
-                  <ThreadSessionRow
-                    key={`active:${thread.workspaceId}:${thread.session.id}`}
-                    active={false}
-                    thread={thread}
-                    showContext
-                    threadMenu={threadMenu}
-                    meta={elapsed || undefined}
-                    longRun={isLongRunSince(thread.session.runningSince)}
-                    onAction={() =>
-                      onArchiveSession({
-                        workspaceId: thread.workspaceId,
-                        sessionId: thread.session.id,
-                      })
-                    }
-                    onSelect={() =>
-                      onSelectSession({
-                        workspaceId: thread.workspaceId,
-                        sessionId: thread.session.id,
-                      })
-                    }
-                    onTogglePinned={() =>
-                      onSetSessionPinned(
-                        { workspaceId: thread.workspaceId, sessionId: thread.session.id },
-                        !thread.session.pinnedAt,
-                      )
-                    }
-                  />
-                );
-              })}
-              {activeBackgroundTasks.map(({ workspaceId, sessionId, title, task }) => {
-                const longTaskRun = isLongRunSince(task.startedAt);
-                return (
-                  <div
-                    key={task.taskId}
-                    className={`sidebar__activity-task${longTaskRun ? " sidebar__activity-task--long" : ""}`}
-                  >
-                    <button
-                      className="sidebar__activity-task-select"
-                      type="button"
-                      title={title || task.command}
-                      onClick={() => onSelectSession({ workspaceId, sessionId })}
-                    >
-                      <span className="sidebar__activity-dot" aria-hidden="true" />
-                      <span className="sidebar__activity-task-command">
-                        {truncateCommand(task.command, 48)}
-                      </span>
-                      <span className="sidebar__activity-elapsed">
-                        {formatElapsed(task.startedAt)}
-                      </span>
-                    </button>
-                    <button
-                      aria-label={`Stop ${task.command}`}
-                      className="icon-button sidebar__activity-stop"
-                      type="button"
-                      disabled={sidebarActivity.stoppingTaskId === task.taskId}
-                      onClick={() => sidebarActivity.stopTask(workspaceId, sessionId, task.taskId)}
-                    >
-                      ×
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-            {activitySubagentsView && onOpenActivityTool ? (
-              <button
-                className="sidebar__activity-subagents"
-                type="button"
-                onClick={() =>
-                  onOpenActivityTool({
-                    kind: "extension",
-                    extensionId: activitySubagentsView.extensionId,
-                    viewId: activitySubagentsView.id,
-                  })
-                }
-              >
-                Open Subagents
-              </button>
-            ) : null}
-          </section>
-        ) : null}
         <div className="section__head">
           <span>Threads</span>
           <div className="section__tools">
@@ -826,81 +672,7 @@ export function Sidebar(props: SidebarProps) {
           </DndContext>
         )}
       </div>
-      <SidebarUsageFooter
-        summary={threadSidebarModel.usageSummary}
-        usageView={activityExtensionViews?.find((view) => view.id === "muse-usage")}
-        onOpenActivityTool={onOpenActivityTool}
-      />
     </aside>
-  );
-}
-
-function SidebarUsageFooter({
-  summary,
-  usageView,
-  onOpenActivityTool,
-}: {
-  readonly summary: SidebarUsageSummary;
-  readonly usageView: DesktopExtensionViewInfo | undefined;
-  readonly onOpenActivityTool: ((tool: ToolRef) => void) | undefined;
-}) {
-  if (summary.sessionCount === 0 && summary.planLimits.length === 0) {
-    return null;
-  }
-  const tightest = summary.planLimits[0];
-  const totals = `${formatCompactTokens(summary.totalTokens)} tokens${
-    summary.billedCost > 0 ? ` · ${formatBilledCost(summary.billedCost)}` : ""
-  }${summary.billedCost === 0 && summary.subscriptionTokens > 0 ? " · subscription" : ""}`;
-  const body = (
-    <>
-      <span className="sidebar__usage-totals" title={totals}>
-        {totals}
-      </span>
-      {tightest ? (
-        <span
-          className="sidebar__usage-limit"
-          title={
-            tightest.resetsAt ? `Resets ${formatRelativeTime(tightest.resetsAt)}` : undefined
-          }
-        >
-          <span className="sidebar__usage-limit-label">
-            {formatPlanWindow(tightest.windowMinutes)} {Math.round(tightest.usedPercent)}%
-          </span>
-          <span className="sidebar__usage-bar" aria-hidden="true">
-            <span
-              className="sidebar__usage-bar-fill"
-              data-testid="sidebar-usage-bar"
-              style={{ width: `${Math.min(100, Math.max(0, tightest.usedPercent))}%` }}
-            />
-          </span>
-        </span>
-      ) : null}
-    </>
-  );
-  return (
-    <div className="sidebar__footer">
-      {usageView && onOpenActivityTool ? (
-        <button
-          className="sidebar__usage"
-          data-testid="sidebar-usage"
-          type="button"
-          title="Open Muse Usage"
-          onClick={() =>
-            onOpenActivityTool({
-              kind: "extension",
-              extensionId: usageView.extensionId,
-              viewId: usageView.id,
-            })
-          }
-        >
-          {body}
-        </button>
-      ) : (
-        <div className="sidebar__usage sidebar__usage--static" data-testid="sidebar-usage">
-          {body}
-        </div>
-      )}
-    </div>
   );
 }
 
@@ -1787,20 +1559,11 @@ function sessionIndicatorVariant(
   return "none";
 }
 
-function isLongRunSince(since: string | undefined, now: number = Date.now()): boolean {
-  if (!since) {
-    return false;
-  }
-  const startedAt = Date.parse(since);
-  if (!Number.isFinite(startedAt)) {
-    return false;
-  }
-  return now - startedAt >= LONG_RUN_MS;
-}
-
 interface ThreadSessionRowProps {
   readonly active: boolean;
   readonly archived?: boolean;
+  /** Activity section rows share the row chrome but must not match `.session-row` selectors. */
+  readonly variant?: "default" | "activity";
   readonly nested?: boolean;
   readonly showContext?: boolean;
   readonly overlay?: boolean;
@@ -1824,6 +1587,7 @@ const ThreadSessionRow = forwardRef<HTMLDivElement, ThreadSessionRowProps>(
     {
       active,
       archived = false,
+      variant = "default",
       nested = false,
       showContext = false,
       overlay = false,
@@ -1850,9 +1614,14 @@ const ThreadSessionRow = forwardRef<HTMLDivElement, ThreadSessionRowProps>(
       !overlay &&
       threadMenu?.openMenu?.surface === "sidebar" &&
       threadMenu.openMenu.sessionId === thread.session.id;
+    const base = variant === "activity" ? "session-activity-row" : "session-row";
+    // Selection highlight lives with the main list; the Active section marks running
+    // state instead, so it never emits .session-row--active (selectors and tests
+    // expect exactly one selected row).
+    const selected = active && variant === "default";
     const classes = [
-      "session-row",
-      active ? "session-row--active" : "",
+      base,
+      selected ? "session-row--active" : "",
       pinned ? "session-row--pinned" : "",
       dragging ? "session-row--dragging" : "",
       overlay ? "session-row--overlay" : "",
