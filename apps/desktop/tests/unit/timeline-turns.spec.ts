@@ -38,8 +38,7 @@ test("the marker sits directly above the turn's final assistant reply", () => {
   expect(ids(transcript)).toEqual([
     "u1",
     "a1",
-    "t1",
-    "t2",
+    "tool-group:t1",
     "turn-marker:u1",
     "a2",
     "u2",
@@ -132,4 +131,47 @@ test("a keyed card updated long after its turn does not stretch that turn's mark
   ];
   const marker = buildDisplayTimelineItems(transcript).find((item) => item.kind === "turn-marker");
   expect(marker?.durationMs).toBe(60_000);
+});
+test("consecutive tools collapse into one group row", () => {
+  const transcript = [
+    message("u1", "user", 0),
+    tool("t1", 2),
+    tool("t2", 3),
+    tool("t3", 4),
+    message("a1", "assistant", 10),
+  ];
+  const items = buildDisplayTimelineItems(transcript);
+  expect(items.map((item) => item.id)).toEqual(["u1", "tool-group:t1", "turn-marker:u1", "a1"]);
+  const group = items.find((item) => item.kind === "tool-group");
+  expect(group?.kind === "tool-group" ? group.tools.map((tool) => tool.id) : []).toEqual([
+    "t1",
+    "t2",
+    "t3",
+  ]);
+});
+
+test("a single tool stays ungrouped and replies break a run", () => {
+  expect(ids([message("u1", "user", 0), tool("t1", 4), message("u2", "user", 10)])).toEqual([
+    "u1",
+    "t1",
+    "turn-marker:u1",
+    "u2",
+  ]);
+  const transcript = [
+    message("u1", "user", 0),
+    tool("t1", 2),
+    tool("t2", 3),
+    message("a1", "assistant", 5),
+    tool("t3", 6),
+    tool("t4", 7),
+    message("a2", "assistant", 12),
+  ];
+  expect(ids(transcript)).toEqual([
+    "u1",
+    "tool-group:t1",
+    "a1",
+    "tool-group:t3",
+    "turn-marker:u1",
+    "a2",
+  ]);
 });

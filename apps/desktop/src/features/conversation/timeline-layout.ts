@@ -31,6 +31,10 @@ export function estimateRowHeight(item: DisplayTimelineItem, width: number): num
     }
     case "tool":
       return 52;
+    case "tool-group":
+      // Collapsed estimate: one header row like a single tool. An expanded
+      // group measures taller and the viewport grows the row after mount.
+      return 52;
     case "summary":
       return item.presentation === "divider" ? 44 : 38;
     case "activity":
@@ -77,6 +81,22 @@ export function sameRowContent(a: DisplayTimelineItem, b: DisplayTimelineItem): 
       return b.kind === a.kind && a.customType === b.customType && a.text === b.text;
     case "card":
       return b.kind === a.kind && sameCard(a.card, b.card);
+    case "tool-group":
+      return (
+        b.kind === a.kind &&
+        a.tools.length === b.tools.length &&
+        a.tools.every((tool, index) => {
+          const other = b.tools[index];
+          return (
+            other !== undefined &&
+            tool.status === other.status &&
+            tool.detail === other.detail &&
+            tool.label === other.label &&
+            tool.metadata === other.metadata &&
+            tool.finishedAt === other.finishedAt
+          );
+        })
+      );
     // A captured turn's marker and file list never change once drawn.
     case "turn-marker":
     case "turn-changes":

@@ -1,9 +1,13 @@
 import type { TurnChangeSummary } from "../../../contracts/review";
 import type {
   DisplayTimelineItem,
+  TimelineToolCall,
   TimelineTranscriptItem,
   TimelineTurnMarker,
 } from "../../../contracts/timeline-types";
+
+/** Consecutive tool calls collapse into one group row from this size up. */
+export const MIN_TOOL_GROUP_SIZE = 2;
 
 const MIN_WORKED_DURATION_MS = 1_000;
 
@@ -92,7 +96,7 @@ export function buildDisplayTimelineItems(
 
   const cardsAfter = turnChangeCardPositions(transcript, options.turnChanges ?? []);
   if (markersBefore.size === 0 && cardsAfter.size === 0) {
-    return transcript;
+    return groupConsecutiveTools(transcript);
   }
 
   const result: DisplayTimelineItem[] = [];
@@ -109,9 +113,49 @@ export function buildDisplayTimelineItems(
       result.push({ kind: "turn-changes", id: `turn-changes:${turn.checkpointId}`, turn });
     }
   }
+  return groupConsecutiveTools(result);
+}
+
+/**
+ * Collapse runs of consecutive tool calls into a single Claude Desktop-style
+ * "Ran N tools" group row. Turn markers, assistant replies, activities,
+ * summaries, extension messages, and change cards all break a run, so a group
+ * never spans two turns. Single tools stay ungrouped to preserve the existing
+ * one-line row and its tests.
+ */
+export function groupConsecutiveTools(
+  items: readonly DisplayTimelineItem[],
+): readonly DisplayTimelineItem[] {
+  if (items.length < MIN_TOOL_GROUP_SIZE) return items;
+  const result: DisplayTimelineItem[] = [];
+  let run: TimelineToolCall[] = [];
+  const flush = () => {
+    if (run.length >= MIN_TOOL_GROUP_SIZE) {
+      const first = run[0]!;
+      result.push({
+        kind: "tool-group",
+        id: `tool-group:${first.id}`,
+        tools: [...run],
+        createdAt: first.createdAt,
+      });
+    } else {
+      for (const tool of run) result.push(tool);
+    }
+    run = [];
+  };
+  for (const item of items) {
+    if (item.kind === "tool") {
+      run.push(item);
+    } else {
+      flush();
+      result.push(item);
+    }
+  }
+  flush();
   return result;
 }
 
+/**
 function turnChangeCardPositions(
   transcript: readonly TimelineTranscriptItem[],
   turnChanges: readonly TurnChangeSummary[],

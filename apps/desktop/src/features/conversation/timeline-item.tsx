@@ -8,6 +8,7 @@ import type {
   TimelineActivity,
   TimelineToolCall,
   TimelineSummary,
+  TimelineToolGroup,
   TimelineTurnMarker,
 } from "../../../contracts/timeline-types";
 import type { ScheduledTaskOrigin } from "../../../contracts/scheduled-tasks";
@@ -42,6 +43,8 @@ export function TimelineItem({
   item,
   expandedToolCallIds,
   onToggleToolCall,
+  expandedToolGroupIds,
+  onToggleToolGroup,
   onViewFileInDiff,
   sourceMessageIndex,
   onForkFromMessage,
@@ -56,6 +59,8 @@ export function TimelineItem({
   readonly item: DisplayTimelineItem;
   readonly expandedToolCallIds?: ReadonlySet<string>;
   readonly onToggleToolCall?: (callId: string) => void;
+  readonly expandedToolGroupIds?: ReadonlySet<string>;
+  readonly onToggleToolGroup?: (groupId: string) => void;
   readonly onViewFileInDiff?: (path: string) => void;
   readonly sourceMessageIndex?: number;
   readonly onForkFromMessage?: (messageIndex: number, preview?: string) => void;
@@ -93,6 +98,17 @@ export function TimelineItem({
           item={item}
           expanded={expandedToolCallIds?.has(item.callId) ?? false}
           onToggle={onToggleToolCall}
+          onViewFileInDiff={onViewFileInDiff}
+        />
+      );
+    case "tool-group":
+      return (
+        <TimelineToolGroupItem
+          item={item}
+          expanded={expandedToolGroupIds?.has(item.id) ?? false}
+          onToggle={onToggleToolGroup}
+          expandedToolCallIds={expandedToolCallIds}
+          onToggleToolCall={onToggleToolCall}
           onViewFileInDiff={onViewFileInDiff}
         />
       );
@@ -421,6 +437,128 @@ function TimelineToolCallItem({
       ) : null}
     </article>
   );
+}
+
+function TimelineToolGroupItem({
+  item,
+  expanded,
+  onToggle,
+  expandedToolCallIds,
+  onToggleToolCall,
+  onViewFileInDiff,
+}: {
+  readonly item: TimelineToolGroup;
+  readonly expanded: boolean;
+  readonly onToggle?: (groupId: string) => void;
+  readonly expandedToolCallIds?: ReadonlySet<string>;
+  readonly onToggleToolCall?: (callId: string) => void;
+  readonly onViewFileInDiff?: (path: string) => void;
+}) {
+  const tools = item.tools;
+  const running = tools.filter((tool) => tool.status === "running").length;
+  const errors = tools.filter((tool) => tool.status === "error").length;
+  const status = running > 0 ? "running" : errors > 0 ? "error" : "success";
+  const summary = buildToolGroupSummary(tools);
+  const duration = formatToolGroupDuration(tools);
+  const groupGlyph = toolGlyph(mostCommonToolName(tools));
+  return (
+    <article
+      className={`timeline-tool timeline-tool-group timeline-tool--${status}`}
+      data-testid="tool-group"
+    >
+      <div className="timeline-tool__header-row">
+        <span className="timeline-tool__glyph" aria-hidden="true">
+          {groupGlyph}
+        </span>
+        <button
+          className="timeline-tool__header"
+          type="button"
+          aria-expanded={expanded}
+          data-testid="tool-group-header"
+          onClick={() => onToggle?.(item.id)}
+        >
+          <span
+            className={`timeline-tool__chevron ${expanded ? "timeline-tool__chevron--expanded" : ""}`}
+          >
+            <ChevronRightIcon />
+          </span>
+          <span className="timeline-tool__label">{summary}</span>
+          <span className="timeline-tool__meta-inline">
+            <span className="timeline-tool__status-pip" aria-hidden="true" />
+            {running > 0
+              ? `${tools.length} tools \u00b7 running`
+              : errors > 0
+                ? `${tools.length} tools \u00b7 ${errors} failed`
+                : `${tools.length} tools \u00b7 done`}
+            {duration ? ` \u00b7 ${duration}` : null}
+          </span>
+        </button>
+      </div>
+      {expanded ? (
+        <div className="timeline-tool-group__tools">
+          {tools.map((tool) => (
+            <TimelineToolCallItem
+              key={tool.id}
+              item={tool}
+              expanded={expandedToolCallIds?.has(tool.callId) ?? false}
+              onToggle={onToggleToolCall}
+              onViewFileInDiff={onViewFileInDiff}
+            />
+          ))}
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
+function toolCategory(toolName: string): "commands" | "reads" | "edits" | "other" {
+  if (/bash|shell|exec|terminal|command|run/i.test(toolName)) return "commands";
+  if (/write|edit|patch|apply/i.test(toolName)) return "edits";
+  if (/read|view|cat|open|file|glob|grep|search|ls/i.test(toolName)) return "reads";
+  return "other";
+}
+
+function mostCommonToolName(tools: readonly TimelineToolCall[]): string {
+  const counts = new Map<string, number>();
+  for (const tool of tools) counts.set(tool.toolName, (counts.get(tool.toolName) ?? 0) + 1);
+  let best = tools[0]?.toolName ?? "";
+  let bestCount = 0;
+  for (const [name, count] of counts) {
+    if (count > bestCount) {
+      best = name;
+      bestCount = count;
+    }
+  }
+  return best;
+}
+
+function buildToolGroupSummary(tools: readonly TimelineToolCall[]): string {
+  const counts = { commands: 0, reads: 0, edits: 0, other: 0 };
+  for (const tool of tools) counts[toolCategory(tool.toolName)] += 1;
+  const kinds = (Object.keys(counts) as (keyof typeof counts)[]).filter((kind) => counts[kind] > 0);
+  if (kinds.length === 1) {
+    const only = kinds[0]!;
+    if (only === "commands") return `Ran ${tools.length} command${tools.length === 1 ? "" : "s"}`;
+    if (only === "reads") return `Read ${tools.length} file${tools.length === 1 ? "" : "s"}`;
+    if (only === "edits") return `Edited ${tools.length} file${tools.length === 1 ? "" : "s"}`;
+  }
+  return `Ran ${tools.length} tools`;
+}
+
+function formatToolGroupDuration(tools: readonly TimelineToolCall[]): string | null {
+  let total = 0;
+  let complete = true;
+  for (const tool of tools) {
+    const start = Date.parse(tool.createdAt);
+    const end = tool.finishedAt ? Date.parse(tool.finishedAt) : Number.NaN;
+    if (Number.isNaN(start) || Number.isNaN(end) || end < start) {
+      complete = false;
+      continue;
+    }
+    total += end - start;
+  }
+  if (!complete || total <= 0) return null;
+  return formatTiming(total);
 }
 
 function isWriteTool(toolName: string): boolean {
