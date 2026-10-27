@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, readFile } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
   PACK_PACKAGES,
@@ -141,4 +143,18 @@ await test("ensureExtensionPack end to end only fills gaps", async (t) => {
   assert.deepEqual(second.extensionsAdded, []);
   assert.equal(second.skill.installed, false);
   assert.deepEqual(second.mcpServersAdded, []);
+});
+
+await test("repo ships the chrome skill sources the pack installs", () => {
+  // Guards against silent drift: installPackSkill throws at startup when a
+  // listed source file is missing, so a deletion here breaks every launch.
+  const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+  for (const file of ["SKILL.md", "chrome.js", "cdp.js"]) {
+    assert.ok(
+      existsSync(join(repoRoot, "skills", "chrome", file)),
+      `missing shipped skill file: skills/chrome/${file}`,
+    );
+  }
+  const frontmatter = readFileSync(join(repoRoot, "skills", "chrome", "SKILL.md"), "utf8");
+  assert.match(frontmatter, /^name: chrome$/m);
 });
