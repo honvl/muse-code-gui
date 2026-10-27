@@ -1,4 +1,7 @@
 /** Shared text formatting for background-task surfaces (panel + rail). */
+/** Elapsed time after which a run counts as long-running everywhere. */
+export const LONG_RUN_MS = 5 * 60 * 1000;
+
 export function truncateCommand(command: string, limit = 80): string {
   const normalized = command.replace(/\s+/g, " ").trim();
   if (normalized.length <= limit) {

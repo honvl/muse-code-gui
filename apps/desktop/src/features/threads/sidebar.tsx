@@ -78,7 +78,8 @@ import {
 } from "./thread-groups";
 import { useThreadShortcutHintsVisible } from "./thread-shortcut-hints";
 import { useSidebarActivity } from "./use-sidebar-activity";
-import { truncateCommand } from "../conversation/session-task-format";
+import { useActivityAutoOpen } from "./use-activity-auto-open";
+import { LONG_RUN_MS, formatElapsed, truncateCommand } from "../conversation/session-task-format";
 import type { Dispatch, SetStateAction } from "react";
 import type { DesktopAppState } from "../../../contracts/desktop-state";
 import type { DesktopExtensionViewInfo } from "../../../contracts/extension-views";
@@ -274,6 +275,15 @@ export function Sidebar(props: SidebarProps) {
   const activeBackgroundTasks = sidebarActivity.runningTasks;
   const activityCount = runningThreads.length + activeBackgroundTasks.length;
   const activitySubagentsView = activityExtensionViews?.find((view) => view.id === "subagents");
+  useActivityAutoOpen({
+    api,
+    workspaceId: selectedWorkspace?.id,
+    sessionId: selectedSession?.id,
+    sessionKey:
+      selectedWorkspace && selectedSession ? `${selectedWorkspace.id}:${selectedSession.id}` : "",
+    subagentsView: activitySubagentsView,
+    onOpenActivityTool,
+  });
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
   const pinnedSortableId = (thread: ThreadListEntry) => `pinned:${sessionThreadKey(thread)}`;
@@ -524,6 +534,7 @@ export function Sidebar(props: SidebarProps) {
                 const active =
                   thread.workspaceId === selectedWorkspace?.id &&
                   thread.session.id === selectedSession?.id;
+                const elapsed = formatElapsed(thread.session.runningSince);
                 return (
                   <ThreadSessionRow
                     key={`active:${thread.workspaceId}:${thread.session.id}`}
@@ -531,6 +542,8 @@ export function Sidebar(props: SidebarProps) {
                     thread={thread}
                     showContext
                     threadMenu={threadMenu}
+                    meta={elapsed || undefined}
+                    longRun={isLongRunSince(thread.session.runningSince)}
                     onAction={() =>
                       onArchiveSession({
                         workspaceId: thread.workspaceId,
@@ -552,30 +565,39 @@ export function Sidebar(props: SidebarProps) {
                   />
                 );
               })}
-              {activeBackgroundTasks.map(({ workspaceId, sessionId, title, task }) => (
-                <div key={task.taskId} className="sidebar__activity-task">
-                  <button
-                    className="sidebar__activity-task-select"
-                    type="button"
-                    title={title || task.command}
-                    onClick={() => onSelectSession({ workspaceId, sessionId })}
+              {activeBackgroundTasks.map(({ workspaceId, sessionId, title, task }) => {
+                const longTaskRun = isLongRunSince(task.startedAt);
+                return (
+                  <div
+                    key={task.taskId}
+                    className={`sidebar__activity-task${longTaskRun ? " sidebar__activity-task--long" : ""}`}
                   >
-                    <span className="sidebar__activity-dot" aria-hidden="true" />
-                    <span className="sidebar__activity-task-command">
-                      {truncateCommand(task.command, 48)}
-                    </span>
-                  </button>
-                  <button
-                    aria-label={`Stop ${task.command}`}
-                    className="icon-button sidebar__activity-stop"
-                    type="button"
-                    disabled={sidebarActivity.stoppingTaskId === task.taskId}
-                    onClick={() => sidebarActivity.stopTask(workspaceId, sessionId, task.taskId)}
-                  >
-                    ×
-                  </button>
-                </div>
-              ))}
+                    <button
+                      className="sidebar__activity-task-select"
+                      type="button"
+                      title={title || task.command}
+                      onClick={() => onSelectSession({ workspaceId, sessionId })}
+                    >
+                      <span className="sidebar__activity-dot" aria-hidden="true" />
+                      <span className="sidebar__activity-task-command">
+                        {truncateCommand(task.command, 48)}
+                      </span>
+                      <span className="sidebar__activity-elapsed">
+                        {formatElapsed(task.startedAt)}
+                      </span>
+                    </button>
+                    <button
+                      aria-label={`Stop ${task.command}`}
+                      className="icon-button sidebar__activity-stop"
+                      type="button"
+                      disabled={sidebarActivity.stoppingTaskId === task.taskId}
+                      onClick={() => sidebarActivity.stopTask(workspaceId, sessionId, task.taskId)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                );
+              })}
             </div>
             {activitySubagentsView && onOpenActivityTool ? (
               <button
@@ -1688,6 +1710,17 @@ function sessionIndicatorVariant(
   return "none";
 }
 
+function isLongRunSince(since: string | undefined, now: number = Date.now()): boolean {
+  if (!since) {
+    return false;
+  }
+  const startedAt = Date.parse(since);
+  if (!Number.isFinite(startedAt)) {
+    return false;
+  }
+  return now - startedAt >= LONG_RUN_MS;
+}
+
 interface ThreadSessionRowProps {
   readonly active: boolean;
   readonly archived?: boolean;
@@ -1703,6 +1736,10 @@ interface ThreadSessionRowProps {
   readonly onAction: () => void;
   readonly onSelect: () => void;
   readonly onTogglePinned: () => void;
+  /** Replaces the trailing relative time, e.g. live elapsed in Active. */
+  readonly meta?: string;
+  /** Long-run emphasis for active work past the shared threshold. */
+  readonly longRun?: boolean;
 }
 
 const ThreadSessionRow = forwardRef<HTMLDivElement, ThreadSessionRowProps>(
@@ -1722,6 +1759,8 @@ const ThreadSessionRow = forwardRef<HTMLDivElement, ThreadSessionRowProps>(
       onAction,
       onSelect,
       onTogglePinned,
+      meta,
+      longRun = false,
     },
     ref,
   ) {
@@ -1742,6 +1781,7 @@ const ThreadSessionRow = forwardRef<HTMLDivElement, ThreadSessionRowProps>(
       overlay ? "session-row--overlay" : "",
       nested ? "session-row--child" : "",
       shortcutBadge ? "session-row--shortcut" : "",
+      longRun ? "session-row--long-run" : "",
     ]
       .filter(Boolean)
       .join(" ");
@@ -1811,7 +1851,7 @@ const ThreadSessionRow = forwardRef<HTMLDivElement, ThreadSessionRowProps>(
               </span>
             ) : (
               <span className="session-row__time">
-                {formatRelativeTime(sessionLastInteractedAt(thread.session))}
+                {meta ?? formatRelativeTime(sessionLastInteractedAt(thread.session))}
               </span>
             )}
             <span className="session-row__action-cluster">

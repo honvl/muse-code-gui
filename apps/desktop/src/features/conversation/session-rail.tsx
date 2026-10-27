@@ -4,9 +4,7 @@ import type { SessionRecord } from "../../../contracts/desktop-state";
 import type { SessionUsageSnapshot } from "@pi-gui/session-driver";
 import type { TurnChangeSummary } from "../../../contracts/review";
 import { ContextMeter } from "./context-meter";
-import { formatElapsed, truncateCommand } from "./session-task-format";
-
-const LONG_RUN_MS = 5 * 60 * 1000;
+import { LONG_RUN_MS, formatElapsed, truncateCommand } from "./session-task-format";
 
 interface SessionRailProps {
   readonly session: SessionRecord;
