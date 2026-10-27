@@ -26,6 +26,24 @@ files:
 extraResources:
   - from: resources/icon.png
     to: icon.png
+  # Muse Code GUI extension pack: first-party file extensions + chrome skill.
+  # Layout mirrors the repo (pack/ == repo root) so the same relative paths
+  # resolve in dev and in the packaged app. Desktop views (dist/desktop.js)
+  # are built by `build:pack-extensions` before packaging.
+  - from: ../../examples/desktop-extensions/muse-usage
+    to: pack/examples/desktop-extensions/muse-usage
+    filter:
+      - "**/*"
+      - "!test/**"
+      - "!tsconfig.json"
+  - from: ../../examples/desktop-extensions/subagents
+    to: pack/examples/desktop-extensions/subagents
+    filter:
+      - "**/*"
+      - "!test/**"
+      - "!tsconfig.json"
+  - from: ../../skills/chrome
+    to: pack/skills/chrome
 
 asar: true
 asarUnpack:
