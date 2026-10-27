@@ -146,7 +146,8 @@ test("real conversation: stream, switch, tool, stop, archive, restart", async ()
       await writeFile(join(evidence, "cleanup.json"), JSON.stringify(runs, null, 2));
     }
   };
-  const row = (id: string) => page.locator(`.session-row[data-session-id="${id}"]`);
+  const row = (id: string) =>
+    page.locator(`.session-row[data-session-id="${id}"]:not(.sidebar__activity .session-row)`);
   const assistant = () => page.locator(".timeline-item--assistant .message__content");
   const select = async (id: string) => {
     await row(id).locator(".session-row__select").click();
@@ -291,7 +292,7 @@ test("real conversation: stream, switch, tool, stop, archive, restart", async ()
       await select(alpha);
       await expect(row(bravo)).toHaveAttribute("data-sidebar-indicator", "running");
       await expect(assistant().last()).toContainText("ALPHA_DONE");
-      await expect(assistant()).not.toContainText("BRAVO_DONE");
+      expect((await assistant().allTextContents()).join("\n")).not.toContain("BRAVO_DONE");
       await expect
         .soft(page.getByTestId("composer"), "Alpha draft must survive thread switches")
         .toHaveValue(drafts.alpha);
@@ -299,7 +300,7 @@ test("real conversation: stream, switch, tool, stop, archive, restart", async ()
       await idle(bravo);
       await select(bravo);
       await expect(assistant().last()).toContainText("BRAVO_DONE", { timeout: 20_000 });
-      await expect(assistant()).not.toContainText("ALPHA_DONE");
+      expect((await assistant().allTextContents()).join("\n")).not.toContain("ALPHA_DONE");
       expect((await readFile(join(workspace, "verification-tool.txt"), "utf8")).trim()).toBe(
         "BRAVO_TOOL_OK",
       );
@@ -335,7 +336,7 @@ test("real conversation: stream, switch, tool, stop, archive, restart", async ()
       await expect(tool).toHaveClass(/timeline-tool--running/);
       await expect(row(bravo)).toHaveAttribute("data-sidebar-indicator", "running");
       await expect(readFile(completedPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
-      await page.getByRole("button", { name: "Stop run", exact: true }).click();
+      await page.getByTestId("send").click();
       await expect(row(bravo)).not.toHaveAttribute("data-sidebar-indicator", "running", {
         timeout: 10_000,
       });
