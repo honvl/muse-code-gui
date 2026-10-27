@@ -41,9 +41,7 @@ export interface BackgroundStopToolDetails {
 }
 
 type BackgroundToolDetails =
-  | BashBackgroundToolDetails
-  | BackgroundOutputToolDetails
-  | BackgroundStopToolDetails;
+  BashBackgroundToolDetails | BackgroundOutputToolDetails | BackgroundStopToolDetails;
 
 export interface BackgroundTaskContext {
   readonly workspaceId?: string;
@@ -126,7 +124,7 @@ function createBashBackgroundTool(
         const taskId = store.start(command, {
           cwd: ctx.cwd,
           ...(context.workspaceId ? { workspaceId: context.workspaceId } : {}),
-          ...(context.sessionId ?? ctx.sessionManager.getSessionId()
+          ...((context.sessionId ?? ctx.sessionManager.getSessionId())
             ? { sessionId: context.sessionId ?? ctx.sessionManager.getSessionId() }
             : {}),
         });
@@ -212,7 +210,10 @@ function createBackgroundOutputTool(
         return {
           content: [
             { type: "text" as const, text: summary },
-            { type: "text" as const, text: output.output.length > 0 ? output.output : "(no output yet)" },
+            {
+              type: "text" as const,
+              text: output.output.length > 0 ? output.output : "(no output yet)",
+            },
           ],
           details: {
             action: backgroundOutputAction,
