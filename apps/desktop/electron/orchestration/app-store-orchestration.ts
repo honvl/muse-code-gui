@@ -28,7 +28,9 @@ import type {
 import { latestSessionActivityAt, previewFromTranscript } from "../application/app-store-utils";
 import type { RefreshStateOptions } from "../application/refresh-state-options";
 import {
+  ORCHESTRATION_MAX_CHILD_DEPTH,
   createChildThreadAction,
+  createChildThreadModeFromToolOutput,
   createChildThreadPromptFromToolOutput,
   createChildThreadToolName,
   listThreadsAction,
@@ -44,6 +46,7 @@ import {
 import type {
   CreateChildThreadToolDetails,
   ListThreadsToolDetails,
+  OrchestrationChildMode,
   OrchestrationThreadListEntry,
   ReadThreadToolDetails,
   SendMessageToThreadToolDetails,
@@ -67,7 +70,10 @@ interface OrchestrationStateView {
   readonly orchestrationChildren: readonly OrchestrationChildThread[];
 }
 
-type OrchestrationDriver = Pick<PiSdkDriver, "cancelCurrentRun" | "createSession">;
+type OrchestrationDriver = Pick<
+  PiSdkDriver,
+  "cancelCurrentRun" | "createSession" | "setChildIsolation"
+>;
 
 interface OrchestrationOwnerHost {
   readonly driver: OrchestrationDriver;
@@ -172,6 +178,7 @@ interface SpawnChildThreadInput {
   readonly parentWorkspaceId: string;
   readonly parentSessionId: string;
   readonly prompt: string;
+  readonly mode?: OrchestrationChildMode;
   readonly sourceToolCallId?: string;
 }
 
@@ -203,6 +210,17 @@ async function createChildThreadRecord(
     throw new Error(`Unknown workspace: ${input.parentWorkspaceId}`);
   }
 
+  const parentChild = parentChildRecord(store, input.parentWorkspaceId, input.parentSessionId);
+  const depth = (parentChild?.depth ?? 0) + 1;
+  if (depth > ORCHESTRATION_MAX_CHILD_DEPTH) {
+    throw new Error(
+      `Child thread depth ${depth} exceeds the limit of ${ORCHESTRATION_MAX_CHILD_DEPTH}; summarize instead of delegating further.`,
+    );
+  }
+  // Authority cannot widen down the chain: a scout parent may only spawn scouts.
+  const mode: OrchestrationChildMode =
+    parentChild?.mode === "scout" ? "scout" : (input.mode ?? "worker");
+
   const pendingKey = input.sourceToolCallId ? childToolCallKey(input) : undefined;
   if (pendingKey && pendingCreateChildThreadToolCalls.has(pendingKey)) {
     throw new Error("Child thread creation is already in progress.");
@@ -214,6 +232,11 @@ async function createChildThreadRecord(
       throw new Error(existing.latestTranscript || "Failed to start child thread.");
     }
     const childRef = childSessionRef(existing);
+    store.driver.setChildIsolation(childRef, {
+      mode: existing.mode ?? "worker",
+      workspacePath: workspace.path,
+      depth: existing.depth ?? 1,
+    });
     await store.ensureSessionReady(childRef);
     return {
       child: existing,
@@ -239,6 +262,7 @@ async function createChildThreadRecord(
     const now = new Date().toISOString();
     const git = await workspaceGitRef(input.parentWorkspaceId, workspace.path);
     const status = toOrchestrationStatus(session.status, childRef, store);
+    store.driver.setChildIsolation(childRef, { mode, workspacePath: workspace.path, depth });
     const child: OrchestrationChildThread = {
       id: randomUUID(),
       ...(input.sourceToolCallId ? { sourceToolCallId: input.sourceToolCallId } : {}),
@@ -248,6 +272,8 @@ async function createChildThreadRecord(
       childSessionId: childRef.sessionId,
       title: session.title || titleFromPrompt(prompt),
       goal: prompt,
+      mode,
+      depth,
       status,
       latestTranscript: session.preview || prompt,
       transcript: [],
@@ -336,6 +362,7 @@ async function handleCreateChildThreadToolResult(
   if (!prompt) {
     return false;
   }
+  const mode = createChildThreadModeFromToolOutput(event.output);
 
   let deliveryStatus: CreatedChildThreadResult["deliveryStatus"];
   try {
@@ -343,6 +370,7 @@ async function handleCreateChildThreadToolResult(
       parentWorkspaceId: event.sessionRef.workspaceId,
       parentSessionId: event.sessionRef.sessionId,
       prompt,
+      ...(mode ? { mode } : {}),
       sourceToolCallId: event.callId,
     });
     deliveryStatus = result.deliveryStatus;
@@ -366,7 +394,7 @@ async function handleCreateChildThreadToolResult(
     return false;
   }
 
-  updateCreateChildThreadToolOutput(store, event, prompt, child, deliveryStatus);
+  updateCreateChildThreadToolOutput(store, event, prompt, child, deliveryStatus, mode);
   return true;
 }
 
@@ -509,17 +537,24 @@ async function cancelChildRunsForParent(
 async function createChildThreadToolResult(
   store: OrchestrationOwnerHost,
   parentRef: SessionRef,
-  input: { readonly prompt: string; readonly toolCallId: string },
+  input: {
+    readonly prompt: string;
+    readonly toolCallId: string;
+    readonly mode?: OrchestrationChildMode;
+  },
 ): Promise<AgentToolResult<CreateChildThreadToolDetails>> {
   const { child, deliveryStatus } = await createChildThreadRecord(store, {
     parentWorkspaceId: parentRef.workspaceId,
     parentSessionId: parentRef.sessionId,
     prompt: input.prompt,
+    ...(input.mode ? { mode: input.mode } : {}),
     sourceToolCallId: input.toolCallId,
   });
   const details: CreateChildThreadToolDetails = {
     action: createChildThreadAction,
     prompt: input.prompt.trim(),
+    ...(child.mode ? { mode: child.mode } : {}),
+    ...(typeof child.depth === "number" ? { depth: child.depth } : {}),
     childThreadId: child.id,
     childWorkspaceId: child.childWorkspaceId,
     childSessionId: child.childSessionId,
@@ -787,8 +822,45 @@ async function hydrateOrchestrationChildren(store: OrchestrationOwnerHost): Prom
   await hydrateVisibleOrchestrationChildren(store);
 }
 
+function parentChildRecord(
+  store: OrchestrationOwnerHost,
+  parentWorkspaceId: string,
+  parentSessionId: string,
+): OrchestrationChildThread | undefined {
+  return store
+    .orchestrationState()
+    .orchestrationChildren.find(
+      (child) =>
+        child.childWorkspaceId === parentWorkspaceId && child.childSessionId === parentSessionId,
+    );
+}
+
+function registerChildIsolation(
+  store: OrchestrationOwnerHost,
+  child: OrchestrationChildThread,
+): void {
+  if (!child.childSessionId) return;
+  const workspace =
+    store.workspaceRefFromState(child.childWorkspaceId) ??
+    store.workspaceRefFromState(child.parentWorkspaceId);
+  if (!workspace) return;
+  try {
+    store.driver.setChildIsolation(childSessionRef(child), {
+      mode: child.mode ?? "worker",
+      workspacePath: workspace.path,
+      depth: child.depth ?? 1,
+    });
+  } catch {
+    // Isolation registration is best-effort: a missing driver method on older
+    // hosts must not break hydration or creation.
+  }
+}
+
 async function hydrateVisibleOrchestrationChildren(store: OrchestrationOwnerHost): Promise<void> {
   const state = store.orchestrationState();
+  for (const child of state.orchestrationChildren) {
+    registerChildIsolation(store, child);
+  }
   const visibleChildren = state.orchestrationChildren.filter(
     (child) =>
       child.parentWorkspaceId === state.selectedWorkspaceId &&
@@ -1238,13 +1310,17 @@ function updateCreateChildThreadToolOutput(
   prompt: string,
   child: OrchestrationChildThread,
   deliveryStatus: CreatedChildThreadResult["deliveryStatus"],
+  mode?: OrchestrationChildMode,
 ): void {
+  const resolvedMode = child.mode ?? mode;
   updateThreadToolOutput(store, event, {
     detail: `Created child thread: ${child.title}`,
     text: `Created child thread: ${child.title}`,
     details: {
       action: createChildThreadAction,
       prompt,
+      ...(resolvedMode ? { mode: resolvedMode } : {}),
+      ...(typeof child.depth === "number" ? { depth: child.depth } : {}),
       childThreadId: child.id,
       childWorkspaceId: child.childWorkspaceId,
       childSessionId: child.childSessionId,
@@ -1667,6 +1743,7 @@ function formatCreateChildThreadResult(result: CreateChildThreadToolDetails): st
     `childThreadId: ${result.childThreadId ?? ""}\n` +
     `childWorkspaceId: ${result.childWorkspaceId ?? ""}\n` +
     `childSessionId: ${result.childSessionId ?? ""}` +
+    (result.mode ? `\nmode: ${result.mode}` : "") +
     (result.deliveryStatus ? `\ninitialPrompt: ${result.deliveryStatus}` : "")
   );
 }

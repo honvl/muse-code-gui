@@ -282,7 +282,12 @@ function validateUiState(value: unknown): Record<string, unknown> {
     "collapsedWorkspaceIds",
   ])
     optional(root, key, strings);
-  for (const key of ["sidebarCollapsed", "allowMultiple", "enableTransparency", "extensionPackEnabled"])
+  for (const key of [
+    "sidebarCollapsed",
+    "allowMultiple",
+    "enableTransparency",
+    "extensionPackEnabled",
+  ])
     optional(root, key, boolean);
   optional(root, "activeView", (v) => toAppView(v) !== undefined);
   optional(root, "threadGrouping", isThreadGrouping);
@@ -606,6 +611,14 @@ function toPersistedOrchestrationChildren(value: unknown): OrchestrationChildThr
     const sourceToolCallId = stringValue(candidate.sourceToolCallId);
     const status = toOrchestrationStatus(candidate.status);
     const supervisionLoop = toPersistedSupervisionLoop(candidate.supervisionLoop, status);
+    const mode =
+      candidate.mode === "scout" || candidate.mode === "worker" ? candidate.mode : undefined;
+    const depth =
+      typeof candidate.depth === "number" &&
+      Number.isInteger(candidate.depth) &&
+      candidate.depth >= 0
+        ? candidate.depth
+        : undefined;
     return [
       {
         id,
@@ -616,6 +629,8 @@ function toPersistedOrchestrationChildren(value: unknown): OrchestrationChildThr
         childSessionId,
         title,
         goal,
+        ...(mode ? { mode } : {}),
+        ...(depth !== undefined ? { depth } : {}),
         status,
         latestTranscript:
           stringValue(candidate.latestTranscript) || retainedTranscript.at(-1)?.text || goal,

@@ -120,6 +120,7 @@ import {
   type RunOutcome,
 } from "./session-supervisor-utils.js";
 import { forcePersistPiSession } from "./compat/pi-session-persistence.js";
+import { createChildIsolationExtension, type ChildIsolationInfo } from "./child-isolation.js";
 import { createInvalidToolCallGuardExtension } from "./invalid-tool-call-guard.js";
 import { createTurnCaptureExtension } from "./turn-capture.js";
 import { createTranscriptIdentityExtension } from "./transcript-identity.js";
@@ -315,6 +316,8 @@ export class SessionSupervisor {
   private readonly backgroundTasks = new BackgroundTaskStore();
   /** Latest plan limits a provider reported, shared by every session on that provider. */
   private readonly planLimitsByProvider = new Map<string, SessionPlanLimits>();
+  /** Isolation enforced on orchestration child sessions, keyed by pi session id. */
+  private readonly childIsolations = new Map<string, ChildIsolationInfo>();
   private readonly ensureRecordInFlight = new Map<string, Promise<ManagedSessionRecord>>();
   /** Preserve invocation order so stale touches cannot undo a later rename or removal. */
   private readonly workspaceMutationQueues = new Map<WorkspaceId, Promise<void>>();
@@ -385,6 +388,17 @@ export class SessionSupervisor {
             name: "pi-gui-invalid-tool-call-guard",
             hidden: true,
             factory: createInvalidToolCallGuardExtension(),
+          },
+          {
+            name: "pi-gui-child-isolation",
+            hidden: true,
+            factory: createChildIsolationExtension((ctx) => {
+              try {
+                return this.childIsolations.get(ctx.sessionManager.getSessionId());
+              } catch {
+                return undefined;
+              }
+            }),
           },
           {
             name: "pi-gui-transcript-identity",
@@ -714,6 +728,11 @@ export class SessionSupervisor {
   async getSessionCommands(sessionRef: SessionRef): Promise<readonly RuntimeCommandRecord[]> {
     const record = await this.ensureRecord(sessionRef);
     return record.sessionCommands;
+  }
+
+  /** Register OpenCode-style isolation for an orchestration child session. */
+  setChildIsolation(sessionRef: SessionRef, info: ChildIsolationInfo): void {
+    this.childIsolations.set(sessionRef.sessionId, info);
   }
 
   /** Background bash tasks for one thread (newest last). Includes finished tasks. */

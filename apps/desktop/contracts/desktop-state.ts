@@ -184,6 +184,8 @@ export interface OrchestrationChildTranscriptMessage {
   readonly createdAt: string;
 }
 
+export type OrchestrationChildMode = "scout" | "worker";
+
 export interface OrchestrationChildThread {
   readonly id: string;
   readonly sourceToolCallId?: string;
@@ -193,6 +195,8 @@ export interface OrchestrationChildThread {
   readonly childSessionId: string;
   readonly title: string;
   readonly goal: string;
+  readonly mode?: OrchestrationChildMode;
+  readonly depth?: number;
   readonly status: OrchestrationChildThreadStatus;
   readonly latestTranscript: string;
   readonly transcript: readonly OrchestrationChildTranscriptMessage[];
