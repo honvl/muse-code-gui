@@ -995,6 +995,8 @@ export default function App() {
           onSelectSession={handleSelectSession}
           onSetSessionPinned={threadMenu.setPinned}
           onUnarchiveSession={threadMenu.restore}
+          activityExtensionViews={extensionViews.views}
+          onOpenActivityTool={workbench.openTool}
         />
       ) : null}
 

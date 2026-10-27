@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -76,8 +77,12 @@ import {
   type WorkspaceThreadGroup,
 } from "./thread-groups";
 import { useThreadShortcutHintsVisible } from "./thread-shortcut-hints";
+import { useSidebarActivity } from "./use-sidebar-activity";
+import { truncateCommand } from "../conversation/session-task-format";
 import type { Dispatch, SetStateAction } from "react";
 import type { DesktopAppState } from "../../../contracts/desktop-state";
+import type { DesktopExtensionViewInfo } from "../../../contracts/extension-views";
+import type { ToolRef } from "../../../contracts/workbench";
 
 interface SidebarProps {
   readonly activeView: AppView;
@@ -109,6 +114,8 @@ interface SidebarProps {
   ) => void;
   readonly onUnarchiveSession: (target: { workspaceId: string; sessionId: string }) => void;
   readonly threadShortcutOrderRef: MutableRefObject<readonly ThreadListEntry[] | null>;
+  readonly activityExtensionViews?: readonly DesktopExtensionViewInfo[];
+  readonly onOpenActivityTool?: (tool: ToolRef) => void;
 }
 
 const SIDEBAR_WIDTH_RANGE = { min: 200, max: 520 } as const;
@@ -156,6 +163,8 @@ export function Sidebar(props: SidebarProps) {
     onSetSessionPinned,
     onUnarchiveSession,
     threadShortcutOrderRef,
+    activityExtensionViews,
+    onOpenActivityTool,
   } = props;
 
   const [sidebarWidth, setSidebarWidth] = usePersistedPaneWidth(
@@ -233,6 +242,38 @@ export function Sidebar(props: SidebarProps) {
     }
     // Reveal once per rename; later list changes should not reopen groups.
   }, [renameSessionId]);
+
+  const runningThreads = useMemo(() => {
+    const seen = new Set<string>();
+    const running: ThreadListEntry[] = [];
+    const collect = (threads: readonly ThreadListEntry[]) => {
+      for (const thread of threads) {
+        if (thread.session.status !== "running") continue;
+        const key = `${thread.workspaceId}:${thread.session.id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        running.push(thread);
+      }
+    };
+    collect(threadSidebarModel.pinnedThreads);
+    for (const group of threadSidebarModel.workspaceGroups) collect(group.threads);
+    for (const section of threadSidebarModel.recencySections) collect(section.threads);
+    return running;
+  }, [threadSidebarModel]);
+
+  const activityTargets = useMemo(
+    () =>
+      runningThreads.map((thread) => ({
+        workspaceId: thread.workspaceId,
+        sessionId: thread.session.id,
+        title: thread.session.title,
+      })),
+    [runningThreads],
+  );
+  const sidebarActivity = useSidebarActivity(api, activityTargets);
+  const activeBackgroundTasks = sidebarActivity.runningTasks;
+  const activityCount = runningThreads.length + activeBackgroundTasks.length;
+  const activitySubagentsView = activityExtensionViews?.find((view) => view.id === "subagents");
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
   const pinnedSortableId = (thread: ThreadListEntry) => `pinned:${sessionThreadKey(thread)}`;
@@ -466,6 +507,93 @@ export function Sidebar(props: SidebarProps) {
       </div>
 
       <div className="sidebar__section">
+        {activityCount > 0 ? (
+          <section
+            className="sidebar__activity"
+            aria-label="Active work"
+            data-testid="sidebar-activity"
+          >
+            <div className="section__head">
+              <span>Active</span>
+              <span className="sidebar__activity-count" data-testid="sidebar-activity-count">
+                {activityCount}
+              </span>
+            </div>
+            <div className="session-list session-list--activity">
+              {runningThreads.map((thread) => {
+                const active =
+                  thread.workspaceId === selectedWorkspace?.id &&
+                  thread.session.id === selectedSession?.id;
+                return (
+                  <ThreadSessionRow
+                    key={`active:${thread.workspaceId}:${thread.session.id}`}
+                    active={active}
+                    thread={thread}
+                    showContext
+                    threadMenu={threadMenu}
+                    onAction={() =>
+                      onArchiveSession({
+                        workspaceId: thread.workspaceId,
+                        sessionId: thread.session.id,
+                      })
+                    }
+                    onSelect={() =>
+                      onSelectSession({
+                        workspaceId: thread.workspaceId,
+                        sessionId: thread.session.id,
+                      })
+                    }
+                    onTogglePinned={() =>
+                      onSetSessionPinned(
+                        { workspaceId: thread.workspaceId, sessionId: thread.session.id },
+                        !thread.session.pinnedAt,
+                      )
+                    }
+                  />
+                );
+              })}
+              {activeBackgroundTasks.map(({ workspaceId, sessionId, title, task }) => (
+                <div key={task.taskId} className="sidebar__activity-task">
+                  <button
+                    className="sidebar__activity-task-select"
+                    type="button"
+                    title={title || task.command}
+                    onClick={() => onSelectSession({ workspaceId, sessionId })}
+                  >
+                    <span className="sidebar__activity-dot" aria-hidden="true" />
+                    <span className="sidebar__activity-task-command">
+                      {truncateCommand(task.command, 48)}
+                    </span>
+                  </button>
+                  <button
+                    aria-label={`Stop ${task.command}`}
+                    className="icon-button sidebar__activity-stop"
+                    type="button"
+                    disabled={sidebarActivity.stoppingTaskId === task.taskId}
+                    onClick={() => sidebarActivity.stopTask(workspaceId, sessionId, task.taskId)}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+            {activitySubagentsView && onOpenActivityTool ? (
+              <button
+                className="sidebar__activity-subagents"
+                type="button"
+                onClick={() =>
+                  onOpenActivityTool({
+                    kind: "extension",
+                    extensionId: activitySubagentsView.extensionId,
+                    viewId: activitySubagentsView.id,
+                  })
+                }
+              >
+                Open Subagents
+              </button>
+            ) : null}
+          </section>
+        ) : null}
         <div className="section__head">
           <span>Threads</span>
           <div className="section__tools">
