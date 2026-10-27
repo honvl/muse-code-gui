@@ -22,7 +22,7 @@ import { useTurnChanges } from "../features/conversation/hooks/use-turn-changes"
 import { formatRelativeTime } from "../lib/string-utils";
 import { restoreTopmostDialogFocus } from "../ui/dialog-focus";
 import { ComposerPanel } from "../features/conversation/composer-panel";
-import { BackgroundTasksSection } from "../features/conversation/background-tasks-section";
+import { ThreadRailColumn } from "../features/conversation/thread-rail-column";
 import { DiffPanel } from "../features/workbench/diff-panel";
 import type { DiffPanelFileRequest } from "../features/workbench/diff-panel-types";
 import { FileWorkbench } from "../features/workbench/file-workbench";
@@ -1195,13 +1195,13 @@ export default function App() {
                   onOpen={() => setScheduledEditor({ mode: "edit", taskId: scheduledBinding.id })}
                 />
               ) : null}
-              <BackgroundTasksSection
+              <ThreadRailColumn
                 api={api}
-                target={workbenchTarget}
-                runningSince={
-                  selectedSession?.status === "running" ? selectedSession.runningSince : undefined
-                }
-                isRunning={selectedSession?.status === "running"}
+                session={selectedSession}
+                workspace={selectedWorkspace}
+                state={snapshot}
+                sessionKey={selectedSessionKey}
+                turnChanges={turnChanges}
                 onStopRun={stopCurrentRun}
               />
               <ComposerPanel

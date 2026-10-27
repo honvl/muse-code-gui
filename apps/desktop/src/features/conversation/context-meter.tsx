@@ -4,6 +4,7 @@ import type {
   SessionPromptCache,
   SessionUsageSnapshot,
 } from "@pi-gui/session-driver";
+import { formatQuotaResetMs } from "./session-task-format";
 
 interface ContextMeterProps {
   readonly usage: SessionUsageSnapshot | undefined;
@@ -100,6 +101,25 @@ export function ContextMeter({ usage }: ContextMeterProps) {
                   }
                 />
               ))}
+            </section>
+          ) : null}
+          {usage.quota && (usage.quota.window || usage.quota.weekly) ? (
+            <section className="context-meter__section">
+              <h3 className="context-meter__heading">
+                Subscription quota{usage.quota.tier ? ` · ${usage.quota.tier}` : ""}
+              </h3>
+              {usage.quota.window ? (
+                <Row
+                  label={`Window · ${formatPercent(usage.quota.window.usedPercent)} used`}
+                  value={formatQuotaResetMs(usage.quota.window.resetsAtMs, now)}
+                />
+              ) : null}
+              {usage.quota.weekly ? (
+                <Row
+                  label={`Weekly · ${formatPercent(usage.quota.weekly.usedPercent)} used`}
+                  value={formatQuotaResetMs(usage.quota.weekly.resetsAtMs, now)}
+                />
+              ) : null}
             </section>
           ) : null}
           <section className="context-meter__section">

@@ -56,6 +56,19 @@ export type TranscriptMessage =
   | TimelineSummary;
 
 /**
+ * A derived, view-only row that collapses consecutive tool calls (bash, read,
+ * edit, …) into one Claude Desktop-style "Ran N tools" row. Never persisted
+ * or produced by the store; the timeline derives it at render time so it stays
+ * out of {@link TranscriptMessage} like the other view-only rows.
+ */
+export interface TimelineToolGroup {
+  readonly kind: "tool-group";
+  readonly id: string;
+  readonly tools: readonly TimelineToolCall[];
+  readonly createdAt: string;
+}
+
+/**
  * What the conversation timeline draws: the transcript without its pins, which show above the
  * composer. The renderer splits them off once, so a pin reaching the timeline fails typecheck.
  */
@@ -80,4 +93,5 @@ export interface TimelineTurnChanges {
   readonly turn: TurnChangeSummary;
 }
 
-export type DisplayTimelineItem = TimelineTranscriptItem | TimelineTurnMarker | TimelineTurnChanges;
+export type DisplayTimelineItem =
+  TimelineTranscriptItem | TimelineTurnMarker | TimelineTurnChanges | TimelineToolGroup;

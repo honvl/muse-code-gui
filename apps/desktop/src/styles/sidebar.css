@@ -46,8 +46,7 @@
 }
 
 .sidebar__top,
-.sidebar__section,
-.sidebar__footer {
+.sidebar__section {
   padding: 12px;
 }
 
@@ -58,7 +57,7 @@
 .sidebar__nav {
   display: grid;
   gap: 2px;
-  margin-top: 8px;
+  margin-bottom: 12px;
 }
 
 .sidebar__nav-item {
@@ -651,6 +650,16 @@
   pointer-events: none;
 }
 
+.session-children {
+  margin-left: 18px;
+  border-left: 1px solid var(--line);
+  padding-left: 6px;
+}
+
+.session-row--child .session-row__select {
+  padding-left: 12px;
+}
+
 .session-row__status {
   display: block;
 }
@@ -927,10 +936,6 @@
 
 .session-list--archived {
   padding-left: 0;
-}
-
-.sidebar__footer {
-  border-top: 1px solid var(--line);
 }
 
 .sidebar__settings {

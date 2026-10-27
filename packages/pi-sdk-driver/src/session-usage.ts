@@ -3,6 +3,7 @@ import type {
   SessionPlanLimit,
   SessionPlanLimits,
   SessionPromptCache,
+  SessionQuota,
   SessionTokenCounts,
   SessionUsageSnapshot,
 } from "@pi-gui/session-driver";
@@ -14,6 +15,7 @@ import type {
 export function readSessionUsage(
   session: AgentSession,
   planLimits: SessionPlanLimits | undefined,
+  quota?: SessionQuota,
 ): SessionUsageSnapshot | undefined {
   const model = session.model;
   if (!model) return undefined;
@@ -48,6 +50,7 @@ export function readSessionUsage(
     subscription:
       model.provider === "kimi-coding" || session.modelRuntime.isUsingSubscription(model.provider),
     ...(planLimits && planLimits.provider === model.provider ? { planLimits } : {}),
+    ...(quota ? { quota } : {}),
   };
 }
 

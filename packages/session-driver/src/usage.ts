@@ -44,6 +44,25 @@ export interface SessionPlanLimits {
   readonly reportedAt: Timestamp;
 }
 
+/** One `muse usage` allowance bucket, such as the 5-hour window or weekly limit. */
+export interface SessionQuotaLimit {
+  /** Allowance consumed, 0-100. */
+  readonly usedPercent: number;
+  /** Absolute reset time (epoch ms), or null when unknown. */
+  readonly resetsAtMs: number | null;
+}
+
+/** Subscription quota from the `muse` CLI: user-global, not per-session. */
+export interface SessionQuota {
+  readonly tier: string | null;
+  readonly window: SessionQuotaLimit | null;
+  readonly weekly: SessionQuotaLimit | null;
+  /** When the CLI output was read (epoch ms), or null when never fetched. */
+  readonly fetchedAt: number | null;
+  /** Non-fatal fetch/parse problem; limits may still be present. */
+  readonly error: string | null;
+}
+
 /** Context, cache and usage for one session, read from pi at turn boundaries. */
 export interface SessionUsageSnapshot {
   readonly context?: SessionContextUsage;
@@ -54,5 +73,7 @@ export interface SessionUsageSnapshot {
   readonly totals: SessionTokenCounts & { readonly cost: number };
   /** True when the provider bills through a subscription, so `totals.cost` is not money spent. */
   readonly subscription: boolean;
+  /** CLI subscription quota (user-global). Absent until fetched; never blocks usage. */
+  readonly quota?: SessionQuota;
   readonly planLimits?: SessionPlanLimits;
 }

@@ -1,11 +1,18 @@
 import type { TurnChangeSummary } from "../../../contracts/review";
 import type {
   DisplayTimelineItem,
+  TimelineToolCall,
   TimelineTranscriptItem,
   TimelineTurnMarker,
 } from "../../../contracts/timeline-types";
 
+/** Consecutive tool calls collapse into one group row from this size up. */
+export const MIN_TOOL_GROUP_SIZE = 2;
+
 const MIN_WORKED_DURATION_MS = 1_000;
+
+/** Local bookkeeping row, not agent work: opening a session must not mark a prompt as seen. */
+const RESUMED_SESSION_LABEL = "Resumed session";
 
 function isUserMessage(item: TimelineTranscriptItem | undefined): boolean {
   return item?.kind === "message" && item.role === "user";
@@ -92,7 +99,7 @@ export function buildDisplayTimelineItems(
 
   const cardsAfter = turnChangeCardPositions(transcript, options.turnChanges ?? []);
   if (markersBefore.size === 0 && cardsAfter.size === 0) {
-    return transcript;
+    return groupConsecutiveTools(transcript);
   }
 
   const result: DisplayTimelineItem[] = [];
@@ -109,7 +116,80 @@ export function buildDisplayTimelineItems(
       result.push({ kind: "turn-changes", id: `turn-changes:${turn.checkpointId}`, turn });
     }
   }
+  return groupConsecutiveTools(result);
+}
+
+/**
+ * Collapse runs of consecutive tool calls into a single Claude Desktop-style
+ * "Ran N tools" group row. Turn markers, assistant replies, activities,
+ * summaries, extension messages, and change cards all break a run, so a group
+ * never spans two turns. Single tools stay ungrouped to preserve the existing
+ * one-line row and its tests.
+ */
+export function groupConsecutiveTools(
+  items: readonly DisplayTimelineItem[],
+): readonly DisplayTimelineItem[] {
+  if (items.length < MIN_TOOL_GROUP_SIZE) return items;
+  const result: DisplayTimelineItem[] = [];
+  let run: TimelineToolCall[] = [];
+  const flush = () => {
+    if (run.length >= MIN_TOOL_GROUP_SIZE) {
+      const first = run[0]!;
+      result.push({
+        kind: "tool-group",
+        id: `tool-group:${first.id}`,
+        tools: [...run],
+        createdAt: first.createdAt,
+      });
+    } else {
+      for (const tool of run) result.push(tool);
+    }
+    run = [];
+  };
+  for (const item of items) {
+    if (item.kind === "tool") {
+      run.push(item);
+    } else {
+      flush();
+      result.push(item);
+    }
+  }
+  flush();
   return result;
+}
+
+/**
+ * Claude Desktop-style read receipts: a user message counts as seen once the
+ * agent has produced anything downstream of it (a reply, tool call, Working
+ * row, summary, or extension output). A message still waiting for its turn -
+ * the last prompt of an idle thread, or a prompt queued behind a running turn
+ * - stays unread. The run's first downstream row (Working, the assistant
+ * reply, a tool call) lands in the same event batch that starts the run, so
+ * the check appears the moment the agent picks the prompt up.
+ */
+export function buildUserMessageReadReceipts(
+  transcript: readonly TimelineTranscriptItem[],
+): ReadonlyMap<string, boolean> {
+  const receipts = new Map<string, boolean>();
+  transcript.forEach((item, index) => {
+    if (!isUserMessage(item)) {
+      return;
+    }
+    let read = false;
+    for (let next = index + 1; next < transcript.length; next += 1) {
+      const later = transcript[next];
+      if (!later || isUserMessage(later)) {
+        continue;
+      }
+      if (later.kind === "activity" && later.label === RESUMED_SESSION_LABEL) {
+        continue;
+      }
+      read = true;
+      break;
+    }
+    receipts.set(item.id, read);
+  });
+  return receipts;
 }
 
 function turnChangeCardPositions(

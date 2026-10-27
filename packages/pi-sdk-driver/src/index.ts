@@ -67,3 +67,9 @@ export type {
   BackgroundTaskSnapshot,
   BackgroundTaskStatus,
 } from "./background-tasks.js";
+export type {
+  CrossSessionDelivery,
+  CrossSessionSource,
+  CrossSessionThreadSummary,
+  CrossSessionTranscript,
+} from "./cross-session.js";

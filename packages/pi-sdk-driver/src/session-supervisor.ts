@@ -65,6 +65,14 @@ import { piAddonExtensions } from "./pi-addon-extensions.js";
 import { BackgroundTaskStore } from "./background-tasks.js";
 import { createBackgroundTaskRuntimeExtension } from "./background-task-extension.js";
 import {
+  createCrossSessionRuntimeExtension,
+  formatTranscriptExcerpt,
+  type CrossSessionDelivery,
+  type CrossSessionSource,
+  type CrossSessionThreadSummary,
+  type CrossSessionTranscript,
+} from "./cross-session.js";
+import {
   acquireLeaseFile,
   currentLeaseIdentity,
   defaultIsPidAlive,
@@ -125,6 +133,7 @@ import { createInvalidToolCallGuardExtension } from "./invalid-tool-call-guard.j
 import { createTurnCaptureExtension } from "./turn-capture.js";
 import { createTranscriptIdentityExtension } from "./transcript-identity.js";
 import { createPlanLimitsExtension, readSessionUsage } from "./session-usage.js";
+import { currentSessionQuota, refreshSessionQuotaSoon } from "./session-quota.js";
 import {
   createDesktopExtensionBridge,
   type PiDesktopExtensionObserver,
@@ -376,6 +385,22 @@ export class SessionSupervisor {
               workspaceId: workspace.workspaceId,
               sessionId: ctx.sessionManager.getSessionId(),
             })),
+          },
+          {
+            name: "pi-gui-cross-session",
+            hidden: true,
+            factory: createCrossSessionRuntimeExtension(
+              {
+                listThreads: () => this.listCrossSessionThreads(),
+                readThread: (sessionId) => this.readCrossSessionThread(sessionId),
+                deliverMessage: (source, targetSessionId, text) =>
+                  this.deliverCrossSessionMessage(source, targetSessionId, text),
+              },
+              (ctx): CrossSessionSource => ({
+                workspaceId: workspace.workspaceId,
+                sessionId: ctx.sessionManager.getSessionId(),
+              }),
+            ),
           },
           {
             name: "pi-gui-plan-limits",
@@ -751,7 +776,10 @@ export class SessionSupervisor {
     if (!snapshot) {
       throw new Error(`Unknown background task: ${taskId}.`);
     }
-    if (snapshot.workspaceId !== record.workspace.workspaceId || snapshot.sessionId !== record.ref.sessionId) {
+    if (
+      snapshot.workspaceId !== record.workspace.workspaceId ||
+      snapshot.sessionId !== record.ref.sessionId
+    ) {
       throw new Error(`Background task ${taskId} does not belong to this thread.`);
     }
     return this.backgroundTasks.stop(taskId);
@@ -774,6 +802,100 @@ export class SessionSupervisor {
   /** Best-effort stop of every running background task (app shutdown). */
   shutdownBackgroundTasks(): void {
     this.backgroundTasks.shutdown();
+  }
+
+  /** Open threads across workspaces for cross-session messaging (archived excluded). */
+  async listCrossSessionThreads(): Promise<readonly CrossSessionThreadSummary[]> {
+    const { workspaces } = await this.catalogs.workspaces.listWorkspaces();
+    const threads: CrossSessionThreadSummary[] = [];
+    for (const workspace of workspaces) {
+      const { sessions } = await this.catalogs.sessions.listSessions(workspace.workspaceId);
+      for (const session of sessions) {
+        if (session.archivedAt) continue;
+        threads.push({
+          sessionId: session.sessionRef.sessionId,
+          workspaceId: session.workspaceId,
+          ...(workspace.displayName ? { workspaceName: workspace.displayName } : {}),
+          title: session.title,
+          status: session.status,
+          updatedAt: session.updatedAt,
+          ...(session.previewSnippet ? { preview: session.previewSnippet } : {}),
+        });
+      }
+    }
+    return threads.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1)).slice(0, 50);
+  }
+
+  /** Recent transcript excerpt of another open thread. */
+  async readCrossSessionThread(sessionId: string): Promise<CrossSessionTranscript> {
+    const { entry } = await this.findOpenSession(sessionId);
+    const transcript = await this.getTranscript(entry.sessionRef);
+    const messages: { role: string; text: string; toolName?: string }[] = transcript.flatMap(
+      (item): { role: string; text: string; toolName?: string }[] => {
+        if (item.kind === "message") {
+          return item.text.trim() ? [{ role: item.role, text: item.text }] : [];
+        }
+        if (item.kind === "tool") {
+          return [{ role: "tool", text: "", toolName: item.toolName }];
+        }
+        return [];
+      },
+    );
+    const { excerpt, truncated } = formatTranscriptExcerpt(messages);
+    return { sessionId, title: entry.title, status: entry.status, excerpt, truncated };
+  }
+
+  /**
+   * Deliver a user message to another open thread, prefixed with the source
+   * thread's title. A mid-run target holds it as a queued follow-up instead
+   * of being interrupted.
+   */
+  async deliverCrossSessionMessage(
+    source: CrossSessionSource,
+    targetSessionId: string,
+    text: string,
+  ): Promise<CrossSessionDelivery> {
+    if (source.sessionId === targetSessionId) {
+      throw new Error("That message is already in this thread; just say it directly.");
+    }
+    const { entry } = await this.findOpenSession(targetSessionId);
+    const sourceTitle = await this.titleForSessionId(source.sessionId);
+    const body = `[From thread "${sourceTitle}"]: ${text}`;
+    const record = this.records.get(sessionKey(entry.sessionRef));
+    const running = record?.session ? record.session.isStreaming : entry.status === "running";
+    await this.sendUserMessage(
+      entry.sessionRef,
+      running ? { text: body, deliverAs: "followUp" } : { text: body },
+    );
+    return {
+      targetSessionId,
+      targetTitle: entry.title,
+      mode: running ? "queued" : "turn",
+    };
+  }
+
+  private async findOpenSession(sessionId: string) {
+    const { workspaces } = await this.catalogs.workspaces.listWorkspaces();
+    for (const workspace of workspaces) {
+      const { sessions } = await this.catalogs.sessions.listSessions(workspace.workspaceId);
+      const entry = sessions.find((session) => session.sessionRef.sessionId === sessionId);
+      if (!entry) continue;
+      if (entry.archivedAt) {
+        throw new Error(`Thread ${sessionId} is archived and cannot receive messages.`);
+      }
+      return { entry };
+    }
+    throw new Error(`Unknown thread: ${sessionId}. Use list_threads to find an open thread.`);
+  }
+
+  private async titleForSessionId(sessionId: string): Promise<string> {
+    const { workspaces } = await this.catalogs.workspaces.listWorkspaces();
+    for (const workspace of workspaces) {
+      const { sessions } = await this.catalogs.sessions.listSessions(workspace.workspaceId);
+      const entry = sessions.find((session) => session.sessionRef.sessionId === sessionId);
+      if (entry) return entry.title;
+    }
+    return "another thread";
   }
 
   async respondToHostUiRequest(sessionRef: SessionRef, response: HostUiResponse): Promise<void> {
@@ -1135,11 +1257,10 @@ export class SessionSupervisor {
     // answers those with a generic 400 that pi doesn't recognize as
     // overflow, so no auto-compaction fires and every Continue fails the
     // same way. Compact the same thread first instead of forcing a fork.
-    if (!isQueuedMessage && !isExtensionCommand) {
-      await this.compactBeforePromptIfNeeded(record, session);
-    }
-
     try {
+      if (!isQueuedMessage && !isExtensionCommand) {
+        await this.compactBeforePromptIfNeeded(record, session);
+      }
       const images = input.attachments?.flatMap(
         (attachment: NonNullable<SessionMessageInput["attachments"]>[number]) =>
           attachment.kind === "image"
@@ -2998,10 +3119,13 @@ export class SessionSupervisor {
       return;
     }
     try {
+      // Quota is user-global and TTL-cached; the next boundary picks up a refresh.
+      refreshSessionQuotaSoon();
       const provider = session.model?.provider;
       record.usage = readSessionUsage(
         session,
         provider ? this.planLimitsByProvider.get(provider) : undefined,
+        currentSessionQuota(),
       );
     } catch (error) {
       console.warn("[pi-sdk-driver] reading session usage failed", error);

@@ -19,6 +19,7 @@ import type { AnnotationMarker, OpenAnnotation } from "./annotations/annotation-
 import { useAnnotationSelection } from "./annotations/annotation-selection";
 import type { TranscriptAnnotations } from "./annotations/use-transcript-annotations";
 import { ThreadSearchBar } from "./thread-search";
+import { buildUserMessageReadReceipts } from "./timeline-turns";
 import type { RunExtensionAction } from "./extension-card";
 import { TimelineItem } from "./timeline-item";
 import { sameRowContent, type TimelineRow } from "./timeline-layout";
@@ -92,10 +93,25 @@ export function ConversationTimeline({
     });
     return markers;
   }, [annotationList]);
+  // Claude Desktop-style read receipts: a user message is seen once the agent has
+  // produced anything downstream of it. Keyed by message id; rows share the
+  // transcript's item identities, so visible rows can look their state up directly.
+  const readReceipts = useMemo(() => buildUserMessageReadReceipts(transcript), [transcript]);
   const [expandedToolCallIds, setExpandedToolCallIds] = useState<Set<string>>(() => new Set());
+  const [expandedToolGroupIds, setExpandedToolGroupIds] = useState<Set<string>>(() => new Set());
   const toggleToolCall = useCallback(
     (id: string) =>
       setExpandedToolCallIds((current) => {
+        const next = new Set(current);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      }),
+    [],
+  );
+  const toggleToolGroup = useCallback(
+    (id: string) =>
+      setExpandedToolGroupIds((current) => {
         const next = new Set(current);
         if (next.has(id)) next.delete(id);
         else next.add(id);
@@ -110,6 +126,17 @@ export function ConversationTimeline({
     setExpandedToolCallIds((current) => {
       if ([...current].every((id) => available.has(id))) return current;
       return new Set([...current].filter((id) => available.has(id)));
+    });
+    // Group ids are `tool-group:<first-tool-id>`; drop groups whose first tool left.
+    const availableToolIds = new Set(
+      transcript.filter((item) => item.kind === "tool").map((item) => item.id),
+    );
+    setExpandedToolGroupIds((current) => {
+      const next = [...current].filter((id) =>
+        availableToolIds.has(id.replace(/^tool-group:/, "")),
+      );
+      if (next.length === current.size) return current;
+      return new Set(next);
     });
   }, [transcript]);
   const renderedMessageIndexById = useMemo(() => {
@@ -172,6 +199,8 @@ export function ConversationTimeline({
                     generation={viewport.layoutGeneration}
                     expandedToolCallIds={expandedToolCallIds}
                     onToggleToolCall={toggleToolCall}
+                    expandedToolGroupIds={expandedToolGroupIds}
+                    onToggleToolGroup={toggleToolGroup}
                     onViewFileInDiff={onViewFileInDiff}
                     onOpenTurnChange={onOpenTurnChange}
                     sourceMessageIndex={renderedMessageIndexById.get(item.id)}
@@ -189,6 +218,14 @@ export function ConversationTimeline({
                     onOpenAnnotation={annotationSelection.openAnnotation}
                     scheduledOrigin={
                       item.kind === "message" ? scheduledOrigins?.get(item.id) : undefined
+                    }
+                    isRead={
+                      item.kind === "message" && item.role === "user"
+                        ? (readReceipts.get(item.id) ??
+                            (item.sourceMessageId
+                              ? readReceipts.get(item.sourceMessageId)
+                              : undefined)) === true
+                        : undefined
                     }
                   />
                 ))}
@@ -283,6 +320,8 @@ interface MeasuredTimelineItemProps {
   readonly generation: number;
   readonly expandedToolCallIds: ReadonlySet<string>;
   readonly onToggleToolCall: (callId: string) => void;
+  readonly expandedToolGroupIds: ReadonlySet<string>;
+  readonly onToggleToolGroup: (groupId: string) => void;
   readonly onViewFileInDiff?: (path: string) => void;
   readonly onOpenTurnChange?: OpenTurnChange;
   readonly sourceMessageIndex?: number;
@@ -293,6 +332,7 @@ interface MeasuredTimelineItemProps {
   readonly workspacePath?: string;
   readonly annotationMarkers: readonly AnnotationMarker[];
   readonly onOpenAnnotation: OpenAnnotation;
+  readonly isRead?: boolean;
 }
 
 function MeasuredTimelineItemBase({
@@ -304,6 +344,8 @@ function MeasuredTimelineItemBase({
   generation,
   expandedToolCallIds,
   onToggleToolCall,
+  expandedToolGroupIds,
+  onToggleToolGroup,
   onViewFileInDiff,
   onOpenTurnChange,
   sourceMessageIndex,
@@ -314,6 +356,7 @@ function MeasuredTimelineItemBase({
   workspacePath,
   annotationMarkers,
   onOpenAnnotation,
+  isRead,
 }: MeasuredTimelineItemProps) {
   const rowRef = useRef<HTMLDivElement | null>(null);
 
@@ -352,6 +395,8 @@ function MeasuredTimelineItemBase({
           item={item}
           expandedToolCallIds={expandedToolCallIds}
           onToggleToolCall={onToggleToolCall}
+          expandedToolGroupIds={expandedToolGroupIds}
+          onToggleToolGroup={onToggleToolGroup}
           onViewFileInDiff={onViewFileInDiff}
           onOpenTurnChange={onOpenTurnChange}
           sourceMessageIndex={sourceMessageIndex}
@@ -362,6 +407,7 @@ function MeasuredTimelineItemBase({
           workspacePath={workspacePath}
           annotationMarkers={annotationMarkers}
           onOpenAnnotation={onOpenAnnotation}
+          isRead={isRead}
         />
       </div>
     </div>
@@ -420,6 +466,23 @@ function isSameDisplayItem(a: DisplayTimelineItem, b: DisplayTimelineItem): bool
     // A card's id is its checkpoint, and a captured turn's files never change.
     return true;
   }
+  if (a.kind === "tool-group" && b.kind === "tool-group") {
+    return (
+      a.tools.length === b.tools.length &&
+      a.tools.every((tool, index) => {
+        const other = b.tools[index];
+        return (
+          other !== undefined &&
+          tool.status === other.status &&
+          tool.toolName === other.toolName &&
+          tool.label === other.label &&
+          tool.detail === other.detail &&
+          tool.metadata === other.metadata &&
+          tool.finishedAt === other.finishedAt
+        );
+      })
+    );
+  }
   if ((a.kind === "card" || a.kind === "custom") && a.kind === b.kind) {
     return sameRowContent(a, b);
   }
@@ -443,6 +506,8 @@ function areMeasuredTimelineItemPropsEqual(
     prev.onHeightChange === next.onHeightChange &&
     prev.expandedToolCallIds === next.expandedToolCallIds &&
     prev.onToggleToolCall === next.onToggleToolCall &&
+    prev.expandedToolGroupIds === next.expandedToolGroupIds &&
+    prev.onToggleToolGroup === next.onToggleToolGroup &&
     prev.onViewFileInDiff === next.onViewFileInDiff &&
     prev.onOpenTurnChange === next.onOpenTurnChange &&
     prev.sourceMessageIndex === next.sourceMessageIndex &&
@@ -452,7 +517,8 @@ function areMeasuredTimelineItemPropsEqual(
     prev.workspacePath === next.workspacePath &&
     prev.annotationMarkers === next.annotationMarkers &&
     prev.onOpenAnnotation === next.onOpenAnnotation &&
-    prev.scheduledOrigin?.taskId === next.scheduledOrigin?.taskId
+    prev.scheduledOrigin?.taskId === next.scheduledOrigin?.taskId &&
+    prev.isRead === next.isRead
   );
 }
 
