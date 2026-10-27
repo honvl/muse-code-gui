@@ -35,9 +35,11 @@ Electron harness, split into lanes:
 - `live` — exercises live agent runs; needs working `pi` provider auth locally.
 - `native` — foreground/OS-integration behaviors (open folder, paste, attachments).
 
+Run the smallest lane or single spec/filter that matches the change. Avoid full suites by default:
+
 ```bash
 pnpm test                                        # each workspace's tests (desktop: core lane)
-pnpm --filter @pi-gui/desktop run test:e2e:all   # core + live + native
+pnpm --filter @pi-gui/desktop run test:e2e:all   # core + live + native; pre-merge or on request only
 ```
 
 macOS is the source of truth for desktop UI verification. Linux is supported for
