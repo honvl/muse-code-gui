@@ -15,6 +15,7 @@ import type {
 } from "@pi-gui/session-driver/types";
 import type { ClipboardImageRead } from "./composer-attachments";
 import type { SessionRef } from "@pi-gui/session-driver/types";
+import type { BackgroundTaskOutput, BackgroundTaskSnapshot } from "@pi-gui/pi-sdk-driver";
 import type { SaveTaskWorkbenchTemplateInput, TaskWorkbenchTemplate } from "./workbench";
 import type {
   TurnChangesInput,
@@ -151,6 +152,7 @@ export const desktopIpc = {
   deleteScheduledTask: "pi-gui:delete-scheduled-task",
   beginScheduledTaskInterview: "pi-gui:begin-scheduled-task-interview",
   cancelCurrentRun: "pi-gui:cancel-current-run",
+  dismissSuggestedNextPrompt: "pi-gui:dismiss-suggested-next-prompt",
   setActiveView: "pi-gui:set-active-view",
   setSidebarCollapsed: "pi-gui:set-sidebar-collapsed",
   setThreadGrouping: "pi-gui:set-thread-grouping",
@@ -179,6 +181,7 @@ export const desktopIpc = {
   setCodemodeAlwaysOn: "pi-gui:set-codemode-always-on",
   respondToHostUiRequest: "pi-gui:respond-to-host-ui-request",
   setNotificationPreferences: "pi-gui:set-notification-preferences",
+  setExtensionPackEnabled: "pi-gui:set-extension-pack-enabled",
   setIntegratedTerminalShell: "pi-gui:set-integrated-terminal-shell",
   setEnableTransparency: "pi-gui:set-enable-transparency",
   terminalEnsurePanel: "pi-gui:terminal-ensure-panel",
@@ -211,6 +214,9 @@ export const desktopIpc = {
   flushPendingComposerDraft: "pi-gui:flush-pending-composer-draft",
   pendingComposerDraftFlushed: "pi-gui:pending-composer-draft-flushed",
   submitComposer: "pi-gui:submit-composer",
+  listBackgroundTasks: "pi-gui:list-background-tasks",
+  stopBackgroundTask: "pi-gui:stop-background-task",
+  readBackgroundTask: "pi-gui:read-background-task",
   getSessionTree: "pi-gui:get-session-tree",
   navigateSessionTree: "pi-gui:navigate-session-tree",
   toggleWindowMaximize: "pi-gui:toggle-window-maximize",
@@ -733,6 +739,18 @@ export interface PiDesktopApi {
   deleteScheduledTask(id: string): Promise<DesktopAppState>;
   beginScheduledTaskInterview(): Promise<DesktopAppState>;
   cancelCurrentRun(): Promise<DesktopAppState>;
+  listBackgroundTasks(target: WorkspaceSessionTarget): Promise<readonly BackgroundTaskSnapshot[]>;
+  stopBackgroundTask(
+    target: WorkspaceSessionTarget,
+    taskId: string,
+  ): Promise<readonly BackgroundTaskSnapshot[]>;
+  readBackgroundTask(
+    target: WorkspaceSessionTarget,
+    taskId: string,
+    offset?: number,
+    limit?: number,
+  ): Promise<BackgroundTaskOutput>;
+  dismissSuggestedNextPrompt(): Promise<DesktopAppState>;
   setActiveView(view: AppView): Promise<DesktopAppState>;
   setSidebarCollapsed(collapsed: boolean): Promise<DesktopAppState>;
   setThreadGrouping(grouping: ThreadGrouping): Promise<DesktopAppState>;
@@ -802,6 +820,7 @@ export interface PiDesktopApi {
   setNotificationPreferences(
     preferences: Partial<NotificationPreferences>,
   ): Promise<DesktopAppState>;
+  setExtensionPackEnabled(enabled: boolean): Promise<DesktopAppState>;
   setIntegratedTerminalShell(shell: string): Promise<DesktopAppState>;
   setEnableTransparency(enabled: boolean): Promise<DesktopAppState>;
   setThemePresetId(presetId: ThemePresetId): Promise<DesktopAppState>;

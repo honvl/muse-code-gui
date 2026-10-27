@@ -15,9 +15,16 @@ export const readThreadAction = "pi_gui_read_thread";
 export const sendMessageToThreadToolName = "send_message_to_thread";
 export const sendMessageToThreadAction = "pi_gui_send_message_to_thread";
 
+export type OrchestrationChildMode = "scout" | "worker";
+
+/** Mirrors MAX_CHILD_DEPTH in pi-sdk-driver child isolation; kept local to avoid a runtime cross-package import. */
+export const ORCHESTRATION_MAX_CHILD_DEPTH = 3;
+
 export interface CreateChildThreadToolDetails {
   readonly action: typeof createChildThreadAction;
   readonly prompt: string;
+  readonly mode?: OrchestrationChildMode;
+  readonly depth?: number;
   readonly childThreadId?: string;
   readonly childWorkspaceId?: string;
   readonly childSessionId?: string;
@@ -81,7 +88,11 @@ export interface SendMessageToThreadToolDetails {
 export interface OrchestrationRuntimeBridge {
   readonly createChildThread: (
     ctx: ExtensionContext,
-    input: { readonly prompt: string; readonly toolCallId: string },
+    input: {
+      readonly prompt: string;
+      readonly toolCallId: string;
+      readonly mode?: OrchestrationChildMode;
+    },
   ) => Promise<AgentToolResult<CreateChildThreadToolDetails>>;
   readonly listThreads: (ctx: ExtensionContext) => Promise<AgentToolResult<ListThreadsToolDetails>>;
   readonly readThread: (
@@ -107,11 +118,15 @@ function createCreateChildThreadTool(
     name: createChildThreadToolName,
     label: "Create child thread",
     description:
-      "Start a separate pi-gui child thread for a delegated investigation or implementation task.",
-    promptSnippet: "create_child_thread: start a separate pi-gui child thread for delegated work.",
+      "Delegate an independent investigation or implementation task to a separate pi-gui child thread that runs in parallel. Child threads run on the workspace default model. Use mode scout for read-only investigations and worker when file or shell changes are required.",
+    promptSnippet:
+      "create_child_thread: delegate independent work to a separate pi-gui child thread running in parallel.",
     promptGuidelines: [
-      "Use create_child_thread when the user asks you to spin up, delegate to, or run a separate child thread.",
+      "When a task splits into independent parts (parallel investigations, independent implementations), spawn one child thread per part proactively instead of doing everything serially in this thread.",
+      "Prefer mode scout for searches, exploration, and reviews; it is read-only and cannot edit files or run shell commands. Use worker only when the child must change files or run commands.",
       "Keep the child prompt concrete and self-contained so the user can inspect the resulting thread.",
+      "Child threads are isolated: they cannot leave the workspace, write dotenv files, run destructive shell commands, or recurse past 3 levels. A scout thread cannot spawn a worker.",
+      "Prefer reading a child thread before summarizing its status back to the user.",
     ],
     parameters: {
       type: "object",
@@ -119,6 +134,12 @@ function createCreateChildThreadTool(
         prompt: {
           type: "string",
           description: "Concrete instructions for the child thread.",
+        },
+        mode: {
+          type: "string",
+          enum: ["scout", "worker"],
+          description:
+            'Isolation mode: "scout" is read-only (search and review), "worker" may edit files and run shell commands. Defaults to "worker".',
         },
       },
       required: ["prompt"],
@@ -128,7 +149,11 @@ function createCreateChildThreadTool(
       if (!prompt) {
         throw new Error("create_child_thread requires a non-empty prompt.");
       }
-      return bridge.createChildThread(ctx, { prompt, toolCallId });
+      return bridge.createChildThread(ctx, {
+        prompt,
+        toolCallId,
+        mode: createChildThreadModeFromParams(params),
+      });
     },
   };
 }
@@ -269,6 +294,21 @@ export function createChildThreadPromptFromParams(params: unknown): string | und
   }
   const prompt = typeof params.prompt === "string" ? params.prompt.trim() : "";
   return prompt || undefined;
+}
+
+export function createChildThreadModeFromParams(
+  params: unknown,
+): OrchestrationChildMode | undefined {
+  if (!isRecord(params)) return undefined;
+  return params.mode === "scout" || params.mode === "worker" ? params.mode : undefined;
+}
+
+export function createChildThreadModeFromToolOutput(
+  output: unknown,
+): OrchestrationChildMode | undefined {
+  if (!isRecord(output) || !isRecord(output.details)) return undefined;
+  if (output.details.action !== createChildThreadAction) return undefined;
+  return createChildThreadModeFromParams(output.details);
 }
 
 export function createChildThreadPromptFromToolOutput(output: unknown): string | undefined {

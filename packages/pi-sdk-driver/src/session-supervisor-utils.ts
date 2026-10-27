@@ -1,6 +1,7 @@
 import { basename } from "node:path";
 import {
   sessionEntryToContextMessages,
+  type ContextEditableContent,
   type CustomEntry,
   type SessionEntry,
   type SessionInfo,
@@ -30,6 +31,7 @@ import {
   parseExtensionAction,
 } from "@pi-gui/session-driver";
 import type { SessionQueuedMessage } from "@pi-gui/session-driver/types";
+import { isInvalidToolResult } from "./invalid-tool-call-guard.js";
 
 const FILE_ATTACHMENT_BLOCK_START = "<pi-gui-file-attachments>";
 const FILE_ATTACHMENT_BLOCK_END = "</pi-gui-file-attachments>";
@@ -232,6 +234,166 @@ export function toSessionErrorInfo(error: unknown, code: string): SessionErrorIn
   };
 }
 
+/**
+ * Omit poisoned tool-call history that strict providers (notably Meta via
+ * openai-responses) reject with `400 invalid_request_error` on every retry.
+ *
+ * Root cause seen in the wild: the model emits a `bash` toolCall with empty
+ * `arguments` ({}), pi records a `toolResult` with
+ * `Validation failed for tool "bash"`, and that pair stays in the branch.
+ * Meta validates history strictly, so every subsequent `Continue` re-sends
+ * the same invalid pair and fails persistently. Pi core auto-omits only
+ * retryable (5xx/overloaded) failures, so 400s never self-heal and the user
+ * must fork.
+ *
+ * This is model-context-only (via `appendContextEdit`), mirroring pi's own
+ * `_omitRecoveryAttempt`: the visible transcript still shows the original
+ * attempt, but the next provider request no longer includes it. Idempotent —
+ * already-omitted targets are skipped — so it is safe to run before every
+ * `session.prompt()`.
+ *
+ * Heuristics (deliberately narrow to avoid hiding real work):
+ * - a `toolResult` whose text starts with "Validation failed for tool" marks
+ *   its `toolCallId` as invalid, and both the assistant entry holding that
+ *   call and the error result are omitted (or the assistant entry is replaced
+ *   with its valid blocks when mixed with good calls);
+ * - a historical `bash` call with a missing/empty `command` is invalid even
+ *   without the validation text, since it can never execute successfully;
+ * - empty assistant `error` messages (the trailing 400s themselves) carry no
+ *   content and are omitted so they do not linger in the projection.
+ *
+ * Returns the number of `context_edit` entries appended.
+ */
+export function sanitizeInvalidToolCallHistory(
+  sessionManager: Pick<SessionManager, "getBranch" | "appendContextEdit">,
+): number {
+  const branch = sessionManager.getBranch();
+  const editedTargets = new Set<string>();
+  for (const entry of branch) {
+    if (entry.type === "context_edit" && typeof entry.targetId === "string") {
+      editedTargets.add(entry.targetId);
+    }
+  }
+
+  const assistantByToolCallId = new Map<string, string>();
+  const assistantContentById = new Map<string, readonly unknown[]>();
+  for (const entry of branch) {
+    if (entry.type !== "message") continue;
+    const message = entry.message as unknown as Record<string, unknown>;
+    if (!isRecord(message) || message.role !== "assistant") continue;
+    if (!Array.isArray(message.content)) continue;
+    assistantContentById.set(entry.id, message.content);
+    for (const block of message.content) {
+      if (isRecord(block) && block.type === "toolCall" && typeof block.id === "string") {
+        if (!assistantByToolCallId.has(block.id)) {
+          assistantByToolCallId.set(block.id, entry.id);
+        }
+      }
+    }
+  }
+
+  const invalidToolCallIds = new Set<string>();
+  const invalidToolResultIds = new Map<string, string>();
+  for (const entry of branch) {
+    if (entry.type !== "message") continue;
+    const message = entry.message as unknown as Record<string, unknown>;
+    if (!isRecord(message) || message.role !== "toolResult") continue;
+    const toolCallId = typeof message.toolCallId === "string" ? message.toolCallId : undefined;
+    if (!toolCallId) continue;
+    if (editedTargets.has(entry.id)) continue;
+    if (isInvalidToolResult(message)) {
+      invalidToolCallIds.add(toolCallId);
+      invalidToolResultIds.set(toolCallId, entry.id);
+    }
+  }
+
+  for (const [toolCallId, assistantId] of assistantByToolCallId) {
+    if (invalidToolCallIds.has(toolCallId) || editedTargets.has(assistantId)) continue;
+    const content = assistantContentById.get(assistantId);
+    if (!content) continue;
+    const block = content.find(
+      (part) => isRecord(part) && part.type === "toolCall" && part.id === toolCallId,
+    );
+    if (!isRecord(block) || block.name !== "bash") continue;
+    const args = block.arguments;
+    const command = isRecord(args) ? args.command : undefined;
+    if (typeof command === "string" && command.trim().length > 0) continue;
+    invalidToolCallIds.add(toolCallId);
+  }
+
+  if (invalidToolCallIds.size === 0) {
+    return omitEmptyAssistantErrors(branch, editedTargets, sessionManager);
+  }
+
+  const invalidByAssistant = new Map<string, Set<string>>();
+  for (const toolCallId of invalidToolCallIds) {
+    const assistantId = assistantByToolCallId.get(toolCallId);
+    if (!assistantId) continue;
+    let set = invalidByAssistant.get(assistantId);
+    if (!set) {
+      set = new Set<string>();
+      invalidByAssistant.set(assistantId, set);
+    }
+    set.add(toolCallId);
+  }
+
+  let edits = 0;
+  for (const [assistantId, invalidIds] of invalidByAssistant) {
+    if (editedTargets.has(assistantId)) continue;
+    const content = assistantContentById.get(assistantId);
+    if (!content) continue;
+    const filtered = content.filter(
+      (part) =>
+        !(isRecord(part) && part.type === "toolCall" && typeof part.id === "string" && invalidIds.has(part.id)),
+    );
+    if (filtered.length === content.length) continue;
+    if (filtered.length === 0) {
+      sessionManager.appendContextEdit(assistantId, null);
+    } else {
+      sessionManager.appendContextEdit(assistantId, {
+        content: filtered as unknown as ContextEditableContent,
+      });
+    }
+    editedTargets.add(assistantId);
+    edits += 1;
+  }
+
+  for (const toolCallId of invalidToolCallIds) {
+    const resultId = invalidToolResultIds.get(toolCallId);
+    if (!resultId || editedTargets.has(resultId)) continue;
+    sessionManager.appendContextEdit(resultId, null);
+    editedTargets.add(resultId);
+    edits += 1;
+  }
+
+  edits += omitEmptyAssistantErrors(branch, editedTargets, sessionManager);
+  return edits;
+}
+
+function omitEmptyAssistantErrors(
+  branch: readonly SessionEntry[],
+  editedTargets: Set<string>,
+  sessionManager: Pick<SessionManager, "appendContextEdit">,
+): number {
+  let edits = 0;
+  for (const entry of branch) {
+    if (entry.type !== "message") continue;
+    if (editedTargets.has(entry.id)) continue;
+    const message = entry.message as unknown as Record<string, unknown>;
+    if (!isRecord(message) || message.role !== "assistant") continue;
+    if (message.stopReason !== "error") continue;
+    const content = message.content;
+    const empty = Array.isArray(content)
+      ? content.length === 0
+      : content === undefined || content === null;
+    if (!empty) continue;
+    sessionManager.appendContextEdit(entry.id, null);
+    editedTargets.add(entry.id);
+    edits += 1;
+  }
+  return edits;
+}
+
 export function truncate(value: string, limit = 140): string {
   const normalized = value.replace(/\s+/g, " ").trim();
   if (normalized.length <= limit) {
@@ -353,14 +515,16 @@ function transcriptFromSources(
     }
 
     const text = messageText(message);
+    const thinking = role === "assistant" ? messageThinking(message) : "";
     const attachments = messageAttachments(message);
-    if (text || attachments.length > 0) {
+    if (text || thinking || attachments.length > 0) {
       transcript.push({
         kind: "message",
         id: typeof message.id === "string" ? message.id : `${role}-${index}`,
         ...(typeof message.id === "string" ? { sourceMessageId: message.id } : {}),
         role,
         text,
+        ...(thinking ? { thinking } : {}),
         ...(attachments.length > 0 ? { attachments } : {}),
         createdAt,
       });
@@ -639,7 +803,7 @@ function applyToolResult(
   const index = toolIndexByCallId.get(callId);
   const existing = index !== undefined ? transcript[index] : undefined;
   if (index !== undefined && existing?.kind === "tool") {
-    transcript[index] = { ...existing, status, output };
+    transcript[index] = { ...existing, status, output, finishedAt: createdAt };
     return;
   }
 
@@ -651,11 +815,27 @@ function applyToolResult(
     status,
     output,
     createdAt,
+    finishedAt: createdAt,
   });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+export function messageThinking(message: Record<string, unknown>): string {
+  if (message.role !== "assistant" || !Array.isArray(message.content)) return "";
+  return message.content
+    .filter(
+      (part) =>
+        isRecord(part) &&
+        part.type === "thinking" &&
+        typeof part.thinking === "string" &&
+        part.redacted !== true,
+    )
+    .map((part) => (part as { thinking: string }).thinking)
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 export function messageText(message: Record<string, unknown>): string {

@@ -4,6 +4,8 @@ import {
   ModelRegistry,
   ModelRuntime,
   SessionManager,
+  estimateTokens,
+  shouldCompact,
   type AgentSessionRuntime,
   type AgentSession,
   type AgentSessionEvent,
@@ -60,6 +62,8 @@ import {
   type BuiltinExtensionEnabled,
 } from "./builtin-extensions.js";
 import { piAddonExtensions } from "./pi-addon-extensions.js";
+import { BackgroundTaskStore } from "./background-tasks.js";
+import { createBackgroundTaskRuntimeExtension } from "./background-task-extension.js";
 import {
   acquireLeaseFile,
   currentLeaseIdentity,
@@ -99,6 +103,7 @@ import {
   nowIso,
   persistedToolOutput,
   previewFromSessionInfo,
+  sanitizeInvalidToolCallHistory,
   shouldPersistSnapshotForAgentEvent,
   shouldTailFromDisk,
   singleFlight,
@@ -115,6 +120,8 @@ import {
   type RunOutcome,
 } from "./session-supervisor-utils.js";
 import { forcePersistPiSession } from "./compat/pi-session-persistence.js";
+import { createChildIsolationExtension, type ChildIsolationInfo } from "./child-isolation.js";
+import { createInvalidToolCallGuardExtension } from "./invalid-tool-call-guard.js";
 import { createTurnCaptureExtension } from "./turn-capture.js";
 import { createTranscriptIdentityExtension } from "./transcript-identity.js";
 import { createPlanLimitsExtension, readSessionUsage } from "./session-usage.js";
@@ -207,6 +214,8 @@ interface ManagedSessionRecord {
   preview: string | undefined;
   config: SessionConfig | undefined;
   runningRunId: string | undefined;
+  /** Start of this model turn (or end of its preceding tool batch) for first-text latency. */
+  assistantRequestStartedAt?: string | undefined;
   cancellationRequested: boolean;
   /** A prompt is in Pi's pre-run steps (input handlers, auth, before_agent_start). */
   promptStarting: boolean;
@@ -303,8 +312,12 @@ export class SessionSupervisor {
   private readonly onTurnCaptureBoundary: PiSdkDriverOptions["onTurnCaptureBoundary"];
   private readonly turnCaptureTimeoutMs: number | undefined;
   private readonly records = new Map<string, ManagedSessionRecord>();
+  /** Detached shell processes started by the bash_background tool (app lifetime). */
+  private readonly backgroundTasks = new BackgroundTaskStore();
   /** Latest plan limits a provider reported, shared by every session on that provider. */
   private readonly planLimitsByProvider = new Map<string, SessionPlanLimits>();
+  /** Isolation enforced on orchestration child sessions, keyed by pi session id. */
+  private readonly childIsolations = new Map<string, ChildIsolationInfo>();
   private readonly ensureRecordInFlight = new Map<string, Promise<ManagedSessionRecord>>();
   /** Preserve invocation order so stale touches cannot undo a later rename or removal. */
   private readonly workspaceMutationQueues = new Map<WorkspaceId, Promise<void>>();
@@ -357,10 +370,34 @@ export class SessionSupervisor {
           ...this.piAddons,
           ...this.builtinExtensions,
           {
+            name: "pi-gui-background-tasks",
+            hidden: true,
+            factory: createBackgroundTaskRuntimeExtension(this.backgroundTasks, (ctx) => ({
+              workspaceId: workspace.workspaceId,
+              sessionId: ctx.sessionManager.getSessionId(),
+            })),
+          },
+          {
             name: "pi-gui-plan-limits",
             hidden: true,
             factory: createPlanLimitsExtension({
               onPlanLimits: (limits) => this.planLimitsByProvider.set(limits.provider, limits),
+            }),
+          },
+          {
+            name: "pi-gui-invalid-tool-call-guard",
+            hidden: true,
+            factory: createInvalidToolCallGuardExtension(),
+          },
+          {
+            name: "pi-gui-child-isolation",
+            hidden: true,
+            factory: createChildIsolationExtension((ctx) => {
+              try {
+                return this.childIsolations.get(ctx.sessionManager.getSessionId());
+              } catch {
+                return undefined;
+              }
             }),
           },
           {
@@ -691,6 +728,52 @@ export class SessionSupervisor {
   async getSessionCommands(sessionRef: SessionRef): Promise<readonly RuntimeCommandRecord[]> {
     const record = await this.ensureRecord(sessionRef);
     return record.sessionCommands;
+  }
+
+  /** Register OpenCode-style isolation for an orchestration child session. */
+  setChildIsolation(sessionRef: SessionRef, info: ChildIsolationInfo): void {
+    this.childIsolations.set(sessionRef.sessionId, info);
+  }
+
+  /** Background bash tasks for one thread (newest last). Includes finished tasks. */
+  async listBackgroundTasks(sessionRef: SessionRef) {
+    await this.ensureRecord(sessionRef);
+    return this.backgroundTasks.list({
+      workspaceId: sessionRef.workspaceId,
+      sessionId: sessionRef.sessionId,
+    });
+  }
+
+  /** Stop a running background bash task in this thread. */
+  async stopBackgroundTask(sessionRef: SessionRef, taskId: string) {
+    const record = await this.ensureRecord(sessionRef);
+    const snapshot = this.backgroundTasks.get(taskId);
+    if (!snapshot) {
+      throw new Error(`Unknown background task: ${taskId}.`);
+    }
+    if (snapshot.workspaceId !== record.workspace.workspaceId || snapshot.sessionId !== record.ref.sessionId) {
+      throw new Error(`Background task ${taskId} does not belong to this thread.`);
+    }
+    return this.backgroundTasks.stop(taskId);
+  }
+
+  /** Read a background task's combined output window. */
+  async readBackgroundTask(
+    sessionRef: SessionRef,
+    taskId: string,
+    options?: { readonly offset?: number; readonly limit?: number },
+  ) {
+    await this.ensureRecord(sessionRef);
+    const snapshot = this.backgroundTasks.get(taskId);
+    if (!snapshot) {
+      throw new Error(`Unknown background task: ${taskId}.`);
+    }
+    return this.backgroundTasks.read(taskId, options);
+  }
+
+  /** Best-effort stop of every running background task (app shutdown). */
+  shutdownBackgroundTasks(): void {
+    this.backgroundTasks.shutdown();
   }
 
   async respondToHostUiRequest(sessionRef: SessionRef, response: HostUiResponse): Promise<void> {
@@ -1026,6 +1109,36 @@ export class SessionSupervisor {
       throw new Error(`${input.text.trim().split(/\s/, 1)[0]} is no longer an extension command`);
     }
 
+    // Drop poisoned tool-call history before the provider sees it. A model slip
+    // (notably `bash` with `{}`) leaves a validation-error toolResult in the
+    // branch; strict providers such as Meta reject every later request that
+    // replays it with `400 invalid_request_error`, so `Continue` can never
+    // succeed without a fork. This mirrors pi's own retry omission but targets
+    // the cause (the invalid call + its result) rather than the trailing empty
+    // error, and it is model-context-only: the visible transcript keeps the
+    // original attempt. Idempotent, so safe before every prompt.
+    try {
+      const repaired = sanitizeInvalidToolCallHistory(session.sessionManager);
+      if (repaired > 0) {
+        session.refreshContext();
+        forcePersistPiSession(session.sessionManager);
+      }
+    } catch (error) {
+      console.warn(
+        `[pi-sdk-driver] could not sanitize invalid tool calls for ${sessionKey(record.ref)}:`,
+        error,
+      );
+    }
+
+    // The upcoming request can already exceed the model's context window
+    // (this thread is at ~1.8M estimated tokens against a 1M window). Meta
+    // answers those with a generic 400 that pi doesn't recognize as
+    // overflow, so no auto-compaction fires and every Continue fails the
+    // same way. Compact the same thread first instead of forcing a fork.
+    if (!isQueuedMessage && !isExtensionCommand) {
+      await this.compactBeforePromptIfNeeded(record, session);
+    }
+
     try {
       const images = input.attachments?.flatMap(
         (attachment: NonNullable<SessionMessageInput["attachments"]>[number]) =>
@@ -1134,6 +1247,64 @@ export class SessionSupervisor {
       });
       await this.emit(record, sessionUpdatedEvent(record));
       throw error;
+    }
+  }
+
+  /**
+   * Compact the live thread when the upcoming request already exceeds the
+   * model's context window. Provider usage accounting can under-report the
+   * real payload (this thread reported ~900k input tokens while the
+   * projection was ~1.8M against a 1M window), so pi's own threshold check
+   * never fires and Meta answers every request with a generic 400 that pi
+   * doesn't recognize as overflow. Estimating from the projection — the
+   * ground truth of what will be sent — and compacting the same thread
+   * keeps the conversation going without a fork. Throws an actionable error
+   * when the thread is still over the window after compaction instead of
+   * letting the provider fail cryptically.
+   */
+  private async compactBeforePromptIfNeeded(
+    record: ManagedSessionRecord,
+    session: AgentSession,
+  ): Promise<void> {
+    const model = session.model;
+    if (!model) return;
+    const stats = session.getSessionStats();
+    const contextWindow =
+      stats.contextUsage?.contextWindow ??
+      (model as unknown as { contextWindow?: number }).contextWindow ??
+      0;
+    if (!contextWindow) return;
+    const settings = session.settingsManager.getCompactionSettings(model);
+    if (!settings.enabled) return;
+
+    const estimateProjectionTokens = (): number => {
+      const projection = session.sessionManager.buildSessionProjection();
+      let tokens = 0;
+      for (const message of projection.messages) tokens += estimateTokens(message);
+      return tokens;
+    };
+
+    if (!shouldCompact(estimateProjectionTokens(), contextWindow, settings)) return;
+
+    try {
+      await session.compact();
+    } catch (error) {
+      console.warn(
+        `[pi-sdk-driver] pre-prompt compaction failed for ${sessionKey(record.ref)}:`,
+        error,
+      );
+    }
+    session.refreshContext();
+    forcePersistPiSession(session.sessionManager);
+    record.config = deriveSessionConfig(session.sessionManager);
+
+    const tokens = estimateProjectionTokens();
+    if (tokens >= contextWindow) {
+      throw new Error(
+        `Thread context is still ~${tokens.toLocaleString()} tokens after compaction, ` +
+          `over the ${contextWindow.toLocaleString()}-token window. ` +
+          `Start a new thread or fork from an earlier message to continue.`,
+      );
     }
   }
 
@@ -2606,10 +2777,21 @@ export class SessionSupervisor {
         record.status = "running";
         return [sessionUpdatedEvent(record)];
       case "turn_start":
+        record.assistantRequestStartedAt = timestamp;
         record.status = "running";
         return [sessionUpdatedEvent(record)];
       case "message_start":
       case "message_end":
+        if (event.type === "message_start" && event.message.role === "assistant") {
+          return toDriverEvents(
+            {
+              type: "assistantMessageStarted" as const,
+              sessionRef: record.ref,
+              timestamp: record.assistantRequestStartedAt ?? timestamp,
+            },
+            record,
+          );
+        }
         // pi emits both for a user message; only the start may match, or a second queued
         // message with the same text would count as started too.
         if (event.type === "message_start" && event.message.role === "user") {
@@ -2635,6 +2817,7 @@ export class SessionSupervisor {
           this.appendCustomMessageItem(record, event.message);
         }
         if (event.type === "message_end" && event.message.role === "assistant") {
+          record.assistantRequestStartedAt = undefined;
           return toDriverEvents(
             { type: "assistantMessageEnded", sessionRef: record.ref, timestamp },
             record,
@@ -2643,6 +2826,22 @@ export class SessionSupervisor {
         return [sessionUpdatedEvent(record)];
       case "message_update":
         this.updatePreviewFromMessage(record, event.message);
+        if (
+          event.message.role === "assistant" &&
+          event.assistantMessageEvent.type === "thinking_delta"
+        ) {
+          const block = event.message.content[event.assistantMessageEvent.contentIndex];
+          if (block?.type === "thinking" && block.redacted) return [sessionUpdatedEvent(record)];
+          return toDriverEvents(
+            {
+              type: "assistantThinkingDelta" as const,
+              sessionRef: record.ref,
+              timestamp,
+              text: event.assistantMessageEvent.delta ?? "",
+            },
+            record,
+          );
+        }
         if (
           event.message.role === "assistant" &&
           event.assistantMessageEvent.type === "text_delta"
@@ -2684,6 +2883,7 @@ export class SessionSupervisor {
           record,
         );
       case "tool_execution_end":
+        record.assistantRequestStartedAt = timestamp;
         return toDriverEvents(
           {
             type: "toolFinished" as const,

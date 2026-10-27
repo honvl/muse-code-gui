@@ -100,7 +100,7 @@ function expectOptionalNonEmptyString(value: unknown, name: string): string | un
   return value === undefined ? undefined : expectNonEmptyString(value, name);
 }
 
-function expectOptionalNonNegativeInteger(value: unknown, name: string): number | undefined {
+export function expectOptionalNonNegativeInteger(value: unknown, name: string): number | undefined {
   if (value === undefined) {
     return undefined;
   }

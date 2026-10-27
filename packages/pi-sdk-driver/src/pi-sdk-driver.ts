@@ -23,6 +23,7 @@ import type {
   Unsubscribe,
   WorkspaceRef,
 } from "@pi-gui/session-driver";
+import type { ChildIsolationInfo } from "./child-isolation.js";
 import {
   SessionSupervisor,
   type PiSdkDriverOptions,
@@ -93,6 +94,10 @@ export class PiSdkDriver implements SessionDriver {
     return this.supervisor.cancelCurrentRun(sessionRef);
   }
 
+  setChildIsolation(sessionRef: SessionRef, info: ChildIsolationInfo): void {
+    this.supervisor.setChildIsolation(sessionRef, info);
+  }
+
   setSessionModel(sessionRef: SessionRef, selection: SessionModelSelection): Promise<void> {
     return this.supervisor.setSessionModel(sessionRef, selection);
   }
@@ -132,6 +137,26 @@ export class PiSdkDriver implements SessionDriver {
 
   getSessionCommands(sessionRef: SessionRef) {
     return this.supervisor.getSessionCommands(sessionRef);
+  }
+
+  listBackgroundTasks(sessionRef: SessionRef) {
+    return this.supervisor.listBackgroundTasks(sessionRef);
+  }
+
+  stopBackgroundTask(sessionRef: SessionRef, taskId: string) {
+    return this.supervisor.stopBackgroundTask(sessionRef, taskId);
+  }
+
+  readBackgroundTask(
+    sessionRef: SessionRef,
+    taskId: string,
+    options?: { readonly offset?: number; readonly limit?: number },
+  ) {
+    return this.supervisor.readBackgroundTask(sessionRef, taskId, options);
+  }
+
+  shutdownBackgroundTasks(): void {
+    this.supervisor.shutdownBackgroundTasks();
   }
 
   respondToHostUiRequest(sessionRef: SessionRef, response: HostUiResponse): Promise<void> {

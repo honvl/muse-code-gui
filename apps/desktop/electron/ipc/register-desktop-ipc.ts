@@ -45,6 +45,7 @@ import {
   expectNonEmptyString,
   expectNotificationPreferences,
   expectOptionalDeliverOptions,
+  expectOptionalNonNegativeInteger,
   expectOptionalString,
   expectOptionalThinkingLevel,
   expectRemoveWorktreeInput,
@@ -107,6 +108,10 @@ type ConversationOwner = Pick<
   | "startThread"
   | "forkThread"
   | "cancelCurrentRun"
+  | "dismissSuggestedNextPrompt"
+  | "listBackgroundTasks"
+  | "stopBackgroundTask"
+  | "readBackgroundTask"
   | "addComposerAttachments"
   | "removeComposerAttachment"
   | "editQueuedComposerMessage"
@@ -161,6 +166,7 @@ type SettingsOwner = Pick<
   | "setMcpServerEnabled"
   | "setCodemodeAlwaysOn"
   | "setNotificationPreferences"
+  | "setExtensionPackEnabled"
   | "setIntegratedTerminalShell"
   | "setEnableTransparency"
   | "getSkillFilePath"
@@ -643,6 +649,9 @@ export function registerDesktopIpc({
       owners.settings.setNotificationPreferences(expectNotificationPreferences(rawPreferences)),
     ),
   );
+  ipcMain.handle(desktopIpc.setExtensionPackEnabled, (event, rawEnabled: unknown) =>
+    run(event, () => owners.settings.setExtensionPackEnabled(expectBoolean(rawEnabled, "enabled"))),
+  );
   ipcMain.handle(desktopIpc.setIntegratedTerminalShell, (event, rawShellPath: unknown) =>
     run(event, () =>
       owners.settings.setIntegratedTerminalShell(expectString(rawShellPath, "shellPath")),
@@ -749,6 +758,37 @@ export function registerDesktopIpc({
     // A long slash command can still own the serialized action queue.
     // Stop must bypass that queue and cancel the captured target immediately.
     return immediate(event, () => owners.conversation.cancelCurrentRun(target));
+  });
+  ipcMain.handle(desktopIpc.listBackgroundTasks, (event, rawTarget: unknown) => {
+    windows.windowForSender(event.sender);
+    return owners.conversation.listBackgroundTasks(expectSessionTarget(rawTarget));
+  });
+  ipcMain.handle(desktopIpc.stopBackgroundTask, (event, rawTarget: unknown, rawTaskId: unknown) => {
+    windows.windowForSender(event.sender);
+    return owners.conversation.stopBackgroundTask(
+      expectSessionTarget(rawTarget),
+      expectNonEmptyString(rawTaskId, "taskId"),
+    );
+  });
+  ipcMain.handle(
+    desktopIpc.readBackgroundTask,
+    (event, rawTarget: unknown, rawTaskId: unknown, rawOffset: unknown, rawLimit: unknown) => {
+      windows.windowForSender(event.sender);
+      const offset = expectOptionalNonNegativeInteger(rawOffset, "offset");
+      const limit = expectOptionalNonNegativeInteger(rawLimit, "limit");
+      return owners.conversation.readBackgroundTask(
+        expectSessionTarget(rawTarget),
+        expectNonEmptyString(rawTaskId, "taskId"),
+        {
+          ...(offset !== undefined ? { offset } : {}),
+          ...(limit !== undefined ? { limit } : {}),
+        },
+      );
+    },
+  );
+  ipcMain.handle(desktopIpc.dismissSuggestedNextPrompt, (event) => {
+    const target = windows.targetForSender(event.sender);
+    return immediate(event, () => owners.conversation.dismissSuggestedNextPrompt(target));
   });
   ipcMain.handle(desktopIpc.pickComposerAttachments, (event) =>
     runCatchingLimits(event, async () => {

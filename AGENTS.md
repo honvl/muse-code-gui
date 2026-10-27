@@ -5,10 +5,11 @@ These rules apply for the full session.
 ## Workflow
 
 - Define success criteria before coding; if unclear, stop and clarify.
-- For non-trivial work, plan verification before editing: name the affected user flow, observable result, failure cases, and existing commands that prove them. Start with the checked-in [desktop verification skill](.agents/skills/verify-pi-gui/SKILL.md) for desktop flows and [baseline checks](docs/ci-baseline.md) for repository checks.
+- For non-trivial work, plan verification before editing: name the affected user flow, observable result, failure cases, and smallest existing command that proves them. Start with the checked-in [desktop verification skill](.agents/skills/verify-pi-gui/SKILL.md) for desktop flows and [baseline checks](docs/ci-baseline.md) for repository checks. Do not run tests to discover what to run.
+- Run fewer and only necessary tests by default: no test commands until the plan is stated; prefer one scoped lane/spec/filter over full suites. Full suites (for example `pnpm check`, `pnpm test:baseline`, `pnpm test:guards`, `test:e2e:all`, unfiltered `swift test`, `xcodebuild test`, or any whole-repo run) are opt-in only with justification, pre-merge, or explicit user request. CI already covers the full baseline.
 - Do not create or switch to new branches to start work unless the user explicitly asks; respect the current branch or worktree as intentional.
 - Commit in small focused checkpoints; don’t batch unrelated changes.
-- Before closing non-trivial implementation work, review the diff for unnecessary abstractions, duplicate paths, unsafe escapes, and obsolete code; simplify within scope and rerun affected checks.
+- Before closing non-trivial implementation work, review the diff for unnecessary abstractions, duplicate paths, unsafe escapes, and obsolete code; simplify within scope and run only the checks named in the plan.
 
 ## Product
 

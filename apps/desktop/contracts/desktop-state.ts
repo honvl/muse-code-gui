@@ -113,6 +113,8 @@ export interface SessionRecord {
   readonly runningSince?: string;
   readonly hasUnseenUpdate: boolean;
   readonly config?: SessionConfig;
+  /** Grey ghost-text follow-up shown in the composer placeholder after a run. Tab accepts it. */
+  readonly suggestedNextPrompt?: string;
 }
 
 export type OrchestrationChildThreadStatus =
@@ -182,6 +184,8 @@ export interface OrchestrationChildTranscriptMessage {
   readonly createdAt: string;
 }
 
+export type OrchestrationChildMode = "scout" | "worker";
+
 export interface OrchestrationChildThread {
   readonly id: string;
   readonly sourceToolCallId?: string;
@@ -191,6 +195,8 @@ export interface OrchestrationChildThread {
   readonly childSessionId: string;
   readonly title: string;
   readonly goal: string;
+  readonly mode?: OrchestrationChildMode;
+  readonly depth?: number;
   readonly status: OrchestrationChildThreadStatus;
   readonly latestTranscript: string;
   readonly transcript: readonly OrchestrationChildTranscriptMessage[];
@@ -364,6 +370,8 @@ export interface DesktopAppState {
   readonly orchestrationChildren: readonly OrchestrationChildThread[];
   readonly scheduledTasks: readonly ScheduledTaskRecord[];
   readonly notificationPreferences: NotificationPreferences;
+  /** Whether the Muse Code GUI extension pack is ensured into pi's global setup on startup. */
+  readonly extensionPackEnabled: boolean;
   readonly integratedTerminalShell: string;
   readonly lastViewedAtBySession: Readonly<Record<string, string>>;
   readonly lastInteractedAtBySession: Readonly<Record<string, string>>;
@@ -420,6 +428,7 @@ export function createEmptyDesktopAppState(): DesktopAppState {
       backgroundFailure: true,
       attentionNeeded: true,
     },
+    extensionPackEnabled: true,
     integratedTerminalShell: "",
     lastViewedAtBySession: {},
     lastInteractedAtBySession: {},

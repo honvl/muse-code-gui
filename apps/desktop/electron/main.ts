@@ -12,8 +12,9 @@ import {
   type MenuItemConstructorOptions,
   type MessageBoxOptions,
 } from "electron";
-import { isValidHttpBaseUrl } from "@pi-gui/pi-sdk-driver";
+import { ensureExtensionPack, isValidHttpBaseUrl } from "@pi-gui/pi-sdk-driver";
 import { createRequire } from "node:module";
+import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import type {
   AgentToolResult,
@@ -114,6 +115,53 @@ function requestApplicationRelaunch(): void {
   applicationRelaunchRequested = true;
   app.relaunch();
   app.quit();
+}
+
+/**
+ * Muse Code GUI extension pack: ensured into pi's global setup on startup.
+ * Additive-only (missing entries appended, user entries untouched), runs once
+ * per launch after the store loads so the Settings toggle is honored.
+ * `MUSE_CODE_GUI_PACK=0` skips it entirely (tests, minimal installs).
+ */
+function resolvePackAgentDir(): string {
+  const override = process.env.PI_CODING_AGENT_DIR?.trim();
+  if (override) {
+    return override.startsWith("~") ? path.join(homedir(), override.slice(1)) : override;
+  }
+  return path.join(homedir(), ".pi", "agent");
+}
+
+function resolvePackShippedRoot(): string {
+  // Packaged app: extraResources `pack/` (mirrors the repo layout, so the
+  // same relative extension/skill paths resolve in dev and prod).
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, "pack");
+  }
+  return path.resolve(app.getAppPath(), "..", "..");
+}
+
+async function ensureExtensionPackIfEnabled(store: DesktopAppStore): Promise<void> {
+  try {
+    if (process.env.MUSE_CODE_GUI_PACK === "0") return;
+    if (store.snapshot().extensionPackEnabled === false) return;
+    const shippedRoot = resolvePackShippedRoot();
+    const result = ensureExtensionPack({
+      agentDir: resolvePackAgentDir(),
+      shippedRoot,
+      skillSourceDir: path.join(shippedRoot, "skills", "chrome"),
+    });
+    const added = [
+      ...result.packagesAdded.map((source) => `package:${source}`),
+      ...result.extensionsAdded.map((entry) => `extension:${entry}`),
+      ...result.skill.copied.map((file) => `skill:chrome/${file}`),
+      ...result.mcpServersAdded.map((name) => `mcp:${name}`),
+    ];
+    if (added.length > 0) {
+      console.info(`[muse-code-gui] extension pack ensured: ${added.join(", ")}`);
+    }
+  } catch (error) {
+    console.warn("[muse-code-gui] extension pack ensure failed (continuing):", error);
+  }
 }
 
 interface OrchestrationRuntimeToolTestInput {
@@ -1051,6 +1099,7 @@ app
       },
     });
     await store.initialize();
+    await ensureExtensionPackIfEnabled(store);
     themeManager.setMode(store.snapshot().themeMode);
     integratedTerminalShell = (await store.getState()).integratedTerminalShell;
     nativeTheme.on("updated", refreshWindowBackgrounds);
@@ -1284,6 +1333,11 @@ app.on("before-quit", (event) => {
   stopPruningTerminals = undefined;
   terminalService?.dispose();
   terminalService = undefined;
+  try {
+    store?.shutdownBackgroundTasks();
+  } catch (error) {
+    console.error("[main] shutdownBackgroundTasks failed:", error);
+  }
   if (quitFlush === "done" || !store) {
     return;
   }

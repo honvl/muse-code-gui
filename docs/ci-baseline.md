@@ -7,7 +7,7 @@ it does not change those boundaries.
 
 ## Shared baseline
 
-Run `pnpm check` locally and in the existing CI typecheck job. It runs:
+CI runs the full `pnpm check` in the existing CI typecheck job. Locally, prefer the smallest lane that matches the change and expand only with justification; run the full `pnpm check` pre-merge or when explicitly requested. It runs:
 
 1. `pnpm format:check`: pinned Prettier checks source, tests, scripts, styles,
    configuration, and Markdown. `pnpm format` fixes formatting locally. Generated

@@ -18,11 +18,40 @@ export {
   RuntimeSupervisor,
 } from "./runtime-supervisor.js";
 export type { PiSdkDriverOptions, SyncWorkspaceResult } from "./session-supervisor.js";
+export { buildSuggestionExcerpt, SUGGESTION_SYSTEM_PROMPT } from "./suggestion-prompt.js";
+export type { SuggestionSourceMessage } from "./suggestion-prompt.js";
 export { SessionSupervisor } from "./session-supervisor.js";
 export { SessionLeasedError } from "./session-lease.js";
 export type { LeaseInfo } from "./session-lease.js";
 export { RUNTIME_SCHEMA_VERSION } from "./session-schema.js";
 export type { GenerateThreadTitleOptions } from "./thread-title-generator.js";
+export {
+  MAX_CHILD_DEPTH,
+  SCOUT_BLOCKED_TOOLS,
+  decideChildToolCall,
+  extractChildToolArg,
+  isDeniedBashCommand,
+  isDeniedEnvWrite,
+  isOutsideWorkspace,
+  matchIsolationPattern,
+  requestedChildMode,
+} from "./child-isolation.js";
+export type { ChildIsolationInfo, ChildThreadMode, ChildToolDecision } from "./child-isolation.js";
+export {
+  PACK_EXTENSION_RELATIVE_PATHS,
+  PACK_MCP_SERVERS,
+  PACK_PACKAGES,
+  PACK_SKILL_FILES,
+  PACK_SKILL_NAME,
+  ensureExtensionPack,
+  installPackSkill,
+  mergePackExtensions,
+  mergePackMcpServers,
+  mergePackPackages,
+  missingPackExtensions,
+  missingPackPackages,
+  resolvePackExtensionPaths,
+} from "./extension-pack.js";
 export type {
   PiDesktopExtensionObserver,
   PiDesktopExtensionRuntime,
@@ -33,3 +62,8 @@ export type {
   McpServerSummary,
   NewMcpServer,
 } from "./mcp-config.js";
+export type {
+  BackgroundTaskOutput,
+  BackgroundTaskSnapshot,
+  BackgroundTaskStatus,
+} from "./background-tasks.js";

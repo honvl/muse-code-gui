@@ -8,18 +8,22 @@ interface SettingsGeneralSectionProps {
   readonly runtime?: RuntimeSnapshot;
   readonly modelSettingsScopeMode: ModelSettingsScopeMode;
   readonly integratedTerminalShell: string;
+  readonly extensionPackEnabled: boolean;
   readonly onSetModelSettingsScopeMode: (mode: ModelSettingsScopeMode) => void;
   readonly onSetIntegratedTerminalShell: (shellPath: string) => void;
   readonly onToggleSkillCommands: (enabled: boolean) => void;
+  readonly onSetExtensionPackEnabled: (enabled: boolean) => void;
 }
 
 export function SettingsGeneralSection({
   runtime,
   modelSettingsScopeMode,
   integratedTerminalShell,
+  extensionPackEnabled,
   onSetModelSettingsScopeMode,
   onSetIntegratedTerminalShell,
   onToggleSkillCommands,
+  onSetExtensionPackEnabled,
 }: SettingsGeneralSectionProps) {
   const [terminalShellDraft, setTerminalShellDraft] = useState(integratedTerminalShell);
 
@@ -58,6 +62,19 @@ export function SettingsGeneralSection({
             checked={runtime?.settings.enableSkillCommands ?? true}
             label="Enable skill slash commands"
             onChange={onToggleSkillCommands}
+          />
+        </SettingsRow>
+      </SettingsGroup>
+
+      <SettingsGroup title="Extension pack">
+        <SettingsRow
+          title="Muse Code GUI pack"
+          description="Keep computer use, memory, subagents, usage views and the chrome skill installed in pi's global setup. New entries are appended; your own entries are never removed."
+        >
+          <SettingsSwitch
+            checked={extensionPackEnabled}
+            label="Keep the extension pack installed"
+            onChange={onSetExtensionPackEnabled}
           />
         </SettingsRow>
       </SettingsGroup>
