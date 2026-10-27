@@ -40,7 +40,12 @@ await test("sanitize omits invalid bash toolCall pair but keeps valid sibling", 
     role: "toolResult",
     toolCallId: "call-bad",
     toolName: "bash",
-    content: [{ type: "text", text: 'Validation failed for tool "bash":\n  - command: must have required properties' }],
+    content: [
+      {
+        type: "text",
+        text: 'Validation failed for tool "bash":\n  - command: must have required properties',
+      },
+    ],
     isError: true,
     timestamp: Date.now(),
   });
@@ -96,4 +101,47 @@ await test("sanitize omits empty assistant error messages from 400s", () => {
   assert.ok(errorProjection);
   assert.equal(errorProjection.messages.length, 0);
   assert.ok(ids.length > 0);
+});
+
+await test("sanitize preserves successful tool output containing diagnostic phrases", () => {
+  const manager = SessionManager.inMemory();
+  manager.appendMessage({
+    ...assistantBase,
+    content: [{ type: "toolCall", id: "read-1", name: "read", arguments: { path: "guard.ts" } }],
+  });
+  manager.appendMessage({
+    role: "toolResult",
+    toolCallId: "read-1",
+    toolName: "read",
+    content: [
+      { type: "text", text: 'source: "output token limit" and "validation failed for tool"' },
+    ],
+    isError: false,
+    timestamp: Date.now(),
+  });
+  assert.equal(sanitizeInvalidToolCallHistory(manager), 0);
+  assert.match(JSON.stringify(manager.buildSessionProjection().messages), /read-1/);
+});
+
+await test("sanitize omits Pi's truncated-call error", () => {
+  const manager = SessionManager.inMemory();
+  manager.appendMessage({
+    ...assistantBase,
+    content: [{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "file" } }],
+  });
+  manager.appendMessage({
+    role: "toolResult",
+    toolCallId: "call-1",
+    toolName: "read",
+    content: [
+      {
+        type: "text",
+        text: 'Tool call "read" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.',
+      },
+    ],
+    isError: true,
+    timestamp: Date.now(),
+  });
+  assert.equal(sanitizeInvalidToolCallHistory(manager), 2);
+  assert.doesNotMatch(JSON.stringify(manager.buildSessionProjection().messages), /call-1/);
 });

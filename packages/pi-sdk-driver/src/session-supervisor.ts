@@ -4,6 +4,8 @@ import {
   ModelRegistry,
   ModelRuntime,
   SessionManager,
+  estimateTokens,
+  shouldCompact,
   type AgentSessionRuntime,
   type AgentSession,
   type AgentSessionEvent,
@@ -118,6 +120,7 @@ import {
   type RunOutcome,
 } from "./session-supervisor-utils.js";
 import { forcePersistPiSession } from "./compat/pi-session-persistence.js";
+import { createInvalidToolCallGuardExtension } from "./invalid-tool-call-guard.js";
 import { createTurnCaptureExtension } from "./turn-capture.js";
 import { createTranscriptIdentityExtension } from "./transcript-identity.js";
 import { createPlanLimitsExtension, readSessionUsage } from "./session-usage.js";
@@ -377,6 +380,11 @@ export class SessionSupervisor {
             factory: createPlanLimitsExtension({
               onPlanLimits: (limits) => this.planLimitsByProvider.set(limits.provider, limits),
             }),
+          },
+          {
+            name: "pi-gui-invalid-tool-call-guard",
+            hidden: true,
+            factory: createInvalidToolCallGuardExtension(),
           },
           {
             name: "pi-gui-transcript-identity",
@@ -1103,6 +1111,15 @@ export class SessionSupervisor {
       );
     }
 
+    // The upcoming request can already exceed the model's context window
+    // (this thread is at ~1.8M estimated tokens against a 1M window). Meta
+    // answers those with a generic 400 that pi doesn't recognize as
+    // overflow, so no auto-compaction fires and every Continue fails the
+    // same way. Compact the same thread first instead of forcing a fork.
+    if (!isQueuedMessage && !isExtensionCommand) {
+      await this.compactBeforePromptIfNeeded(record, session);
+    }
+
     try {
       const images = input.attachments?.flatMap(
         (attachment: NonNullable<SessionMessageInput["attachments"]>[number]) =>
@@ -1211,6 +1228,64 @@ export class SessionSupervisor {
       });
       await this.emit(record, sessionUpdatedEvent(record));
       throw error;
+    }
+  }
+
+  /**
+   * Compact the live thread when the upcoming request already exceeds the
+   * model's context window. Provider usage accounting can under-report the
+   * real payload (this thread reported ~900k input tokens while the
+   * projection was ~1.8M against a 1M window), so pi's own threshold check
+   * never fires and Meta answers every request with a generic 400 that pi
+   * doesn't recognize as overflow. Estimating from the projection — the
+   * ground truth of what will be sent — and compacting the same thread
+   * keeps the conversation going without a fork. Throws an actionable error
+   * when the thread is still over the window after compaction instead of
+   * letting the provider fail cryptically.
+   */
+  private async compactBeforePromptIfNeeded(
+    record: ManagedSessionRecord,
+    session: AgentSession,
+  ): Promise<void> {
+    const model = session.model;
+    if (!model) return;
+    const stats = session.getSessionStats();
+    const contextWindow =
+      stats.contextUsage?.contextWindow ??
+      (model as unknown as { contextWindow?: number }).contextWindow ??
+      0;
+    if (!contextWindow) return;
+    const settings = session.settingsManager.getCompactionSettings(model);
+    if (!settings.enabled) return;
+
+    const estimateProjectionTokens = (): number => {
+      const projection = session.sessionManager.buildSessionProjection();
+      let tokens = 0;
+      for (const message of projection.messages) tokens += estimateTokens(message);
+      return tokens;
+    };
+
+    if (!shouldCompact(estimateProjectionTokens(), contextWindow, settings)) return;
+
+    try {
+      await session.compact();
+    } catch (error) {
+      console.warn(
+        `[pi-sdk-driver] pre-prompt compaction failed for ${sessionKey(record.ref)}:`,
+        error,
+      );
+    }
+    session.refreshContext();
+    forcePersistPiSession(session.sessionManager);
+    record.config = deriveSessionConfig(session.sessionManager);
+
+    const tokens = estimateProjectionTokens();
+    if (tokens >= contextWindow) {
+      throw new Error(
+        `Thread context is still ~${tokens.toLocaleString()} tokens after compaction, ` +
+          `over the ${contextWindow.toLocaleString()}-token window. ` +
+          `Start a new thread or fork from an earlier message to continue.`,
+      );
     }
   }
 

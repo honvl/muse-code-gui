@@ -31,6 +31,7 @@ import {
   parseExtensionAction,
 } from "@pi-gui/session-driver";
 import type { SessionQueuedMessage } from "@pi-gui/session-driver/types";
+import { isInvalidToolResult } from "./invalid-tool-call-guard.js";
 
 const FILE_ATTACHMENT_BLOCK_START = "<pi-gui-file-attachments>";
 const FILE_ATTACHMENT_BLOCK_END = "</pi-gui-file-attachments>";
@@ -300,17 +301,7 @@ export function sanitizeInvalidToolCallHistory(
     const toolCallId = typeof message.toolCallId === "string" ? message.toolCallId : undefined;
     if (!toolCallId) continue;
     if (editedTargets.has(entry.id)) continue;
-    const content = message.content;
-    const text = Array.isArray(content)
-      ? content
-          .filter((part) => isRecord(part) && part.type === "text")
-          .map((part) => (part as { text?: unknown }).text)
-          .filter((part): part is string => typeof part === "string")
-          .join("\n")
-      : typeof content === "string"
-        ? content
-        : "";
-    if (/^validation failed for tool\b/i.test(text.trim())) {
+    if (isInvalidToolResult(message)) {
       invalidToolCallIds.add(toolCallId);
       invalidToolResultIds.set(toolCallId, entry.id);
     }
