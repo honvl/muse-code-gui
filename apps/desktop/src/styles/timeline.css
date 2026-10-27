@@ -226,6 +226,20 @@
   background: var(--surface-muted);
 }
 
+/* Claude Desktop-style read receipt: a quiet check in the bubble's lower right
+   once the agent has produced work downstream of the message. */
+.timeline-item__read-receipt {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 6px;
+  color: var(--muted-soft);
+}
+
+.timeline-item__read-receipt svg {
+  width: 14px;
+  height: 14px;
+}
+
 .timeline-item__attachments {
   display: flex;
   flex-wrap: wrap;

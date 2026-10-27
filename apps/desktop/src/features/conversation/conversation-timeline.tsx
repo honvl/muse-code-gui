@@ -19,6 +19,7 @@ import type { AnnotationMarker, OpenAnnotation } from "./annotations/annotation-
 import { useAnnotationSelection } from "./annotations/annotation-selection";
 import type { TranscriptAnnotations } from "./annotations/use-transcript-annotations";
 import { ThreadSearchBar } from "./thread-search";
+import { buildUserMessageReadReceipts } from "./timeline-turns";
 import type { RunExtensionAction } from "./extension-card";
 import { TimelineItem } from "./timeline-item";
 import { sameRowContent, type TimelineRow } from "./timeline-layout";
@@ -92,6 +93,10 @@ export function ConversationTimeline({
     });
     return markers;
   }, [annotationList]);
+  // Claude Desktop-style read receipts: a user message is seen once the agent has
+  // produced anything downstream of it. Keyed by message id; rows share the
+  // transcript's item identities, so visible rows can look their state up directly.
+  const readReceipts = useMemo(() => buildUserMessageReadReceipts(transcript), [transcript]);
   const [expandedToolCallIds, setExpandedToolCallIds] = useState<Set<string>>(() => new Set());
   const [expandedToolGroupIds, setExpandedToolGroupIds] = useState<Set<string>>(() => new Set());
   const toggleToolCall = useCallback(
@@ -214,6 +219,14 @@ export function ConversationTimeline({
                     scheduledOrigin={
                       item.kind === "message" ? scheduledOrigins?.get(item.id) : undefined
                     }
+                    isRead={
+                      item.kind === "message" && item.role === "user"
+                        ? (readReceipts.get(item.id) ??
+                            (item.sourceMessageId
+                              ? readReceipts.get(item.sourceMessageId)
+                              : undefined)) === true
+                        : undefined
+                    }
                   />
                 ))}
               </div>
@@ -319,6 +332,7 @@ interface MeasuredTimelineItemProps {
   readonly workspacePath?: string;
   readonly annotationMarkers: readonly AnnotationMarker[];
   readonly onOpenAnnotation: OpenAnnotation;
+  readonly isRead?: boolean;
 }
 
 function MeasuredTimelineItemBase({
@@ -342,6 +356,7 @@ function MeasuredTimelineItemBase({
   workspacePath,
   annotationMarkers,
   onOpenAnnotation,
+  isRead,
 }: MeasuredTimelineItemProps) {
   const rowRef = useRef<HTMLDivElement | null>(null);
 
@@ -392,6 +407,7 @@ function MeasuredTimelineItemBase({
           workspacePath={workspacePath}
           annotationMarkers={annotationMarkers}
           onOpenAnnotation={onOpenAnnotation}
+          isRead={isRead}
         />
       </div>
     </div>
@@ -501,7 +517,8 @@ function areMeasuredTimelineItemPropsEqual(
     prev.workspacePath === next.workspacePath &&
     prev.annotationMarkers === next.annotationMarkers &&
     prev.onOpenAnnotation === next.onOpenAnnotation &&
-    prev.scheduledOrigin?.taskId === next.scheduledOrigin?.taskId
+    prev.scheduledOrigin?.taskId === next.scheduledOrigin?.taskId &&
+    prev.isRead === next.isRead
   );
 }
 

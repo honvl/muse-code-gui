@@ -11,6 +11,9 @@ export const MIN_TOOL_GROUP_SIZE = 2;
 
 const MIN_WORKED_DURATION_MS = 1_000;
 
+/** Local bookkeeping row, not agent work: opening a session must not mark a prompt as seen. */
+const RESUMED_SESSION_LABEL = "Resumed session";
+
 function isUserMessage(item: TimelineTranscriptItem | undefined): boolean {
   return item?.kind === "message" && item.role === "user";
 }
@@ -156,6 +159,39 @@ export function groupConsecutiveTools(
 }
 
 /**
+ * Claude Desktop-style read receipts: a user message counts as seen once the
+ * agent has produced anything downstream of it (a reply, tool call, Working
+ * row, summary, or extension output). A message still waiting for its turn -
+ * the last prompt of an idle thread, or a prompt queued behind a running turn
+ * - stays unread. The run's first downstream row (Working, the assistant
+ * reply, a tool call) lands in the same event batch that starts the run, so
+ * the check appears the moment the agent picks the prompt up.
+ */
+export function buildUserMessageReadReceipts(
+  transcript: readonly TimelineTranscriptItem[],
+): ReadonlyMap<string, boolean> {
+  const receipts = new Map<string, boolean>();
+  transcript.forEach((item, index) => {
+    if (!isUserMessage(item)) {
+      return;
+    }
+    let read = false;
+    for (let next = index + 1; next < transcript.length; next += 1) {
+      const later = transcript[next];
+      if (!later || isUserMessage(later)) {
+        continue;
+      }
+      if (later.kind === "activity" && later.label === RESUMED_SESSION_LABEL) {
+        continue;
+      }
+      read = true;
+      break;
+    }
+    receipts.set(item.id, read);
+  });
+  return receipts;
+}
+
 function turnChangeCardPositions(
   transcript: readonly TimelineTranscriptItem[],
   turnChanges: readonly TurnChangeSummary[],

@@ -29,6 +29,7 @@ import { TurnChangesCard, type OpenTurnChange } from "./turn-changes-card";
 import type { WorkspaceFileLine } from "./workspace-file-line";
 import { InlineDiff, extractDiffFromOutput } from "../../ui/diff-inline";
 import {
+  CheckIcon,
   ChevronRightIcon,
   CopyIcon,
   DiffIcon,
@@ -55,6 +56,7 @@ export function TimelineItem({
   onExtensionAction,
   annotationMarkers,
   onOpenAnnotation,
+  isRead,
 }: {
   readonly item: DisplayTimelineItem;
   readonly expandedToolCallIds?: ReadonlySet<string>;
@@ -71,6 +73,8 @@ export function TimelineItem({
   readonly onExtensionAction?: RunExtensionAction;
   readonly annotationMarkers?: readonly AnnotationMarker[];
   readonly onOpenAnnotation?: OpenAnnotation;
+  /** Claude Desktop-style read receipt: the agent has produced work downstream of this message. */
+  readonly isRead?: boolean;
 }) {
   switch (item.kind) {
     case "turn-marker":
@@ -88,6 +92,7 @@ export function TimelineItem({
           workspacePath={workspacePath}
           annotationMarkers={annotationMarkers}
           onOpenAnnotation={onOpenAnnotation}
+          isRead={isRead}
         />
       );
     case "activity":
@@ -147,6 +152,7 @@ function TimelineMessage({
   onOpenWorkspaceFileLine,
   annotationMarkers,
   onOpenAnnotation,
+  isRead,
 }: {
   readonly item: SessionTranscriptMessage;
   readonly sourceMessageIndex?: number;
@@ -156,6 +162,7 @@ function TimelineMessage({
   readonly onOpenWorkspaceFileLine?: (target: WorkspaceFileLine) => void;
   readonly annotationMarkers?: readonly AnnotationMarker[];
   readonly onOpenAnnotation?: OpenAnnotation;
+  readonly isRead?: boolean;
 }) {
   const articleRef = useRef<HTMLElement | null>(null);
   const annotated = useMemo(
@@ -210,6 +217,16 @@ function TimelineMessage({
             ) : null}
             {annotated ? <SentAnnotations annotations={annotated.annotations} /> : null}
             {annotated && !body.trim() ? null : <MessageMarkdown annotationRoot text={body} />}
+            {isRead ? (
+              <span
+                className="timeline-item__read-receipt"
+                data-testid="message-read-receipt"
+                title="Seen by agent"
+                aria-label="Seen by agent"
+              >
+                <CheckIcon />
+              </span>
+            ) : null}
           </div>
         </div>
         {markers}

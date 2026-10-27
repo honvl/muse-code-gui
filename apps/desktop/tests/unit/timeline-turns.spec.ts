@@ -1,6 +1,9 @@
 import { expect, test } from "@playwright/test";
 import type { TranscriptMessage } from "../../contracts/timeline-types";
-import { buildDisplayTimelineItems } from "../../src/features/conversation/timeline-turns";
+import {
+  buildDisplayTimelineItems,
+  buildUserMessageReadReceipts,
+} from "../../src/features/conversation/timeline-turns";
 
 const base = Date.parse("2026-09-24T12:00:00.000Z");
 const at = (seconds: number) => new Date(base + seconds * 1000).toISOString();
@@ -132,6 +135,37 @@ test("a keyed card updated long after its turn does not stretch that turn's mark
   const marker = buildDisplayTimelineItems(transcript).find((item) => item.kind === "turn-marker");
   expect(marker?.durationMs).toBe(60_000);
 });
+
+function activity(id: string, label: string, seconds: number): TranscriptMessage {
+  return { kind: "activity", id, createdAt: at(seconds), label };
+}
+
+test("a prompt is read once the agent produces anything downstream of it", () => {
+  const transcript = [
+    message("u1", "user", 0),
+    message("a1", "assistant", 5),
+    message("u2", "user", 10),
+    tool("t1", 12),
+    message("u3", "user", 20),
+  ];
+  const receipts = buildUserMessageReadReceipts(transcript);
+  expect(receipts.get("u1")).toBe(true);
+  expect(receipts.get("u2")).toBe(true);
+  // u3 is the last prompt of an idle thread: still waiting for its turn.
+  expect(receipts.get("u3")).toBe(false);
+});
+
+test("a queued prompt is unread until its own turn starts", () => {
+  const transcript = [message("u1", "user", 0), message("u2", "user", 2)];
+  expect(buildUserMessageReadReceipts(transcript).get("u1")).toBe(false);
+  expect(buildUserMessageReadReceipts(transcript).get("u2")).toBe(false);
+});
+
+test("resuming a session does not mark its last prompt as read", () => {
+  const transcript = [message("u1", "user", 0), activity("resumed", "Resumed session", 60)];
+  expect(buildUserMessageReadReceipts(transcript).get("u1")).toBe(false);
+});
+
 test("consecutive tools collapse into one group row", () => {
   const transcript = [
     message("u1", "user", 0),
