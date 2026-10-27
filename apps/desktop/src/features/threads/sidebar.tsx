@@ -988,6 +988,7 @@ function RecencyThreadSectionView({
   onArchiveSession,
   onSelectSession,
   onSetSessionPinned,
+  childrenByParentKey,
 }: {
   readonly section: RecencyThreadSection;
   readonly historyExpanded: boolean;
