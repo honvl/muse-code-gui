@@ -1,18 +1,18 @@
 /* Session details rail: a third main-grid column beside the chat column,
  * mirroring the side-panel pattern. Only applied while a thread is open. */
-.main--with-rail {
+.main:has(> .session-rail) {
   grid-template-columns: minmax(0, 1fr) 280px;
 }
 
-.main--with-rail > .topbar,
-.main--with-rail > .startup-diagnostics,
-.main--with-rail > .canvas,
-.main--with-rail > .scheduled-task-chip,
-.main--with-rail > .composer {
+.main:has(> .session-rail) > .topbar,
+.main:has(> .session-rail) > .startup-diagnostics,
+.main:has(> .session-rail) > .canvas,
+.main:has(> .session-rail) > .scheduled-task-chip,
+.main:has(> .session-rail) > .composer {
   grid-column: 1;
 }
 
-.main--with-rail > .session-rail {
+.main:has(> .session-rail) > .session-rail {
   grid-column: 2;
   grid-row: 1 / -1;
   min-height: 0;
@@ -26,11 +26,11 @@
 }
 
 /* Rail and side panel together: chat, rail, then panel. */
-.main--with-rail.main--with-side-panel {
+.main:has(> .session-rail).main--with-side-panel {
   grid-template-columns: minmax(0, 1fr) 280px min(var(--workbench-width, 440px), 65%);
 }
 
-.main--with-rail.main--with-side-panel > .side-panel {
+.main:has(> .session-rail).main--with-side-panel > .side-panel {
   grid-column: 3;
 }
 
@@ -236,11 +236,11 @@
 }
 
 @media (max-width: 1280px) {
-  .main--with-rail {
+  .main:has(> .session-rail) {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .main--with-rail > .session-rail {
+  .main:has(> .session-rail) > .session-rail {
     display: none;
   }
 }

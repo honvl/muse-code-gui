@@ -12,7 +12,6 @@ interface SessionRailProps {
   readonly session: SessionRecord;
   readonly workspaceName: string;
   readonly workspacePath: string;
-  readonly worktreeName: string | undefined;
   readonly provider: string | undefined;
   readonly modelId: string | undefined;
   readonly thinkingLevel: string | undefined;
@@ -36,7 +35,6 @@ export function SessionRail({
   session,
   workspaceName,
   workspacePath,
-  worktreeName,
   provider,
   modelId,
   thinkingLevel,
@@ -86,11 +84,6 @@ export function SessionRail({
         <div className="session-rail__row" title={workspacePath}>
           {workspaceName}
         </div>
-        {worktreeName ? (
-          <div className="session-rail__row session-rail__row--muted">
-            worktree · {worktreeName}
-          </div>
-        ) : null}
         <div
           className="session-rail__row session-rail__row--muted"
           data-testid="session-rail-model"
@@ -268,8 +261,6 @@ function isLongRun(runningSince: string | undefined): boolean {
   }
   return Date.now() - startedAt >= LONG_RUN_MS;
 }
-
-const LONG_RUN_MS = 5 * 60 * 1000;
 
 interface ChangedFileRef {
   readonly turn: TurnChangeSummary;

@@ -13,7 +13,6 @@ interface ThreadRailColumnProps {
   readonly api: PiDesktopApi | undefined;
   readonly session: SessionRecord;
   readonly workspace: WorkspaceRecord;
-  readonly worktreeName: string | undefined;
   readonly state: DesktopAppState | null;
   readonly sessionKey: string;
   readonly turnChanges: Pick<ReturnType<typeof useTurnChanges>, "turns" | "openTurnChange">;
@@ -29,7 +28,6 @@ export function ThreadRailColumn({
   api,
   session,
   workspace,
-  worktreeName,
   state,
   sessionKey,
   turnChanges,
@@ -45,7 +43,6 @@ export function ThreadRailColumn({
       session={session}
       workspaceName={workspace.name}
       workspacePath={workspace.path}
-      worktreeName={worktreeName}
       provider={session.config?.provider}
       modelId={session.config?.modelId}
       thinkingLevel={session.config?.thinkingLevel}

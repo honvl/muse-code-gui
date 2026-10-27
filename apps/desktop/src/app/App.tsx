@@ -768,7 +768,6 @@ export default function App() {
   const mainClassName = [
     "main",
     sidePanelVisible ? "main--with-side-panel" : "",
-    snapshot.activeView === "threads" && selectedSession ? "main--with-rail" : "",
     snapshot.startupDiagnostics.length > 0 ? "main--with-startup-diagnostics" : "",
   ]
     .filter(Boolean)
@@ -1200,7 +1199,6 @@ export default function App() {
                 api={api}
                 session={selectedSession}
                 workspace={selectedWorkspace}
-                worktreeName={selectedWorktree?.name}
                 state={snapshot}
                 sessionKey={selectedSessionKey}
                 turnChanges={turnChanges}
