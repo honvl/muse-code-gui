@@ -71,9 +71,13 @@ import {
   threadHistoryPreview,
   visibleThreadShortcutOrder,
   workspaceHistoryExpansionKey,
+  formatBilledCost,
+  formatCompactTokens,
+  formatPlanWindow,
   type RecencyThreadSection,
   type ThreadSidebarModel,
   type ThreadListEntry,
+  type SidebarUsageSummary,
   type WorkspaceThreadGroup,
 } from "./thread-groups";
 import { useThreadShortcutHintsVisible } from "./thread-shortcut-hints";
@@ -823,7 +827,81 @@ export function Sidebar(props: SidebarProps) {
           </DndContext>
         )}
       </div>
+      <SidebarUsageFooter
+        summary={threadSidebarModel.usageSummary}
+        usageView={activityExtensionViews?.find((view) => view.id === "muse-usage")}
+        onOpenActivityTool={onOpenActivityTool}
+      />
     </aside>
+  );
+}
+
+function SidebarUsageFooter({
+  summary,
+  usageView,
+  onOpenActivityTool,
+}: {
+  readonly summary: SidebarUsageSummary;
+  readonly usageView: DesktopExtensionViewInfo | undefined;
+  readonly onOpenActivityTool: ((tool: ToolRef) => void) | undefined;
+}) {
+  if (summary.sessionCount === 0 && summary.planLimits.length === 0) {
+    return null;
+  }
+  const tightest = summary.planLimits[0];
+  const totals = `${formatCompactTokens(summary.totalTokens)} tokens${
+    summary.billedCost > 0 ? ` · ${formatBilledCost(summary.billedCost)}` : ""
+  }${summary.billedCost === 0 && summary.subscriptionTokens > 0 ? " · subscription" : ""}`;
+  const body = (
+    <>
+      <span className="sidebar__usage-totals" title={totals}>
+        {totals}
+      </span>
+      {tightest ? (
+        <span
+          className="sidebar__usage-limit"
+          title={
+            tightest.resetsAt ? `Resets ${formatRelativeTime(tightest.resetsAt)}` : undefined
+          }
+        >
+          <span className="sidebar__usage-limit-label">
+            {formatPlanWindow(tightest.windowMinutes)} {Math.round(tightest.usedPercent)}%
+          </span>
+          <span className="sidebar__usage-bar" aria-hidden="true">
+            <span
+              className="sidebar__usage-bar-fill"
+              data-testid="sidebar-usage-bar"
+              style={{ width: `${Math.min(100, Math.max(0, tightest.usedPercent))}%` }}
+            />
+          </span>
+        </span>
+      ) : null}
+    </>
+  );
+  return (
+    <div className="sidebar__footer">
+      {usageView && onOpenActivityTool ? (
+        <button
+          className="sidebar__usage"
+          data-testid="sidebar-usage"
+          type="button"
+          title="Open Muse Usage"
+          onClick={() =>
+            onOpenActivityTool({
+              kind: "extension",
+              extensionId: usageView.extensionId,
+              viewId: usageView.id,
+            })
+          }
+        >
+          {body}
+        </button>
+      ) : (
+        <div className="sidebar__usage sidebar__usage--static" data-testid="sidebar-usage">
+          {body}
+        </div>
+      )}
+    </div>
   );
 }
 

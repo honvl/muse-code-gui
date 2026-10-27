@@ -6,6 +6,7 @@ import type {
   ThreadGrouping,
   WorkspaceRecord,
 } from "../../../contracts/desktop-state";
+import type { SessionUsageSnapshot } from "@pi-gui/session-driver";
 import {
   compareByRecency,
   RECENCY_BUCKET_LABELS,
@@ -63,6 +64,126 @@ export interface RecencyThreadSection {
   readonly threads: readonly ThreadListEntry[];
 }
 
+export interface SidebarPlanLimit {
+  readonly provider: string;
+  readonly windowMinutes: number;
+  readonly usedPercent: number;
+  readonly resetsAt?: string;
+}
+
+export interface SidebarUsageSummary {
+  /** Sessions contributing usage data. */
+  readonly sessionCount: number;
+  /** All-time tokens across those sessions, subscription included. */
+  readonly totalTokens: number;
+  /** Billed cost; subscription sessions never contribute (their cost is not money). */
+  readonly billedCost: number;
+  /** Tokens burned on subscription plans. */
+  readonly subscriptionTokens: number;
+  /** Tightest provider window first; one entry per provider window. */
+  readonly planLimits: readonly SidebarPlanLimit[];
+}
+
+export function formatCompactTokens(tokens: number): string {
+  if (!Number.isFinite(tokens) || tokens < 0) {
+    return "0";
+  }
+  if (tokens >= 1_000_000) {
+    const value = tokens / 1_000_000;
+    return `${value >= 10 ? Math.round(value) : Math.round(value * 10) / 10}M`;
+  }
+  if (tokens >= 1_000) {
+    const value = tokens / 1_000;
+    return `${value >= 10 ? Math.round(value) : Math.round(value * 10) / 10}K`;
+  }
+  return String(Math.round(tokens));
+}
+
+export function formatBilledCost(cost: number): string {
+  if (!Number.isFinite(cost) || cost <= 0) {
+    return "$0";
+  }
+  return `$${cost < 10 ? cost.toFixed(2) : Math.round(cost).toString()}`;
+}
+
+export function formatPlanWindow(windowMinutes: number): string {
+  if (!Number.isFinite(windowMinutes) || windowMinutes <= 0) {
+    return "";
+  }
+  if (windowMinutes < 60) {
+    return `${Math.round(windowMinutes)}m`;
+  }
+  if (windowMinutes < 24 * 60) {
+    const hours = windowMinutes / 60;
+    return `${Number.isInteger(hours) ? hours : Math.round(hours * 10) / 10}h`;
+  }
+  const days = windowMinutes / (24 * 60);
+  return `${Number.isInteger(days) ? days : Math.round(days * 10) / 10}d`;
+}
+
+/**
+ * Aggregate per-session usage snapshots for the sidebar footer. Billed cost
+ * and subscription tokens stay separate: mixing them misstates money spent.
+ * Plan windows dedupe by provider window, keeping the highest usage.
+ */
+export function summarizeSidebarUsage(
+  entries: readonly ThreadListEntry[],
+  usageBySession: Readonly<Record<string, SessionUsageSnapshot | undefined>> | undefined,
+): SidebarUsageSummary {
+  const empty: SidebarUsageSummary = {
+    sessionCount: 0,
+    totalTokens: 0,
+    billedCost: 0,
+    subscriptionTokens: 0,
+    planLimits: [],
+  };
+  if (!usageBySession) {
+    return empty;
+  }
+  let sessionCount = 0;
+  let totalTokens = 0;
+  let billedCost = 0;
+  let subscriptionTokens = 0;
+  const limits = new Map<string, SidebarPlanLimit>();
+  for (const entry of entries) {
+    const snapshot = usageBySession[`${entry.workspaceId}:${entry.session.id}`];
+    if (!snapshot) {
+      continue;
+    }
+    sessionCount += 1;
+    const tokens =
+      snapshot.totals.input +
+      snapshot.totals.output +
+      snapshot.totals.cacheRead +
+      snapshot.totals.cacheWrite;
+    totalTokens += tokens;
+    if (snapshot.subscription) {
+      subscriptionTokens += tokens;
+    } else {
+      billedCost += snapshot.totals.cost;
+    }
+    for (const limit of snapshot.planLimits?.limits ?? []) {
+      const key = `${snapshot.planLimits?.provider ?? ""}:${limit.windowMinutes}`;
+      const current = limits.get(key);
+      if (!current || limit.usedPercent > current.usedPercent) {
+        limits.set(key, {
+          provider: snapshot.planLimits?.provider ?? "",
+          windowMinutes: limit.windowMinutes,
+          usedPercent: limit.usedPercent,
+          resetsAt: limit.resetsAt,
+        });
+      }
+    }
+  }
+  return {
+    sessionCount,
+    totalTokens,
+    billedCost,
+    subscriptionTokens,
+    planLimits: [...limits.values()].sort((a, b) => b.usedPercent - a.usedPercent),
+  };
+}
+
 export interface ThreadSidebarModel {
   readonly folders: readonly WorkspaceRecord[];
   readonly workspaceGroups: readonly WorkspaceThreadGroup[];
@@ -72,6 +193,7 @@ export interface ThreadSidebarModel {
   readonly recencyOrder: readonly ThreadListEntry[];
   /** Nested child threads by parent `workspaceId:sessionId`, oldest first. */
   readonly childrenByParentKey: ReadonlyMap<string, readonly ThreadListEntry[]>;
+  readonly usageSummary: SidebarUsageSummary;
 }
 
 export function buildThreadSidebarModel(
@@ -100,6 +222,7 @@ export function buildThreadSidebarModel(
   return {
     folders,
     childrenByParentKey,
+    usageSummary: summarizeSidebarUsage(entries, state.sessionUsageBySession),
     workspaceGroups: folders.map((workspace) => ({
       workspace,
       threads: historyThreads.filter((entry) => entry.folderId === workspace.id),
