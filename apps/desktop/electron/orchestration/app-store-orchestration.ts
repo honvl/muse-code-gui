@@ -787,6 +787,11 @@ function reconcileDueSupervisionLoops(
     if (supervisionPublishKey(projectedChild) !== beforeKey) {
       shouldPublish = true;
     }
+    if (isTerminalChildStatus(projectedChild.status) && !isTerminalChildStatus(child.status)) {
+      if (finalizeChildThreadToolRow(store, projectedChild)) {
+        shouldPublish = true;
+      }
+    }
     if (!projectedChild.childSessionId || projectedChild.supervisionLoop?.status === "stopped") {
       return projectedChild;
     }
@@ -1302,6 +1307,71 @@ function supervisionIntervalMs(): number {
 
 function nextIso(fromIso: string, intervalMs: number): string {
   return new Date(Date.parse(fromIso) + intervalMs).toISOString();
+}
+
+function isTerminalChildStatus(status: OrchestrationChildThreadStatus): boolean {
+  return status === "complete" || status === "failed";
+}
+
+/** Parent tool-row text once a child run ends. Pure; unit-tested. */
+export function childThreadFinalDetail(
+  child: Pick<OrchestrationChildThread, "title" | "status">,
+): string {
+  return child.status === "failed"
+    ? `Child thread "${child.title}" failed.`
+    : `Child thread "${child.title}" completed.`;
+}
+
+/**
+ * Rewrite the parent's `create_child_thread` tool row when the child run
+ * ends, so the parent transcript shows live status Claude-style. Only
+ * rewrites rows still showing the creation text (idempotent) and only when
+ * the parent transcript is loaded, never synthesizing one.
+ */
+function finalizeChildThreadToolRow(
+  store: OrchestrationOwnerHost,
+  child: OrchestrationChildThread,
+): boolean {
+  if (!child.sourceToolCallId) return false;
+  if (!isTerminalChildStatus(child.status)) return false;
+  const parentRef: SessionRef = {
+    workspaceId: child.parentWorkspaceId,
+    sessionId: child.parentSessionId,
+  };
+  if (!store.isTranscriptLoaded(parentRef)) return false;
+  const transcript = store.transcriptFor(parentRef);
+  const entry = transcript.find(
+    (item): item is TimelineToolCall =>
+      isTimelineToolCall(item) && item.callId === child.sourceToolCallId,
+  );
+  if (!entry || !(entry.detail ?? "").startsWith("Created child thread:")) return false;
+  const detail = childThreadFinalDetail(child);
+  updateThreadToolOutput(
+    store,
+    {
+      type: "toolFinished",
+      sessionRef: parentRef,
+      timestamp: new Date().toISOString(),
+      callId: child.sourceToolCallId,
+      success: true,
+    },
+    {
+      detail,
+      text: detail,
+      details: existingToolOutputDetails(entry.output),
+    },
+  );
+  return true;
+}
+
+function existingToolOutputDetails(output: unknown): Readonly<Record<string, unknown>> {
+  if (typeof output === "object" && output !== null && "details" in output) {
+    const details = (output as { readonly details?: unknown }).details;
+    if (typeof details === "object" && details !== null) {
+      return details as Readonly<Record<string, unknown>>;
+    }
+  }
+  return {};
 }
 
 function updateCreateChildThreadToolOutput(

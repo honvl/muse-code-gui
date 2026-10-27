@@ -1,5 +1,7 @@
 import type {
   DesktopAppState,
+  OrchestrationChildMode,
+  OrchestrationChildThreadStatus,
   SessionRecord,
   ThreadGrouping,
   WorkspaceRecord,
@@ -20,12 +22,21 @@ export interface ThreadEnvironmentMeta {
   readonly detached?: boolean;
 }
 
+export interface OrchestrationChildInfo {
+  readonly id: string;
+  readonly status: OrchestrationChildThreadStatus;
+  readonly mode?: OrchestrationChildMode;
+  /** `workspaceId:sessionId` of the parent thread. */
+  readonly parentKey: string;
+}
+
 export interface ThreadListEntry {
   readonly folderId: string;
   readonly workspaceId: string;
   readonly session: SessionRecord;
   readonly environment: ThreadEnvironmentMeta;
   readonly contextLabel: string;
+  readonly child?: OrchestrationChildInfo;
 }
 
 export interface WorkspaceThreadGroup {
@@ -59,6 +70,8 @@ export interface ThreadSidebarModel {
   readonly recencySections: readonly RecencyThreadSection[];
   readonly archivedThreads: readonly ThreadListEntry[];
   readonly recencyOrder: readonly ThreadListEntry[];
+  /** Nested child threads by parent `workspaceId:sessionId`, oldest first. */
+  readonly childrenByParentKey: ReadonlyMap<string, readonly ThreadListEntry[]>;
 }
 
 export function buildThreadSidebarModel(
@@ -66,11 +79,14 @@ export function buildThreadSidebarModel(
   nowMs: number = Date.now(),
 ): ThreadSidebarModel {
   const entries = collectThreadEntries(state);
+  attachOrchestrationChildren(entries, state);
   const pinnedThreads = entries
     .filter((entry) => !entry.session.archivedAt && Boolean(entry.session.pinnedAt))
     .sort((left, right) => comparePinnedThreads(left, right, state.pinnedSessionOrder));
   const historyThreads = entries
-    .filter((entry) => !entry.session.archivedAt && !entry.session.pinnedAt)
+    .filter(
+      (entry) => !entry.session.archivedAt && !entry.session.pinnedAt && !isNestedChild(entry),
+    )
     .sort((left, right) => compareByRecency(left.session, right.session));
   const archivedThreads = entries
     .filter((entry) => Boolean(entry.session.archivedAt))
@@ -80,8 +96,10 @@ export function buildThreadSidebarModel(
     .sort((left, right) => compareByRecency(left.session, right.session));
 
   const folders = listFolders(state);
+  const childrenByParentKey = groupChildrenByParent(entries);
   return {
     folders,
+    childrenByParentKey,
     workspaceGroups: folders.map((workspace) => ({
       workspace,
       threads: historyThreads.filter((entry) => entry.folderId === workspace.id),
@@ -187,6 +205,61 @@ function collectThreadEntries(state: DesktopAppState): ThreadListEntry[] {
 
 export function sessionThreadKey(thread: ThreadListEntry): string {
   return `${thread.workspaceId}:${thread.session.id}`;
+}
+
+export function parentThreadKey(workspaceId: string, sessionId: string): string {
+  return `${workspaceId}:${sessionId}`;
+}
+
+/** A child thread nests under its parent; pinned/archived children keep top-level rows. */
+function isNestedChild(entry: ThreadListEntry): boolean {
+  return entry.child !== undefined;
+}
+
+/**
+ * Match orchestration child records to their session rows. Children whose
+ * session is not in the catalog yet (creation race) are ignored until the
+ * next snapshot; pinned and archived sessions keep their top-level rows.
+ */
+function attachOrchestrationChildren(entries: ThreadListEntry[], state: DesktopAppState): void {
+  const bySessionKey = new Map(entries.map((entry) => [sessionThreadKey(entry), entry] as const));
+  for (const child of state.orchestrationChildren) {
+    if (!child.childSessionId) continue;
+    const target = bySessionKey.get(parentThreadKey(child.childWorkspaceId, child.childSessionId));
+    if (!target || target.session.archivedAt || target.session.pinnedAt) continue;
+    const index = entries.indexOf(target);
+    if (index < 0) continue;
+    entries[index] = {
+      ...target,
+      child: {
+        id: child.id,
+        status: child.status,
+        ...(child.mode ? { mode: child.mode } : {}),
+        parentKey: parentThreadKey(child.parentWorkspaceId, child.parentSessionId),
+      },
+    };
+  }
+}
+
+function groupChildrenByParent(
+  entries: readonly ThreadListEntry[],
+): ReadonlyMap<string, readonly ThreadListEntry[]> {
+  const groups = new Map<string, ThreadListEntry[]>();
+  for (const entry of entries) {
+    if (!isNestedChild(entry) || !entry.child) continue;
+    const bucket = groups.get(entry.child.parentKey) ?? [];
+    bucket.push(entry);
+    groups.set(entry.child.parentKey, bucket);
+  }
+  for (const [key, bucket] of groups) {
+    groups.set(
+      key,
+      [...bucket].sort((left, right) =>
+        left.session.updatedAt.localeCompare(right.session.updatedAt),
+      ),
+    );
+  }
+  return groups;
 }
 
 const EMPTY_EXPANDED_HISTORY: ReadonlySet<string> = new Set();

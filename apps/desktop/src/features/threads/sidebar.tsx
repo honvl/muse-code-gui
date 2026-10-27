@@ -553,6 +553,7 @@ export function Sidebar(props: SidebarProps) {
                       onArchiveSession={onArchiveSession}
                       onSelectSession={onSelectSession}
                       onSetSessionPinned={onSetSessionPinned}
+                      childrenByParentKey={threadSidebarModel.childrenByParentKey}
                     />
                   ))}
                 </SortableContext>
@@ -589,6 +590,7 @@ export function Sidebar(props: SidebarProps) {
                       onArchiveSession={onArchiveSession}
                       onSelectSession={onSelectSession}
                       onSetSessionPinned={onSetSessionPinned}
+                      childrenByParentKey={threadSidebarModel.childrenByParentKey}
                     />
                   </section>
                 ))}
@@ -622,6 +624,7 @@ export function Sidebar(props: SidebarProps) {
                         onArchiveSession={onArchiveSession}
                         onSelectSession={onSelectSession}
                         onSetSessionPinned={onSetSessionPinned}
+                        childrenByParentKey={threadSidebarModel.childrenByParentKey}
                       />
                     ))
                   : null}
@@ -697,6 +700,7 @@ interface WorkspaceFolderProps {
     target: { workspaceId: string; sessionId: string },
     pinned: boolean,
   ) => void;
+  readonly childrenByParentKey?: ReadonlyMap<string, readonly ThreadListEntry[]>;
 }
 
 function SortableWorkspaceFolder(props: WorkspaceFolderProps) {
@@ -753,6 +757,7 @@ function WorkspaceFolderContent(
     onArchiveSession,
     onSelectSession,
     onSetSessionPinned,
+    childrenByParentKey,
     dragHandleProps,
   } = props;
   // Folder grouping lists threads under each folder, so the row folds them
@@ -947,6 +952,10 @@ function WorkspaceFolderContent(
               <HistoryThreadRow
                 key={`${thread.workspaceId}:${thread.session.id}`}
                 thread={thread}
+                nestedChildren={childrenByParentKey?.get(
+                  `${thread.workspaceId}:${thread.session.id}`,
+                )}
+                childrenByParentKey={childrenByParentKey}
                 selectedWorkspace={selectedWorkspace}
                 selectedSession={selectedSession}
                 threadMenu={threadMenu}
@@ -992,6 +1001,7 @@ function RecencyThreadSectionView({
     target: { workspaceId: string; sessionId: string },
     pinned: boolean,
   ) => void;
+  readonly childrenByParentKey?: ReadonlyMap<string, readonly ThreadListEntry[]>;
 }) {
   const history = threadHistoryPreview(section.threads, historyExpanded);
   return (
@@ -1007,6 +1017,8 @@ function RecencyThreadSectionView({
             key={`${thread.workspaceId}:${thread.session.id}`}
             showContext
             thread={thread}
+            nestedChildren={childrenByParentKey?.get(`${thread.workspaceId}:${thread.session.id}`)}
+            childrenByParentKey={childrenByParentKey}
             selectedWorkspace={selectedWorkspace}
             selectedSession={selectedSession}
             threadMenu={threadMenu}
@@ -1029,6 +1041,9 @@ function RecencyThreadSectionView({
 
 function HistoryThreadRow({
   thread,
+  nestedChildren,
+  nested = false,
+  childrenByParentKey,
   showContext = false,
   selectedWorkspace,
   selectedSession,
@@ -1038,6 +1053,9 @@ function HistoryThreadRow({
   onSetSessionPinned,
 }: {
   readonly thread: ThreadListEntry;
+  readonly nestedChildren?: readonly ThreadListEntry[];
+  readonly nested?: boolean;
+  readonly childrenByParentKey?: ReadonlyMap<string, readonly ThreadListEntry[]>;
   readonly showContext?: boolean;
   readonly selectedWorkspace: WorkspaceRecord | undefined;
   readonly selectedSession: SessionRecord | undefined;
@@ -1052,30 +1070,53 @@ function HistoryThreadRow({
   const active =
     thread.workspaceId === selectedWorkspace?.id && thread.session.id === selectedSession?.id;
   return (
-    <ThreadSessionRow
-      active={active}
-      showContext={showContext}
-      thread={thread}
-      threadMenu={threadMenu}
-      onAction={() =>
-        onArchiveSession({
-          workspaceId: thread.workspaceId,
-          sessionId: thread.session.id,
-        })
-      }
-      onSelect={() =>
-        onSelectSession({
-          workspaceId: thread.workspaceId,
-          sessionId: thread.session.id,
-        })
-      }
-      onTogglePinned={() =>
-        onSetSessionPinned(
-          { workspaceId: thread.workspaceId, sessionId: thread.session.id },
-          !thread.session.pinnedAt,
-        )
-      }
-    />
+    <>
+      <ThreadSessionRow
+        active={active}
+        nested={nested}
+        showContext={showContext}
+        thread={thread}
+        threadMenu={threadMenu}
+        onAction={() =>
+          onArchiveSession({
+            workspaceId: thread.workspaceId,
+            sessionId: thread.session.id,
+          })
+        }
+        onSelect={() =>
+          onSelectSession({
+            workspaceId: thread.workspaceId,
+            sessionId: thread.session.id,
+          })
+        }
+        onTogglePinned={() =>
+          onSetSessionPinned(
+            { workspaceId: thread.workspaceId, sessionId: thread.session.id },
+            !thread.session.pinnedAt,
+          )
+        }
+      />
+      {nestedChildren && nestedChildren.length > 0 ? (
+        <div className="session-children" role="group" aria-label="Child threads">
+          {nestedChildren.map((child) => (
+            <HistoryThreadRow
+              key={`${child.workspaceId}:${child.session.id}`}
+              thread={child}
+              nested
+              nestedChildren={childrenByParentKey?.get(`${child.workspaceId}:${child.session.id}`)}
+              childrenByParentKey={childrenByParentKey}
+              showContext={showContext}
+              selectedWorkspace={selectedWorkspace}
+              selectedSession={selectedSession}
+              threadMenu={threadMenu}
+              onArchiveSession={onArchiveSession}
+              onSelectSession={onSelectSession}
+              onSetSessionPinned={onSetSessionPinned}
+            />
+          ))}
+        </div>
+      ) : null}
+    </>
   );
 }
 
@@ -1521,6 +1562,7 @@ function sessionIndicatorVariant(
 interface ThreadSessionRowProps {
   readonly active: boolean;
   readonly archived?: boolean;
+  readonly nested?: boolean;
   readonly showContext?: boolean;
   readonly overlay?: boolean;
   readonly dragging?: boolean;
@@ -1539,6 +1581,7 @@ const ThreadSessionRow = forwardRef<HTMLDivElement, ThreadSessionRowProps>(
     {
       active,
       archived = false,
+      nested = false,
       showContext = false,
       overlay = false,
       dragging = false,
@@ -1568,6 +1611,7 @@ const ThreadSessionRow = forwardRef<HTMLDivElement, ThreadSessionRowProps>(
       pinned ? "session-row--pinned" : "",
       dragging ? "session-row--dragging" : "",
       overlay ? "session-row--overlay" : "",
+      nested ? "session-row--child" : "",
       shortcutBadge ? "session-row--shortcut" : "",
     ]
       .filter(Boolean)
@@ -1581,6 +1625,7 @@ const ThreadSessionRow = forwardRef<HTMLDivElement, ThreadSessionRowProps>(
           data-sidebar-indicator={indicatorVariant}
           data-session-pinned={pinned ? "true" : "false"}
           data-session-id={thread.session.id}
+          data-child-thread-id={thread.child?.id}
           data-thread-shortcut={shortcutBadge ? String(shortcutBadge.slot) : undefined}
           aria-keyshortcuts={
             shortcutBadge ? `${IS_MAC ? "Meta" : "Control"}+${shortcutBadge.slot}` : undefined

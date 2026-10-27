@@ -651,6 +651,16 @@
   pointer-events: none;
 }
 
+.session-children {
+  margin-left: 18px;
+  border-left: 1px solid var(--line);
+  padding-left: 6px;
+}
+
+.session-row--child .session-row__select {
+  padding-left: 12px;
+}
+
 .session-row__status {
   display: block;
 }
