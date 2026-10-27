@@ -649,7 +649,7 @@ jobs:
       - name: Checkout Homebrew tap
         uses: actions/checkout@v7
         with:
-          repository: minghinmatthewlam/homebrew-tap
+          repository: honvl/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: homebrew-tap
           fetch-depth: 0
