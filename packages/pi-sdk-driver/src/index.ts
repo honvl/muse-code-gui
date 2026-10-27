@@ -25,6 +25,21 @@ export { SessionLeasedError } from "./session-lease.js";
 export type { LeaseInfo } from "./session-lease.js";
 export { RUNTIME_SCHEMA_VERSION } from "./session-schema.js";
 export type { GenerateThreadTitleOptions } from "./thread-title-generator.js";
+export {
+  PACK_EXTENSION_RELATIVE_PATHS,
+  PACK_MCP_SERVERS,
+  PACK_PACKAGES,
+  PACK_SKILL_FILES,
+  PACK_SKILL_NAME,
+  ensureExtensionPack,
+  installPackSkill,
+  mergePackExtensions,
+  mergePackMcpServers,
+  mergePackPackages,
+  missingPackExtensions,
+  missingPackPackages,
+  resolvePackExtensionPaths,
+} from "./extension-pack.js";
 export type {
   PiDesktopExtensionObserver,
   PiDesktopExtensionRuntime,
