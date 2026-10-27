@@ -1257,11 +1257,10 @@ export class SessionSupervisor {
     // answers those with a generic 400 that pi doesn't recognize as
     // overflow, so no auto-compaction fires and every Continue fails the
     // same way. Compact the same thread first instead of forcing a fork.
-    if (!isQueuedMessage && !isExtensionCommand) {
-      await this.compactBeforePromptIfNeeded(record, session);
-    }
-
     try {
+      if (!isQueuedMessage && !isExtensionCommand) {
+        await this.compactBeforePromptIfNeeded(record, session);
+      }
       const images = input.attachments?.flatMap(
         (attachment: NonNullable<SessionMessageInput["attachments"]>[number]) =>
           attachment.kind === "image"
