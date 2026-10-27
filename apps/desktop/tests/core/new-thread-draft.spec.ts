@@ -1,4 +1,6 @@
 import { expect, test } from "@playwright/test";
+import { execFileSync } from "node:child_process";
+import { join } from "node:path";
 import {
   createNamedThread,
   getDesktopState,
@@ -6,7 +8,40 @@ import {
   makeUserDataDir,
   makeWorkspace,
   selectSession,
+  seedAgentDir,
 } from "../helpers/electron-app";
+
+test("a failed thread start keeps the prompt and shows the error", async () => {
+  const userDataDir = await makeUserDataDir();
+  const agentDir = join(userDataDir, "agent");
+  await seedAgentDir(agentDir);
+  const workspace = await makeWorkspace("new-thread-start-error");
+  // An unborn Git repository cannot create a worktree, providing a real startup failure.
+  execFileSync("git", ["init", workspace]);
+  const harness = await launchDesktop(userDataDir, {
+    agentDir,
+    initialWorkspaces: [workspace],
+    testMode: "background",
+  });
+  try {
+    const window = await harness.firstWindow();
+    await window
+      .getByRole("complementary")
+      .getByRole("button", { name: "New thread", exact: true })
+      .click();
+    const prompt = window.getByLabel("New thread prompt", { exact: true });
+    await prompt.fill("Keep this prompt when starting fails");
+    await window.getByRole("button", { name: "Worktree", exact: true }).click();
+    await window.getByRole("button", { name: "Start thread", exact: true }).click();
+    await expect(window.getByTestId("composer-error-banner")).toBeVisible();
+    await expect(prompt).toHaveValue("Keep this prompt when starting fails");
+    await window.getByRole("button", { name: "Local", exact: true }).click();
+    await window.getByRole("button", { name: "Start thread", exact: true }).click();
+    await expect(window.getByTestId("composer")).toBeVisible();
+  } finally {
+    await harness.close();
+  }
+});
 
 test("opening New thread flushes the current conversation draft before navigation", async () => {
   const harness = await launchDesktop(await makeUserDataDir(), {

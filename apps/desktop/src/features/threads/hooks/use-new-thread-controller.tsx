@@ -316,8 +316,12 @@ export function useNewThreadController(params: UseNewThreadControllerParams) {
     };
     startingGenerationRef.current = generation;
     void updateSnapshot(setSnapshot, () => api.startThread(input))
-      .then(() => {
+      .then((state) => {
         if (surfaceGenerationRef.current !== generation) {
+          return;
+        }
+        if (state.lastError) {
+          setComposerError(state.lastError);
           return;
         }
         setPrompt("");
