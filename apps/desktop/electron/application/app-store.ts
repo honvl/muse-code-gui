@@ -9,6 +9,8 @@ import { join, resolve, sep } from "node:path";
 import {
   applyHostUiRequestToExtensionUiState,
   buildSuggestionExcerpt,
+  type BackgroundTaskOutput,
+  type BackgroundTaskSnapshot,
   type GenerateThreadTitleOptions,
   isExtensionUiDialogRequest,
   PiSdkDriver,
@@ -1181,6 +1183,37 @@ export class DesktopAppStore {
     return this.emit();
   }
 
+  /** Best-effort stop of every running background bash task (app shutdown). */
+  shutdownBackgroundTasks(): void {
+    try {
+      this.driver.shutdownBackgroundTasks();
+    } catch (error) {
+      console.warn("[app-store] shutdownBackgroundTasks failed:", error);
+    }
+  }
+
+  async listBackgroundTasks(sessionRef: SessionRef): Promise<readonly BackgroundTaskSnapshot[]> {
+    await this.initialize();
+    return this.conversationOwner.listBackgroundTasks(sessionRef);
+  }
+
+  async stopBackgroundTask(
+    sessionRef: SessionRef,
+    taskId: string,
+  ): Promise<readonly BackgroundTaskSnapshot[]> {
+    await this.initialize();
+    return this.conversationOwner.stopBackgroundTask(sessionRef, taskId);
+  }
+
+  async readBackgroundTask(
+    sessionRef: SessionRef,
+    taskId: string,
+    options?: { readonly offset?: number; readonly limit?: number },
+  ): Promise<BackgroundTaskOutput> {
+    await this.initialize();
+    return this.conversationOwner.readBackgroundTask(sessionRef, taskId, options);
+  }
+
   /**
    * Kick off ghost-text generation after a clean run. Fire-and-forget: the
    * async completion re-checks freshness before publishing anything.
@@ -1315,7 +1348,11 @@ export class DesktopAppStore {
 
   async createChildThreadToolResult(
     parentRef: SessionRef,
-    input: { readonly prompt: string; readonly toolCallId: string },
+    input: {
+      readonly prompt: string;
+      readonly toolCallId: string;
+      readonly mode?: "scout" | "worker";
+    },
   ) {
     await this.initialize();
     return this.orchestrationOwner.createChildThreadToolResult(parentRef, input);

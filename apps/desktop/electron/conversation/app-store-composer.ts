@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { sessionKey } from "@pi-gui/session-driver";
 import type { SessionConfig, SessionQueuedMessage, SessionRef } from "@pi-gui/session-driver";
 import type { PiSdkDriver } from "@pi-gui/pi-sdk-driver";
+import type { BackgroundTaskOutput, BackgroundTaskSnapshot } from "@pi-gui/pi-sdk-driver";
 import type { RuntimeCommandRecord, RuntimeSnapshot } from "@pi-gui/session-driver/runtime-types";
 import type {
   ComposerAttachment,
@@ -53,12 +54,15 @@ type ConversationDriver = Pick<
   PiSdkDriver,
   | "cancelCurrentRun"
   | "compactSession"
+  | "listBackgroundTasks"
+  | "readBackgroundTask"
   | "reloadSession"
   | "renameSession"
   | "replaceQueuedMessages"
   | "sendUserMessage"
   | "setSessionModel"
   | "setSessionThinkingLevel"
+  | "stopBackgroundTask"
   | "unarchiveSession"
 >;
 
@@ -183,6 +187,16 @@ export interface ConversationOwner {
   ): Promise<DesktopAppState>;
   setSessionThinkingLevel(sessionRef: SessionRef, thinkingLevel: string): Promise<DesktopAppState>;
   cancelCurrentRun(sessionRef: SessionRef | undefined): Promise<DesktopAppState>;
+  listBackgroundTasks(sessionRef: SessionRef): Promise<readonly BackgroundTaskSnapshot[]>;
+  stopBackgroundTask(
+    sessionRef: SessionRef,
+    taskId: string,
+  ): Promise<readonly BackgroundTaskSnapshot[]>;
+  readBackgroundTask(
+    sessionRef: SessionRef,
+    taskId: string,
+    options?: { readonly offset?: number; readonly limit?: number },
+  ): Promise<BackgroundTaskOutput>;
   sendMessageToSession(
     sessionRef: SessionRef,
     text: string,
@@ -223,6 +237,10 @@ export function createConversationOwner(store: ConversationOwnerHost): Conversat
     setSessionThinkingLevel: (sessionRef, thinkingLevel) =>
       setSessionThinkingLevel(store, sessionRef, thinkingLevel),
     cancelCurrentRun: (sessionRef) => cancelCurrentRun(store, sessionRef),
+    listBackgroundTasks: (sessionRef) => listBackgroundTasks(store, sessionRef),
+    stopBackgroundTask: (sessionRef, taskId) => stopBackgroundTask(store, sessionRef, taskId),
+    readBackgroundTask: (sessionRef, taskId, options) =>
+      readBackgroundTask(store, sessionRef, taskId, options),
     sendMessageToSession: (sessionRef, text, attachments, options) =>
       sendMessageToSession(store, sessionRef, text, attachments, options),
     deliverBackgroundInstruction: (sessionRef, text) =>
@@ -718,6 +736,35 @@ async function cancelCurrentRun(
   } catch (error) {
     return store.withSessionError(sessionRef, error);
   }
+}
+
+/** Background tasks for one thread. Read-only: no snapshot emission, the panel polls. */
+async function listBackgroundTasks(
+  store: ComposerStore,
+  sessionRef: SessionRef,
+): Promise<readonly BackgroundTaskSnapshot[]> {
+  await store.initialize();
+  return store.driver.listBackgroundTasks(sessionRef);
+}
+
+async function stopBackgroundTask(
+  store: ComposerStore,
+  sessionRef: SessionRef,
+  taskId: string,
+): Promise<readonly BackgroundTaskSnapshot[]> {
+  await store.initialize();
+  await store.driver.stopBackgroundTask(sessionRef, taskId);
+  return store.driver.listBackgroundTasks(sessionRef);
+}
+
+async function readBackgroundTask(
+  store: ComposerStore,
+  sessionRef: SessionRef,
+  taskId: string,
+  options?: { readonly offset?: number; readonly limit?: number },
+): Promise<BackgroundTaskOutput> {
+  await store.initialize();
+  return store.driver.readBackgroundTask(sessionRef, taskId, options);
 }
 
 /* ── Internal helpers ───────────────────────────────────── */

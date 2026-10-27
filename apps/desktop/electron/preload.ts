@@ -270,6 +270,23 @@ contextBridge.exposeInMainWorld("piApp", {
     ipcRenderer.invoke(desktopIpc.beginScheduledTaskInterview) as Promise<DesktopAppState>,
   cancelCurrentRun: () =>
     ipcRenderer.invoke(desktopIpc.cancelCurrentRun) as Promise<DesktopAppState>,
+  listBackgroundTasks: (target: WorkspaceSessionTarget) =>
+    ipcRenderer.invoke(desktopIpc.listBackgroundTasks, target) as Promise<
+      readonly import("@pi-gui/pi-sdk-driver").BackgroundTaskSnapshot[]
+    >,
+  stopBackgroundTask: (target: WorkspaceSessionTarget, taskId: string) =>
+    ipcRenderer.invoke(desktopIpc.stopBackgroundTask, target, taskId) as Promise<
+      readonly import("@pi-gui/pi-sdk-driver").BackgroundTaskSnapshot[]
+    >,
+  readBackgroundTask: (
+    target: WorkspaceSessionTarget,
+    taskId: string,
+    offset?: number,
+    limit?: number,
+  ) =>
+    ipcRenderer.invoke(desktopIpc.readBackgroundTask, target, taskId, offset, limit) as Promise<
+      import("@pi-gui/pi-sdk-driver").BackgroundTaskOutput
+    >,
   dismissSuggestedNextPrompt: () =>
     ipcRenderer.invoke(desktopIpc.dismissSuggestedNextPrompt) as Promise<DesktopAppState>,
   setActiveView: (view: AppView) =>
@@ -425,10 +442,7 @@ contextBridge.exposeInMainWorld("piApp", {
       preferences,
     ) as Promise<DesktopAppState>,
   setExtensionPackEnabled: (enabled: boolean) =>
-    ipcRenderer.invoke(
-      desktopIpc.setExtensionPackEnabled,
-      enabled,
-    ) as Promise<DesktopAppState>,
+    ipcRenderer.invoke(desktopIpc.setExtensionPackEnabled, enabled) as Promise<DesktopAppState>,
   setIntegratedTerminalShell: (shellPath: string) =>
     ipcRenderer.invoke(
       desktopIpc.setIntegratedTerminalShell,

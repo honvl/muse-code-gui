@@ -1333,6 +1333,11 @@ app.on("before-quit", (event) => {
   stopPruningTerminals = undefined;
   terminalService?.dispose();
   terminalService = undefined;
+  try {
+    store?.shutdownBackgroundTasks();
+  } catch (error) {
+    console.error("[main] shutdownBackgroundTasks failed:", error);
+  }
   if (quitFlush === "done" || !store) {
     return;
   }
