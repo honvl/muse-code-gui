@@ -535,14 +535,13 @@ export function Sidebar(props: SidebarProps) {
             </div>
             <div className="session-list session-list--activity">
               {runningThreads.map((thread) => {
-                const active =
-                  thread.workspaceId === selectedWorkspace?.id &&
-                  thread.session.id === selectedSession?.id;
+                // Selection highlight lives with the main list (which asserts a
+                // single .session-row--active); this section marks running state.
                 const elapsed = formatElapsed(thread.session.runningSince);
                 return (
                   <ThreadSessionRow
                     key={`active:${thread.workspaceId}:${thread.session.id}`}
-                    active={active}
+                    active={false}
                     thread={thread}
                     showContext
                     threadMenu={threadMenu}
