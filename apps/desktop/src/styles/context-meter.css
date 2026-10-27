@@ -57,6 +57,59 @@
   stroke: var(--error);
 }
 
+.context-meter__quota {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  margin-left: 2px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  cursor: default;
+  transition: background var(--motion-base) var(--ease-out);
+}
+
+.context-meter__quota:hover,
+.context-meter__quota:focus-visible {
+  background: var(--overlay-hover);
+}
+
+.context-meter__quota:focus-visible {
+  outline: none;
+  border-color: var(--focus-ring-border);
+}
+
+.context-meter__quota-track {
+  stroke: var(--border-heavy);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.context-meter__quota-needle {
+  stroke: var(--muted-strong);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+}
+
+.context-meter__quota-hub {
+  fill: var(--muted-strong);
+}
+
+.context-meter__quota[data-tone="warm"] .context-meter__quota-needle,
+.context-meter__quota[data-tone="warm"] .context-meter__quota-hub {
+  stroke: var(--warning);
+  fill: var(--warning);
+}
+
+.context-meter__quota[data-tone="hot"] .context-meter__quota-needle,
+.context-meter__quota[data-tone="hot"] .context-meter__quota-hub {
+  stroke: var(--error);
+  fill: var(--error);
+}
+
 .context-meter__card {
   position: absolute;
   bottom: 100%;

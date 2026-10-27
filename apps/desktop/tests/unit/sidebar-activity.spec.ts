@@ -6,6 +6,11 @@ import {
   formatPlanWindow,
   summarizeSidebarUsage,
 } from "../../src/features/threads/thread-groups";
+import {
+  formatQuotaResetMs,
+  quotaTone,
+  tightestQuotaLimit,
+} from "../../src/features/conversation/session-task-format";
 
 function toolCall(callId: string, toolName: string, status: string) {
   return { kind: "tool", id: callId, callId, toolName, status, label: toolName };
@@ -149,4 +154,36 @@ test("usage formatters compact tokens, cost and windows", () => {
   expect(formatPlanWindow(30)).toBe("30m");
   expect(formatPlanWindow(300)).toBe("5h");
   expect(formatPlanWindow(10080)).toBe("7d");
+});
+
+test("quotaTone matches the usage heat thresholds", () => {
+  expect(quotaTone(12)).toBe("ok");
+  expect(quotaTone(69.9)).toBe("ok");
+  expect(quotaTone(70)).toBe("warm");
+  expect(quotaTone(89.9)).toBe("warm");
+  expect(quotaTone(90)).toBe("hot");
+});
+
+test("tightestQuotaLimit picks the hottest bucket", () => {
+  expect(tightestQuotaLimit(undefined)).toBe(null);
+  expect(
+    tightestQuotaLimit({ tier: null, window: null, weekly: null, fetchedAt: null, error: null }),
+  ).toBe(null);
+  const quota = {
+    tier: "T",
+    window: { usedPercent: 25, resetsAtMs: 1 },
+    weekly: { usedPercent: 80, resetsAtMs: 2 },
+    fetchedAt: 0,
+    error: null,
+  };
+  expect(tightestQuotaLimit(quota)).toEqual({ usedPercent: 80, resetsAtMs: 2 });
+});
+
+test("formatQuotaResetMs counts down quota resets", () => {
+  const now = 1_000_000;
+  expect(formatQuotaResetMs(null, now)).toBe("reset time unknown");
+  expect(formatQuotaResetMs(now, now)).toBe("resetting now");
+  expect(formatQuotaResetMs(now + 30 * 60_000, now)).toBe("resets in 30m");
+  expect(formatQuotaResetMs(now + 90 * 60_000, now)).toBe("resets in 1h 30m");
+  expect(formatQuotaResetMs(now + 3 * 24 * 60 * 60_000, now)).toBe("resets in 3d");
 });

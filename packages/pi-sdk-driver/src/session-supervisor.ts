@@ -133,6 +133,7 @@ import { createInvalidToolCallGuardExtension } from "./invalid-tool-call-guard.j
 import { createTurnCaptureExtension } from "./turn-capture.js";
 import { createTranscriptIdentityExtension } from "./transcript-identity.js";
 import { createPlanLimitsExtension, readSessionUsage } from "./session-usage.js";
+import { currentSessionQuota, refreshSessionQuotaSoon } from "./session-quota.js";
 import {
   createDesktopExtensionBridge,
   type PiDesktopExtensionObserver,
@@ -3119,10 +3120,13 @@ export class SessionSupervisor {
       return;
     }
     try {
+      // Quota is user-global and TTL-cached; the next boundary picks up a refresh.
+      refreshSessionQuotaSoon();
       const provider = session.model?.provider;
       record.usage = readSessionUsage(
         session,
         provider ? this.planLimitsByProvider.get(provider) : undefined,
+        currentSessionQuota(),
       );
     } catch (error) {
       console.warn("[pi-sdk-driver] reading session usage failed", error);
