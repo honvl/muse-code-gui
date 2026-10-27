@@ -40,6 +40,7 @@ interface SettingsViewProps {
   readonly themeMode: "system" | "light" | "dark";
   readonly themePresetId: ThemePresetId;
   readonly enableTransparency: boolean;
+  readonly extensionPackEnabled: boolean;
   readonly onSetModelSettingsScopeMode: (mode: ModelSettingsScopeMode) => void;
   readonly onSetDefaultModel: (provider: string, modelId: string) => void;
   readonly onSetThinkingLevel: (
@@ -60,6 +61,7 @@ interface SettingsViewProps {
   readonly onSetThemeMode: (mode: "system" | "light" | "dark") => void;
   readonly onSetThemePresetId: (presetId: ThemePresetId) => void;
   readonly onSetEnableTransparency: (enabled: boolean) => void;
+  readonly onSetExtensionPackEnabled: (enabled: boolean) => void;
   readonly mcpActions: McpSettingsActions;
 }
 
@@ -78,6 +80,7 @@ export function SettingsView({
   themeMode,
   themePresetId,
   enableTransparency,
+  extensionPackEnabled,
   onSetModelSettingsScopeMode,
   onSetDefaultModel,
   onSetThinkingLevel,
@@ -96,6 +99,7 @@ export function SettingsView({
   onSetThemeMode,
   onSetThemePresetId,
   onSetEnableTransparency,
+  onSetExtensionPackEnabled,
   mcpActions,
 }: SettingsViewProps) {
   const definition = settingsSectionDefinition(section);
@@ -153,9 +157,11 @@ export function SettingsView({
               runtime={runtime}
               modelSettingsScopeMode={modelSettingsScopeMode}
               integratedTerminalShell={integratedTerminalShell}
+              extensionPackEnabled={extensionPackEnabled}
               onSetModelSettingsScopeMode={onSetModelSettingsScopeMode}
               onSetIntegratedTerminalShell={onSetIntegratedTerminalShell}
               onToggleSkillCommands={onToggleSkillCommands}
+              onSetExtensionPackEnabled={onSetExtensionPackEnabled}
             />
           ) : null}
 

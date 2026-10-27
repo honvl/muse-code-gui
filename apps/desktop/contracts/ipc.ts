@@ -180,6 +180,7 @@ export const desktopIpc = {
   setCodemodeAlwaysOn: "pi-gui:set-codemode-always-on",
   respondToHostUiRequest: "pi-gui:respond-to-host-ui-request",
   setNotificationPreferences: "pi-gui:set-notification-preferences",
+  setExtensionPackEnabled: "pi-gui:set-extension-pack-enabled",
   setIntegratedTerminalShell: "pi-gui:set-integrated-terminal-shell",
   setEnableTransparency: "pi-gui:set-enable-transparency",
   terminalEnsurePanel: "pi-gui:terminal-ensure-panel",
@@ -804,6 +805,7 @@ export interface PiDesktopApi {
   setNotificationPreferences(
     preferences: Partial<NotificationPreferences>,
   ): Promise<DesktopAppState>;
+  setExtensionPackEnabled(enabled: boolean): Promise<DesktopAppState>;
   setIntegratedTerminalShell(shell: string): Promise<DesktopAppState>;
   setEnableTransparency(enabled: boolean): Promise<DesktopAppState>;
   setThemePresetId(presetId: ThemePresetId): Promise<DesktopAppState>;

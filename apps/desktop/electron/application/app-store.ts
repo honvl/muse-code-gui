@@ -1480,6 +1480,18 @@ export class DesktopAppStore {
     return this.emit();
   }
 
+  async setExtensionPackEnabled(enabled: boolean): Promise<DesktopAppState> {
+    await this.initialize();
+    this.state = {
+      ...this.state,
+      extensionPackEnabled: enabled,
+      lastError: undefined,
+      revision: this.state.revision + 1,
+    };
+    await this.persistUiState();
+    return this.emit();
+  }
+
   async setIntegratedTerminalShell(integratedTerminalShell: string): Promise<DesktopAppState> {
     await this.initialize();
     const normalizedShell = integratedTerminalShell.trim();
@@ -2313,6 +2325,7 @@ export class DesktopAppStore {
         ...this.state.notificationPreferences,
         ...persisted.notificationPreferences,
       },
+      extensionPackEnabled: persisted.extensionPackEnabled ?? this.state.extensionPackEnabled,
       integratedTerminalShell:
         persisted.integratedTerminalShell ?? this.state.integratedTerminalShell,
       lastViewedAtBySession: persisted.lastViewedAtBySession ?? {},

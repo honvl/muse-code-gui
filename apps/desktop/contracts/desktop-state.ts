@@ -366,6 +366,8 @@ export interface DesktopAppState {
   readonly orchestrationChildren: readonly OrchestrationChildThread[];
   readonly scheduledTasks: readonly ScheduledTaskRecord[];
   readonly notificationPreferences: NotificationPreferences;
+  /** Whether the Muse Code GUI extension pack is ensured into pi's global setup on startup. */
+  readonly extensionPackEnabled: boolean;
   readonly integratedTerminalShell: string;
   readonly lastViewedAtBySession: Readonly<Record<string, string>>;
   readonly lastInteractedAtBySession: Readonly<Record<string, string>>;
@@ -422,6 +424,7 @@ export function createEmptyDesktopAppState(): DesktopAppState {
       backgroundFailure: true,
       attentionNeeded: true,
     },
+    extensionPackEnabled: true,
     integratedTerminalShell: "",
     lastViewedAtBySession: {},
     lastInteractedAtBySession: {},

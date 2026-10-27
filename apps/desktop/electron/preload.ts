@@ -424,6 +424,11 @@ contextBridge.exposeInMainWorld("piApp", {
       desktopIpc.setNotificationPreferences,
       preferences,
     ) as Promise<DesktopAppState>,
+  setExtensionPackEnabled: (enabled: boolean) =>
+    ipcRenderer.invoke(
+      desktopIpc.setExtensionPackEnabled,
+      enabled,
+    ) as Promise<DesktopAppState>,
   setIntegratedTerminalShell: (shellPath: string) =>
     ipcRenderer.invoke(
       desktopIpc.setIntegratedTerminalShell,

@@ -451,6 +451,7 @@ export function SecondarySurfaces({
           themeMode={snapshot.themeMode}
           themePresetId={snapshot.themePresetId}
           enableTransparency={snapshot.enableTransparency}
+          extensionPackEnabled={snapshot.extensionPackEnabled ?? true}
           onLoginProvider={handleLoginProvider}
           onSelectSection={onSelectSettingsSection}
           onLogoutProvider={handleLogoutProvider}
@@ -474,6 +475,13 @@ export function SecondarySurfaces({
             void updateSnapshot(setSnapshot, () => api.setEnableTransparency(enabled)).catch(
               (error: unknown) => {
                 console.error("[renderer] setEnableTransparency failed", error);
+              },
+            );
+          }}
+          onSetExtensionPackEnabled={(enabled) => {
+            void updateSnapshot(setSnapshot, () => api.setExtensionPackEnabled(enabled)).catch(
+              (error: unknown) => {
+                console.error("[renderer] setExtensionPackEnabled failed", error);
               },
             );
           }}

@@ -38,6 +38,7 @@ export interface PersistedUiState {
   /** Flag values each thread's pi session started with, by session key. */
   readonly extensionFlagsBySession?: Record<string, ExtensionFlagValues>;
   readonly notificationPreferences?: Partial<NotificationPreferences>;
+  readonly extensionPackEnabled?: boolean;
   /** Names of pi-gui built-in extensions the user switched off. */
   readonly disabledBuiltinExtensions?: readonly string[];
   readonly integratedTerminalShell?: string;
@@ -105,6 +106,10 @@ export function decodePersistedUiState(parsed: unknown): LegacyPersistedUiState 
     extensionFlagsByWorkspace: toExtensionFlagRecords(candidate.extensionFlagsByWorkspace),
     extensionFlagsBySession: toExtensionFlagRecords(candidate.extensionFlagsBySession),
     notificationPreferences: toNotificationPreferences(candidate.notificationPreferences),
+    extensionPackEnabled:
+      typeof candidate.extensionPackEnabled === "boolean"
+        ? candidate.extensionPackEnabled
+        : undefined,
     disabledBuiltinExtensions: toStringArray(candidate.disabledBuiltinExtensions),
     integratedTerminalShell:
       typeof candidate.integratedTerminalShell === "string"
@@ -211,6 +216,7 @@ function validateUiState(value: unknown): Record<string, unknown> {
       "extensionFlagsByWorkspace",
       "extensionFlagsBySession",
       "notificationPreferences",
+      "extensionPackEnabled",
       "disabledBuiltinExtensions",
       "integratedTerminalShell",
       "lastViewedAtBySession",
@@ -276,7 +282,7 @@ function validateUiState(value: unknown): Record<string, unknown> {
     "collapsedWorkspaceIds",
   ])
     optional(root, key, strings);
-  for (const key of ["sidebarCollapsed", "allowMultiple", "enableTransparency"])
+  for (const key of ["sidebarCollapsed", "allowMultiple", "enableTransparency", "extensionPackEnabled"])
     optional(root, key, boolean);
   optional(root, "activeView", (v) => toAppView(v) !== undefined);
   optional(root, "threadGrouping", isThreadGrouping);

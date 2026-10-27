@@ -162,6 +162,7 @@ type SettingsOwner = Pick<
   | "setMcpServerEnabled"
   | "setCodemodeAlwaysOn"
   | "setNotificationPreferences"
+  | "setExtensionPackEnabled"
   | "setIntegratedTerminalShell"
   | "setEnableTransparency"
   | "getSkillFilePath"
@@ -642,6 +643,11 @@ export function registerDesktopIpc({
   ipcMain.handle(desktopIpc.setNotificationPreferences, (event, rawPreferences: unknown) =>
     run(event, () =>
       owners.settings.setNotificationPreferences(expectNotificationPreferences(rawPreferences)),
+    ),
+  );
+  ipcMain.handle(desktopIpc.setExtensionPackEnabled, (event, rawEnabled: unknown) =>
+    run(event, () =>
+      owners.settings.setExtensionPackEnabled(expectBoolean(rawEnabled, "enabled")),
     ),
   );
   ipcMain.handle(desktopIpc.setIntegratedTerminalShell, (event, rawShellPath: unknown) =>
