@@ -60,6 +60,8 @@ import {
   type BuiltinExtensionEnabled,
 } from "./builtin-extensions.js";
 import { piAddonExtensions } from "./pi-addon-extensions.js";
+import { BackgroundTaskStore } from "./background-tasks.js";
+import { createBackgroundTaskRuntimeExtension } from "./background-task-extension.js";
 import {
   acquireLeaseFile,
   currentLeaseIdentity,
@@ -99,6 +101,7 @@ import {
   nowIso,
   persistedToolOutput,
   previewFromSessionInfo,
+  sanitizeInvalidToolCallHistory,
   shouldPersistSnapshotForAgentEvent,
   shouldTailFromDisk,
   singleFlight,
@@ -305,6 +308,8 @@ export class SessionSupervisor {
   private readonly onTurnCaptureBoundary: PiSdkDriverOptions["onTurnCaptureBoundary"];
   private readonly turnCaptureTimeoutMs: number | undefined;
   private readonly records = new Map<string, ManagedSessionRecord>();
+  /** Detached shell processes started by the bash_background tool (app lifetime). */
+  private readonly backgroundTasks = new BackgroundTaskStore();
   /** Latest plan limits a provider reported, shared by every session on that provider. */
   private readonly planLimitsByProvider = new Map<string, SessionPlanLimits>();
   private readonly ensureRecordInFlight = new Map<string, Promise<ManagedSessionRecord>>();
@@ -358,6 +363,14 @@ export class SessionSupervisor {
         extensionFactories: [
           ...this.piAddons,
           ...this.builtinExtensions,
+          {
+            name: "pi-gui-background-tasks",
+            hidden: true,
+            factory: createBackgroundTaskRuntimeExtension(this.backgroundTasks, (ctx) => ({
+              workspaceId: workspace.workspaceId,
+              sessionId: ctx.sessionManager.getSessionId(),
+            })),
+          },
           {
             name: "pi-gui-plan-limits",
             hidden: true,
@@ -695,6 +708,47 @@ export class SessionSupervisor {
     return record.sessionCommands;
   }
 
+  /** Background bash tasks for one thread (newest last). Includes finished tasks. */
+  async listBackgroundTasks(sessionRef: SessionRef) {
+    await this.ensureRecord(sessionRef);
+    return this.backgroundTasks.list({
+      workspaceId: sessionRef.workspaceId,
+      sessionId: sessionRef.sessionId,
+    });
+  }
+
+  /** Stop a running background bash task in this thread. */
+  async stopBackgroundTask(sessionRef: SessionRef, taskId: string) {
+    const record = await this.ensureRecord(sessionRef);
+    const snapshot = this.backgroundTasks.get(taskId);
+    if (!snapshot) {
+      throw new Error(`Unknown background task: ${taskId}.`);
+    }
+    if (snapshot.workspaceId !== record.workspace.workspaceId || snapshot.sessionId !== record.ref.sessionId) {
+      throw new Error(`Background task ${taskId} does not belong to this thread.`);
+    }
+    return this.backgroundTasks.stop(taskId);
+  }
+
+  /** Read a background task's combined output window. */
+  async readBackgroundTask(
+    sessionRef: SessionRef,
+    taskId: string,
+    options?: { readonly offset?: number; readonly limit?: number },
+  ) {
+    await this.ensureRecord(sessionRef);
+    const snapshot = this.backgroundTasks.get(taskId);
+    if (!snapshot) {
+      throw new Error(`Unknown background task: ${taskId}.`);
+    }
+    return this.backgroundTasks.read(taskId, options);
+  }
+
+  /** Best-effort stop of every running background task (app shutdown). */
+  shutdownBackgroundTasks(): void {
+    this.backgroundTasks.shutdown();
+  }
+
   async respondToHostUiRequest(sessionRef: SessionRef, response: HostUiResponse): Promise<void> {
     const record = await this.ensureRecord(sessionRef);
     const pending = record.pendingHostUiRequests.get(response.requestId);
@@ -1026,6 +1080,27 @@ export class SessionSupervisor {
     // then send the text to the model. Refuse outside the try so the thread is left alone.
     if (input.extensionCommandOnly && !this.isExtensionCommand(session, input.text)) {
       throw new Error(`${input.text.trim().split(/\s/, 1)[0]} is no longer an extension command`);
+    }
+
+    // Drop poisoned tool-call history before the provider sees it. A model slip
+    // (notably `bash` with `{}`) leaves a validation-error toolResult in the
+    // branch; strict providers such as Meta reject every later request that
+    // replays it with `400 invalid_request_error`, so `Continue` can never
+    // succeed without a fork. This mirrors pi's own retry omission but targets
+    // the cause (the invalid call + its result) rather than the trailing empty
+    // error, and it is model-context-only: the visible transcript keeps the
+    // original attempt. Idempotent, so safe before every prompt.
+    try {
+      const repaired = sanitizeInvalidToolCallHistory(session.sessionManager);
+      if (repaired > 0) {
+        session.refreshContext();
+        forcePersistPiSession(session.sessionManager);
+      }
+    } catch (error) {
+      console.warn(
+        `[pi-sdk-driver] could not sanitize invalid tool calls for ${sessionKey(record.ref)}:`,
+        error,
+      );
     }
 
     try {
