@@ -4,7 +4,7 @@ import type {
   SessionPromptCache,
   SessionUsageSnapshot,
 } from "@pi-gui/session-driver";
-import { formatQuotaResetMs, quotaTone, tightestQuotaLimit } from "./session-task-format";
+import { formatQuotaResetMs } from "./session-task-format";
 
 interface ContextMeterProps {
   readonly usage: SessionUsageSnapshot | undefined;
@@ -27,9 +27,6 @@ export function ContextMeter({ usage }: ContextMeterProps) {
   const percent = context.tokens === null ? null : (context.tokens / context.contextWindow) * 100;
   const tone =
     percent === null ? "unknown" : percent > 90 ? "danger" : percent > 70 ? "warning" : "normal";
-  const quotaLimit = tightestQuotaLimit(usage.quota);
-  const quotaLabel =
-    quotaLimit === null ? null : `Subscription quota: ${Math.round(quotaLimit.usedPercent)}% used`;
   const label =
     percent === null
       ? "Context window: usage unknown until the next reply"
@@ -65,39 +62,6 @@ export function ContextMeter({ usage }: ContextMeterProps) {
           />
         </svg>
       </button>
-      {quotaLimit !== null ? (
-        <button
-          type="button"
-          className="context-meter__quota"
-          data-tone={quotaTone(quotaLimit.usedPercent)}
-          data-testid="quota-meter"
-          aria-label={quotaLabel ?? "Subscription quota"}
-          aria-describedby={open ? cardId : undefined}
-          onMouseEnter={() => setOpen(true)}
-          onMouseLeave={() => setOpen(false)}
-          onFocus={() => setOpen(true)}
-          onBlur={() => setOpen(false)}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") setOpen(false);
-          }}
-        >
-          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-            <path
-              className="context-meter__quota-track"
-              d="M 2.5 12 A 6 6 0 0 1 13.5 12"
-              fill="none"
-            />
-            <line
-              className="context-meter__quota-needle"
-              x1="8"
-              y1="12"
-              x2={8 + 4 * Math.cos(Math.PI * (1 - Math.min(quotaLimit.usedPercent, 100) / 100))}
-              y2={12 - 4 * Math.sin(Math.PI * (1 - Math.min(quotaLimit.usedPercent, 100) / 100))}
-            />
-            <circle className="context-meter__quota-hub" cx="8" cy="12" r="1.2" />
-          </svg>
-        </button>
-      ) : null}
       {open ? (
         <div className="context-meter__card" id={cardId} role="tooltip">
           <section className="context-meter__section">
