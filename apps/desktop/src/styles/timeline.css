@@ -334,11 +334,14 @@
   padding: 0;
 }
 
-.timeline-tool--running .timeline-tool__label {
+/* Status tints belong to a row's own header line. A group row nests the tool
+   rows it summarizes, so these must not reach a child through the group's
+   classes: one failed call may only tint itself. */
+.timeline-tool--running > .timeline-tool__header-row .timeline-tool__label {
   color: var(--muted-strong);
 }
 
-.timeline-tool--error .timeline-tool__label {
+.timeline-tool--error > .timeline-tool__header-row .timeline-tool__label {
   color: var(--error-ink);
 }
 
@@ -363,7 +366,7 @@
   height: 14px;
 }
 
-.timeline-tool--error .timeline-tool__glyph {
+.timeline-tool--error > .timeline-tool__header-row .timeline-tool__glyph {
   color: var(--error);
 }
 
@@ -467,15 +470,15 @@
   flex-shrink: 0;
 }
 
-.timeline-tool--success .timeline-tool__status-pip {
+.timeline-tool--success > .timeline-tool__header-row .timeline-tool__status-pip {
   background: var(--success);
 }
 
-.timeline-tool--error .timeline-tool__status-pip {
+.timeline-tool--error > .timeline-tool__header-row .timeline-tool__status-pip {
   background: var(--error);
 }
 
-.timeline-tool--running .timeline-tool__status-pip {
+.timeline-tool--running > .timeline-tool__header-row .timeline-tool__status-pip {
   background: var(--accent);
   animation: timeline-pip-pulse 1.4s var(--ease-in-out) infinite;
 }
@@ -567,6 +570,17 @@
   margin-top: 8px;
   padding-top: 8px;
   border-top: 1px solid var(--line);
+}
+
+/* A group that finished with a failure keeps a neutral summary line: only the
+   pip and the failed count carry the error, and the failing row below stays the
+   thing that reads as red. */
+.timeline-tool-group.timeline-tool--failed > .timeline-tool__header-row .timeline-tool__status-pip {
+  background: var(--error);
+}
+
+.timeline-tool__meta-failed {
+  color: var(--error-ink);
 }
 
 /* ---- Summary divider ---------------------------------------------------- */
@@ -933,7 +947,7 @@
 @media (prefers-reduced-motion: reduce) {
   .timeline:not(.timeline--virtualized) > *,
   .skeleton-line,
-  .timeline-tool--running .timeline-tool__status-pip {
+  .timeline-tool--running > .timeline-tool__header-row .timeline-tool__status-pip {
     animation: none;
   }
 

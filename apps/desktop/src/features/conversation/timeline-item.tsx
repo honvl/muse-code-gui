@@ -474,7 +474,9 @@ function TimelineToolGroupItem({
   const tools = item.tools;
   const running = tools.filter((tool) => tool.status === "running").length;
   const errors = tools.filter((tool) => tool.status === "error").length;
-  const status = running > 0 ? "running" : errors > 0 ? "error" : "success";
+  // A failed call tints its own row. The summary only reports the failure count,
+  // so one broken call never repaints the batch it belongs to.
+  const status = running > 0 ? "running" : errors > 0 ? "failed" : "success";
   const summary = buildToolGroupSummary(tools);
   const duration = formatToolGroupDuration(tools);
   const groupGlyph = toolGlyph(mostCommonToolName(tools));
@@ -502,11 +504,16 @@ function TimelineToolGroupItem({
           <span className="timeline-tool__label">{summary}</span>
           <span className="timeline-tool__meta-inline">
             <span className="timeline-tool__status-pip" aria-hidden="true" />
-            {running > 0
-              ? `${tools.length} tools \u00b7 running`
-              : errors > 0
-                ? `${tools.length} tools \u00b7 ${errors} failed`
-                : `${tools.length} tools \u00b7 done`}
+            {running > 0 ? (
+              `${tools.length} tools \u00b7 running`
+            ) : errors > 0 ? (
+              <>
+                {`${tools.length} tools \u00b7 `}
+                <span className="timeline-tool__meta-failed">{`${errors} failed`}</span>
+              </>
+            ) : (
+              `${tools.length} tools \u00b7 done`
+            )}
             {duration ? ` \u00b7 ${duration}` : null}
           </span>
         </button>
