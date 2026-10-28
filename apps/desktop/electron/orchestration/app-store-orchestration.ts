@@ -14,7 +14,7 @@ import type {
   WorkspaceRef,
 } from "@pi-gui/session-driver";
 import type { PiSdkDriver } from "@pi-gui/pi-sdk-driver";
-import { parseWriteScope, scopesOverlap } from "./writer-scope";
+import { analyzeWriteScope, scopesOverlap } from "./writer-scope";
 import {
   decideSidekickReuse,
   resolveSidekickReuseWindowMs,
@@ -367,6 +367,17 @@ function writerScopeConflictMessage(blockerTitle: string, scopeDisplay: string):
   );
 }
 
+function scopeOutsideWorkspaceMessage(paths: readonly string[], workspacePath: string): string {
+  return (
+    `Scope path "${paths.join('", "')}" is outside this workspace (${workspacePath}). ` +
+    `Name paths inside the workspace, relative to it; a worker cannot claim another checkout.`
+  );
+}
+
+function scopeDisplay(scopes: readonly string[]): string {
+  return scopes.length > 0 ? scopes.join(", ") : "the workspace";
+}
+
 /** Statuses that hold the single-writer slot. Terminal children release it. */
 function isActiveWriterStatus(status: OrchestrationChildThreadStatus): boolean {
   return status === "running" || status === "queued" || status === "waiting";
@@ -472,8 +483,14 @@ async function createChildThreadRecord(
   // collision this rule exists to stop, so it must be the strictest case, not
   // the exempt one. Each active worker's claimed scope comes from its record
   // (`existingChildWriteScopes`), so disjoint scopes run concurrently.
-  const newScopes = parseWriteScope(input.scope);
+  const analyzedScope = analyzeWriteScope(input.scope, workspace.path);
+  const newScopes = analyzedScope.tokens;
   if (mode !== "scout") {
+    if (analyzedScope.outsideWorkspace.length > 0) {
+      throw new WriterScopeConflictError(
+        scopeOutsideWorkspaceMessage(analyzedScope.outsideWorkspace, workspace.path),
+      );
+    }
     const blocker = findConflictingWorker(
       store.orchestrationState().orchestrationChildren,
       input.parentWorkspaceId,
@@ -482,7 +499,7 @@ async function createChildThreadRecord(
     );
     if (blocker) {
       throw new WriterScopeConflictError(
-        writerScopeConflictMessage(blocker.title || blocker.id, newScopes[0] ?? "the workspace"),
+        writerScopeConflictMessage(blocker.title || blocker.id, scopeDisplay(newScopes)),
       );
     }
   }
@@ -908,8 +925,12 @@ async function reuseSidekickForBrief(
 
   // Same writer-scope check a fresh spawn faces. The candidate is idle, so it
   // never blocks itself; on a conflict the spawn path returns the refusal.
-  const newScopes = parseWriteScope(input.scope);
+  // An outside-workspace path is refused by the spawn path, with its message.
+  const workspacePath = store.workspaceRefFromState(parentRef.workspaceId)?.path;
+  const analyzedScope = analyzeWriteScope(input.scope, workspacePath);
+  const newScopes = analyzedScope.tokens;
   if (
+    analyzedScope.outsideWorkspace.length > 0 ||
     findConflictingWorker(
       store.orchestrationState().orchestrationChildren,
       parentRef.workspaceId,
@@ -1460,7 +1481,7 @@ async function deliverMessageToThread(
       return sendMessageToThreadErrorResult(
         input.threadId,
         input.message,
-        writerScopeConflictMessage(blocker.title || blocker.id, scopes[0] ?? "the workspace"),
+        writerScopeConflictMessage(blocker.title || blocker.id, scopeDisplay(scopes)),
       );
     }
   }

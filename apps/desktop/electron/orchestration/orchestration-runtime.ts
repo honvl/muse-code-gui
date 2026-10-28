@@ -162,7 +162,8 @@ function createCreateChildThreadTool(
         },
         scope: {
           type: "string",
-          description: "Files or areas the child should work in.",
+          description:
+            "Paths the child should work in, relative to the workspace (absolute paths must be inside it). Prose and (asides) around paths are ignored.",
         },
         constraints: {
           type: "string",

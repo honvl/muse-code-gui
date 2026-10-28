@@ -3,7 +3,11 @@ import type { SessionRef } from "@pi-gui/session-driver";
 import type { OrchestrationChildThread, TranscriptMessage } from "../../contracts/desktop-state";
 import { createChildThreadAction } from "../../electron/orchestration/orchestration-runtime";
 import { createOrchestrationOwner } from "../../electron/orchestration/app-store-orchestration";
-import { parseWriteScope, scopesOverlap } from "../../electron/orchestration/writer-scope";
+import {
+  analyzeWriteScope,
+  parseWriteScope,
+  scopesOverlap,
+} from "../../electron/orchestration/writer-scope";
 
 test("parseWriteScope trims, dedupes, and normalizes path tokens", () => {
   expect(parseWriteScope(undefined)).toEqual([]);
@@ -16,6 +20,66 @@ test("parseWriteScope trims, dedupes, and normalizes path tokens", () => {
   expect(parseWriteScope("apps/desktop, apps/desktop")).toEqual(["apps/desktop"]);
   expect(parseWriteScope("apps/desktop, packages/foo")).toEqual(["apps/desktop", "packages/foo"]);
   expect(parseWriteScope("apps/desktop packages/foo")).toEqual(["apps/desktop", "packages/foo"]);
+});
+
+// Observed live: the first scope claimed the whole workspace and the second
+// was refused, shown as "users/honvl/pi-gui/.worktrees/lead-toggle-model".
+const LIVE_WORKSPACE = "/Users/honvl/pi-gui";
+const LIVE_WIDE_SCOPE =
+  "/Users/honvl/pi-gui/.worktrees/subagent-lane (whole worktree; mainly apps/desktop renderer thread rail/sidebar, ...)";
+const LIVE_NARROW_SCOPE = "/Users/honvl/pi-gui/.worktrees/lead-toggle-model";
+
+test("absolute scopes inside the workspace become relative; asides do not widen them", () => {
+  expect(analyzeWriteScope(LIVE_WIDE_SCOPE, LIVE_WORKSPACE)).toEqual({
+    tokens: [".worktrees/subagent-lane"],
+    outsideWorkspace: [],
+  });
+  expect(analyzeWriteScope(LIVE_NARROW_SCOPE, LIVE_WORKSPACE)).toEqual({
+    tokens: [".worktrees/lead-toggle-model"],
+    outsideWorkspace: [],
+  });
+  expect(
+    scopesOverlap(
+      parseWriteScope(LIVE_WIDE_SCOPE, LIVE_WORKSPACE),
+      parseWriteScope(LIVE_NARROW_SCOPE, LIVE_WORKSPACE),
+    ),
+  ).toBe(false);
+  expect(parseWriteScope(`${LIVE_WORKSPACE}/apps/desktop/src/`, LIVE_WORKSPACE)).toEqual([
+    "apps/desktop/src",
+  ]);
+  // Without a workspace an absolute path keeps its slash instead of turning relative.
+  expect(parseWriteScope(LIVE_NARROW_SCOPE)).toEqual([
+    "/users/honvl/pi-gui/.worktrees/lead-toggle-model",
+  ]);
+});
+
+test("absolute scopes outside the workspace are reported, never claimed", () => {
+  const worktree = "/Users/honvl/pi-gui/.worktrees/subagent-lane";
+  expect(analyzeWriteScope(LIVE_NARROW_SCOPE, worktree)).toEqual({
+    tokens: [],
+    outsideWorkspace: [LIVE_NARROW_SCOPE],
+  });
+  expect(analyzeWriteScope("apps/a, ../elsewhere", worktree)).toEqual({
+    tokens: ["apps/a"],
+    outsideWorkspace: ["../elsewhere"],
+  });
+  // Naming the workspace root itself adds no narrower claim: whole workspace.
+  expect(analyzeWriteScope(LIVE_WIDE_SCOPE, worktree)).toEqual({
+    tokens: [],
+    outsideWorkspace: [],
+  });
+});
+
+test("prose-only scopes claim the whole workspace; one real path narrows them", () => {
+  expect(parseWriteScope("mainly the renderer thread rail")).toEqual([]);
+  expect(parseWriteScope("(whole worktree; mainly apps/desktop)")).toEqual([]);
+  expect(parseWriteScope("mainly apps/desktop renderer, and tests.")).toEqual(["apps/desktop"]);
+  expect(parseWriteScope("docs, scripts")).toEqual(["docs", "scripts"]);
+  expect(parseWriteScope("`apps/desktop/**` [not packages/]")).toEqual(["apps/desktop"]);
+  expect(parseWriteScope("edit README.md and package.json only")).toEqual([
+    "readme.md",
+    "package.json",
+  ]);
 });
 
 test("scopesOverlap treats empty as the whole workspace", () => {
@@ -104,6 +168,7 @@ interface WriterHostState {
   childTranscript: TranscriptMessage[];
   /** Per-child session status override, by child session id. */
   sessionStatusById?: Record<string, "running" | "idle">;
+  workspacePath?: string;
 }
 
 function makeHost(state: WriterHostState) {
@@ -143,7 +208,7 @@ function makeHost(state: WriterHostState) {
     withError: async () => ({}) as never,
     persistUiState: async () => {},
     schedulePersistUiState: () => {},
-    workspaceRefFromState: () => ({ workspaceId: "ws", path: "/tmp/ws" }),
+    workspaceRefFromState: () => ({ workspaceId: "ws", path: state.workspacePath ?? "/tmp/ws" }),
     sessionFromState: (ref: SessionRef) => {
       if (ref.sessionId === parentRef.sessionId) {
         return { status: "running", title: "Parent", updatedAt: createdAt };
@@ -485,4 +550,51 @@ test("steering a running worker skips the scope check: it already holds its slot
 
   expect(result.details.error).toBeUndefined();
   expect(submitted).toHaveLength(1);
+});
+
+test("the observed live scopes run as two concurrent workers", async () => {
+  const { owner, createSessionCalls, state } = makeHost({
+    children: [],
+    childStatus: "running",
+    childTranscript: [userMessage("u1", prompt), assistantMessage("a1", "Working.")],
+    workspacePath: LIVE_WORKSPACE,
+  });
+
+  const wide = await owner.createChildThreadToolResult(parentRef, {
+    prompt,
+    scope: LIVE_WIDE_SCOPE,
+    toolCallId: "call-live-wide",
+  });
+  expect(wide.details.error).toBeUndefined();
+  expect(state.children[0]?.writeScopes).toEqual([".worktrees/subagent-lane"]);
+  state.children = state.children.map((child) => ({ ...child, status: "running" as const }));
+
+  const narrow = await owner.createChildThreadToolResult(parentRef, {
+    prompt,
+    scope: LIVE_NARROW_SCOPE,
+    toolCallId: "call-live-narrow",
+  });
+  expect(narrow.details.error).toBeUndefined();
+  expect(createSessionCalls).toHaveLength(2);
+  const spawned = state.children.find((child) => child.id === narrow.details.childThreadId);
+  expect(spawned?.writeScopes).toEqual([".worktrees/lead-toggle-model"]);
+});
+
+test("a worker scoped outside the workspace is refused with the path", async () => {
+  const { owner, createSessionCalls } = makeHost({
+    children: [],
+    childStatus: "running",
+    childTranscript: [userMessage("u1", prompt)],
+    workspacePath: "/Users/honvl/pi-gui/.worktrees/subagent-lane",
+  });
+
+  const result = await owner.createChildThreadToolResult(parentRef, {
+    prompt,
+    scope: LIVE_NARROW_SCOPE,
+    toolCallId: "call-live-outside",
+  });
+  expect(createSessionCalls).toHaveLength(0);
+  expect(result.details.error).toContain(
+    `Scope path "${LIVE_NARROW_SCOPE}" is outside this workspace`,
+  );
 });
