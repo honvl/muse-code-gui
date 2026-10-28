@@ -7,6 +7,13 @@ export interface BuiltinExtension {
   readonly displayName: string;
   readonly description?: string;
   readonly factory: ExtensionFactory;
+  /**
+   * Tool names this built-in replaces elsewhere (e.g. the driver's hidden
+   * cross-session tools). The driver omits them from the superseded
+   * extension so pi never reports a `Tool "…" conflicts` diagnostic.
+   * Only honored while this built-in is enabled.
+   */
+  readonly supersedesTools?: readonly string[];
 }
 
 export type BuiltinExtensionEnabled = (name: string) => boolean;
@@ -20,6 +27,23 @@ export function findBuiltinExtension(
   path: string,
 ): BuiltinExtension | undefined {
   return builtins.find((builtin) => builtinExtensionPath(builtin.name) === path);
+}
+
+/**
+ * Tool names superseded by currently enabled built-ins. Only enabled
+ * built-ins contribute, so switching one off restores the tools it replaced.
+ */
+export function collectSupersededToolNames(
+  builtins: readonly BuiltinExtension[],
+  isEnabled: BuiltinExtensionEnabled,
+): readonly string[] {
+  const names: string[] = [];
+  for (const builtin of builtins) {
+    if (builtin.supersedesTools && isEnabled(builtin.name)) {
+      names.push(...builtin.supersedesTools);
+    }
+  }
+  return names;
 }
 
 /**

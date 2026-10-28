@@ -275,25 +275,33 @@ export function createCrossSessionRuntimeTools(
     workspaceId: "",
     sessionId: ctx.sessionManager.getSessionId(),
   }),
+  omittedToolNames: readonly string[] = [],
 ): readonly ToolDefinition<any, CrossSessionToolDetails>[] {
+  const omitted = new Set(omittedToolNames);
   return [
     createListThreadsTool(bridge),
     createReadThreadTool(bridge),
     createMessageThreadTool(bridge, resolveSource),
-  ];
+  ].filter((tool) => !omitted.has(tool.name));
 }
 
 export function createCrossSessionRuntimeExtension(
   bridge: CrossSessionBridge,
   resolveSource?: (ctx: ExtensionContext) => CrossSessionSource,
+  omittedToolNames?: readonly string[] | (() => readonly string[]),
 ): ExtensionFactory {
   const tools = createCrossSessionRuntimeTools(
     bridge,
     ...(resolveSource ? [resolveSource] : ([] as const)),
   );
   return (pi: ExtensionAPI) => {
+    const omitted = new Set(
+      typeof omittedToolNames === "function" ? omittedToolNames() : (omittedToolNames ?? []),
+    );
     for (const tool of tools) {
-      pi.registerTool(tool);
+      if (!omitted.has(tool.name)) {
+        pi.registerTool(tool);
+      }
     }
   };
 }

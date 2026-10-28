@@ -59,6 +59,7 @@ import type { SessionFileCatalogStorage } from "@pi-gui/catalogs";
 import { sessionKey } from "@pi-gui/session-driver";
 import { buildSessionSchemaInfo, readSessionFileSchemaVersion } from "./session-schema.js";
 import {
+  collectSupersededToolNames,
   gatedBuiltinExtensions,
   type BuiltinExtension,
   type BuiltinExtensionEnabled,
@@ -323,6 +324,8 @@ export class SessionSupervisor {
   ) => Promise<AgentSessionRuntime>;
   private readonly agentDir: string | undefined;
   private readonly builtinExtensions: readonly InlineExtension[];
+  private readonly builtinDeclarations: readonly BuiltinExtension[];
+  private readonly isBuiltinExtensionEnabled: BuiltinExtensionEnabled;
   private readonly piAddons: readonly InlineExtension[];
   private readonly desktopExtensions: PiDesktopExtensionObserver | undefined;
   private readonly extensionFlagValuesForSession: PiSdkDriverOptions["extensionFlagValuesForSession"];
@@ -365,6 +368,8 @@ export class SessionSupervisor {
       options.builtinExtensions ?? [],
       options.isBuiltinExtensionEnabled ?? (() => true),
     );
+    this.builtinDeclarations = options.builtinExtensions ?? [];
+    this.isBuiltinExtensionEnabled = options.isBuiltinExtensionEnabled ?? (() => true);
     this.piAddons = piAddonExtensions(options.openUrl ? { openUrl: options.openUrl } : {});
     this.desktopExtensions = options.desktopExtensions;
     this.extensionFlagValuesForSession = options.extensionFlagValuesForSession;
@@ -418,6 +423,12 @@ export class SessionSupervisor {
                 workspaceId: workspace.workspaceId,
                 sessionId: ctx.sessionManager.getSessionId(),
               }),
+              // Evaluated on every (re)load so toggling a built-in off restores
+              // the superseded tools on the session's next reload.
+              () => collectSupersededToolNames(
+                this.builtinDeclarations,
+                this.isBuiltinExtensionEnabled,
+              ),
             ),
           },
           {

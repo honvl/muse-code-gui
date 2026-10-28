@@ -5,7 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { gatedBuiltinExtensions, type BuiltinExtension } from "../dist/builtin-extensions.js";
+import {
+  collectSupersededToolNames,
+  gatedBuiltinExtensions,
+  type BuiltinExtension,
+} from "../dist/builtin-extensions.js";
+import { createCrossSessionRuntimeExtension } from "../dist/cross-session.js";
 import { PiSdkDriver } from "../dist/pi-sdk-driver.js";
 import { RuntimeSupervisor } from "../dist/runtime-supervisor.js";
 
@@ -148,6 +153,110 @@ await test(
     assert.equal(loads, 1, "switching off stops it registering again");
   },
 );
+
+await test("collectSupersededToolNames only includes enabled built-ins", () => {
+  const builtins: BuiltinExtension[] = [
+    {
+      name: "a",
+      displayName: "A",
+      factory: () => {},
+      supersedesTools: ["list_threads", "read_thread"],
+    },
+    { name: "b", displayName: "B", factory: () => {} },
+    {
+      name: "c",
+      displayName: "C",
+      factory: () => {},
+      supersedesTools: ["message_thread"],
+    },
+  ];
+  assert.deepEqual(
+    collectSupersededToolNames(builtins, (name) => name !== "c"),
+    ["list_threads", "read_thread"],
+  );
+  assert.deepEqual(collectSupersededToolNames(builtins, () => false), []);
+  assert.deepEqual(collectSupersededToolNames(builtins, () => true), [
+    "list_threads",
+    "read_thread",
+    "message_thread",
+  ]);
+});
+
+await test("orchestration enabled: no tool conflicts and no message_thread; disabled: trio back", async () => {
+  const { agentDir, workspacePath } = await createDirs();
+  const registerSimpleTool = (pi: ExtensionAPI, name: string) => {
+    pi.registerTool({
+      name,
+      label: name,
+      description: name,
+      parameters: { type: "object", properties: {} },
+      execute: () => Promise.resolve({ content: [], details: undefined }),
+    });
+  };
+  // Mirrors the desktop's pi-gui-thread-orchestration built-in: it owns
+  // list_threads/read_thread plus send_message_to_thread, which covers message_thread.
+  const ORCHESTRATION_LIKE: BuiltinExtension = {
+    name: "pi-gui-thread-orchestration",
+    displayName: "Thread orchestration",
+    supersedesTools: ["list_threads", "read_thread", "message_thread"],
+    factory: (pi: ExtensionAPI) => {
+      registerSimpleTool(pi, "list_threads");
+      registerSimpleTool(pi, "read_thread");
+      registerSimpleTool(pi, "send_message_to_thread");
+      registerSimpleTool(pi, "create_child_thread");
+    },
+  };
+  const inertBridge = {
+    listThreads: async () => [],
+    readThread: async () => {
+      throw new Error("unreachable in registration test");
+    },
+    deliverMessage: async () => {
+      throw new Error("unreachable in registration test");
+    },
+  };
+  let enabled = true;
+  // Same wiring as SessionSupervisor: gated built-ins first, cross-session after,
+  // with the omit list re-evaluated from enabled built-ins on every load.
+  const loader = new DefaultResourceLoader({
+    cwd: workspacePath,
+    agentDir,
+    settingsManager: SettingsManager.inMemory(),
+    extensionFactories: [
+      ...gatedBuiltinExtensions([ORCHESTRATION_LIKE], () => enabled),
+      {
+        name: "pi-gui-cross-session",
+        hidden: true,
+        factory: createCrossSessionRuntimeExtension(
+          inertBridge as never,
+          undefined,
+          () => collectSupersededToolNames([ORCHESTRATION_LIKE], () => enabled),
+        ),
+      },
+    ],
+  });
+  const activeTools = () =>
+    loader
+      .getExtensions()
+      .extensions.flatMap((extension) => [...extension.tools.keys()])
+      .sort();
+  const conflictErrors = () =>
+    loader.getExtensions().errors.filter((entry) => entry.error.includes("conflicts with"));
+
+  await loader.reload();
+  assert.deepEqual(activeTools(), [
+    "create_child_thread",
+    "list_threads",
+    "read_thread",
+    "send_message_to_thread",
+  ]);
+  assert.deepEqual(conflictErrors(), []);
+
+  enabled = false;
+  await loader.reload();
+  assert.deepEqual(activeTools(), ["list_threads", "message_thread", "read_thread"]);
+  assert.deepEqual(conflictErrors(), []);
+});
 
 await test("Settings records each tool's label, and whether it replaces one of pi's tools", async () => {
   const { agentDir, workspacePath } = await createDirs();

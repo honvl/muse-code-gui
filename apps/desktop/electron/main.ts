@@ -1067,6 +1067,7 @@ app
           name: "pi-gui-thread-orchestration",
           displayName: "Thread orchestration",
           description: "Lets pi start, read and message other pi-gui threads",
+          supersedesTools: ["list_threads", "read_thread", "message_thread"],
           factory: createOrchestrationRuntimeExtension(orchestrationRuntimeBridge),
         },
         {

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { SessionSupervisor } from "../dist/session-supervisor.js";
 import {
+  createCrossSessionRuntimeExtension,
   createCrossSessionRuntimeTools,
   formatTranscriptExcerpt,
   listThreadsToolName,
@@ -210,6 +211,62 @@ await test("formatTranscriptExcerpt caps items and characters", () => {
   const rendered = formatTranscriptExcerpt(withTool);
   assert.ok(!rendered.truncated);
   assert.match(rendered.excerpt, /\[tool bash\]/);
+});
+
+await test("createCrossSessionRuntimeTools omits superseded tools", () => {
+  const bridge = makeBridge();
+  const all = createCrossSessionRuntimeTools(bridge).map((entry) => entry.name).sort();
+  assert.deepEqual(all, [listThreadsToolName, messageThreadToolName, readThreadToolName]);
+
+  const omitted = createCrossSessionRuntimeTools(bridge, undefined, [
+    listThreadsToolName,
+    messageThreadToolName,
+  ])
+    .map((entry) => entry.name)
+    .sort();
+  assert.deepEqual(omitted, [readThreadToolName]);
+});
+
+await test("createCrossSessionRuntimeExtension registers only non-superseded tools", () => {
+  const bridge = makeBridge();
+  const run = (factory: (pi: never) => unknown) => {
+    const registered: string[] = [];
+    factory({ registerTool: (tool: { name: string }) => void registered.push(tool.name) } as never);
+    return registered.sort();
+  };
+  // Orchestration enabled: it supersedes the whole trio, so cross-session adds nothing.
+  assert.deepEqual(
+    run(
+      createCrossSessionRuntimeExtension(bridge, undefined, [
+        listThreadsToolName,
+        readThreadToolName,
+        messageThreadToolName,
+      ]),
+    ),
+    [],
+  );
+  // Orchestration disabled: nothing superseded, the trio registers as today.
+  assert.deepEqual(run(createCrossSessionRuntimeExtension(bridge)), [
+    listThreadsToolName,
+    messageThreadToolName,
+    readThreadToolName,
+  ]);
+});
+
+await test("createCrossSessionRuntimeExtension re-evaluates the omit list on every load", () => {
+  const bridge = makeBridge();
+  let enabled = true;
+  const factory = createCrossSessionRuntimeExtension(bridge, undefined, () =>
+    enabled ? [messageThreadToolName] : [],
+  );
+  const run = () => {
+    const registered: string[] = [];
+    factory({ registerTool: (tool: { name: string }) => void registered.push(tool.name) } as never);
+    return registered.sort();
+  };
+  assert.deepEqual(run(), [listThreadsToolName, readThreadToolName]);
+  enabled = false;
+  assert.deepEqual(run(), [listThreadsToolName, messageThreadToolName, readThreadToolName]);
 });
 
 function makeCatalog() {
