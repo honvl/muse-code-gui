@@ -30,6 +30,11 @@ export type {
 /** A reasoning effort pi accepts; pi clamps it to what the chosen model supports. */
 export type ThinkingLevel = NonNullable<RuntimeSettingsSnapshot["defaultThinkingLevel"]>;
 
+/** Reasoning effort lead-mode threads start with until the user picks another default. */
+export const DEFAULT_LEAD_THINKING_LEVEL: ThinkingLevel = "high";
+/** Reasoning effort sidekick children start with until the user picks another default. */
+export const DEFAULT_SIDEKICK_THINKING_LEVEL: ThinkingLevel = "xhigh";
+
 export type AppView = "threads" | "new-thread" | "scheduled" | "skills" | "extensions" | "settings";
 export type WorkspaceKind = "primary" | "worktree";
 export type WorktreeStatus = "ready" | "missing" | "error";
@@ -413,8 +418,12 @@ export interface DesktopAppState {
   readonly defaultLeadModel?: SessionModelSelection;
   /** App-global default model for read-only scout children; absent falls back to the thread sidekick. */
   readonly defaultScoutModel?: SessionModelSelection;
-  /** Per-thread reasoning effort for sidekick children, by session key; absent keeps the workspace default. */
+  /** App-global reasoning effort for lead-mode threads; absent means DEFAULT_LEAD_THINKING_LEVEL. */
+  readonly defaultLeadThinkingLevel?: ThinkingLevel;
+  /** Per-thread reasoning effort for sidekick children, by session key; absent uses the app default. */
   readonly sidekickThinkingBySession?: Readonly<Record<string, ThinkingLevel>>;
+  /** App-global reasoning effort for sidekick children; absent means DEFAULT_SIDEKICK_THINKING_LEVEL. */
+  readonly defaultSidekickThinkingLevel?: ThinkingLevel;
   /** App-global reasoning effort for scout children; absent falls back to the thread's sidekick effort. */
   readonly defaultScoutThinkingLevel?: ThinkingLevel;
   readonly themeMode: ThemeMode;

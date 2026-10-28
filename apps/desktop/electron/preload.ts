@@ -383,6 +383,16 @@ contextBridge.exposeInMainWorld("piApp", {
       desktopIpc.setDefaultScoutThinkingLevel,
       thinkingLevel,
     ) as Promise<DesktopAppState>,
+  setDefaultLeadThinkingLevel: (thinkingLevel: ThinkingLevel | null) =>
+    ipcRenderer.invoke(
+      desktopIpc.setDefaultLeadThinkingLevel,
+      thinkingLevel,
+    ) as Promise<DesktopAppState>,
+  setDefaultSidekickThinkingLevel: (thinkingLevel: ThinkingLevel | null) =>
+    ipcRenderer.invoke(
+      desktopIpc.setDefaultSidekickThinkingLevel,
+      thinkingLevel,
+    ) as Promise<DesktopAppState>,
   loginProvider: (workspaceId: string, providerId: string) =>
     ipcRenderer.invoke(
       desktopIpc.loginProvider,

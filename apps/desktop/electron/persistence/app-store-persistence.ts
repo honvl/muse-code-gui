@@ -69,6 +69,10 @@ export interface PersistedUiState {
   readonly sidekickThinkingBySession?: Record<string, ThinkingLevel>;
   /** App-global reasoning effort for read-only scout children. */
   readonly defaultScoutThinkingLevel?: ThinkingLevel;
+  /** App-global reasoning effort for lead-mode threads; absent means the built-in default. */
+  readonly defaultLeadThinkingLevel?: ThinkingLevel;
+  /** App-global reasoning effort for sidekick children; absent means the built-in default. */
+  readonly defaultSidekickThinkingLevel?: ThinkingLevel;
 }
 
 /**
@@ -166,6 +170,8 @@ export function decodePersistedUiState(parsed: unknown): LegacyPersistedUiState 
     defaultScoutModel: toDefaultScoutModel(candidate.defaultScoutModel),
     sidekickThinkingBySession: toThinkingLevelRecord(candidate.sidekickThinkingBySession),
     defaultScoutThinkingLevel: toThinkingLevel(candidate.defaultScoutThinkingLevel),
+    defaultLeadThinkingLevel: toThinkingLevel(candidate.defaultLeadThinkingLevel),
+    defaultSidekickThinkingLevel: toThinkingLevel(candidate.defaultSidekickThinkingLevel),
     composerAttachmentsBySession: toObjectArrayRecord(candidate.composerAttachmentsBySession),
     transcripts: toObjectArrayRecord(candidate.transcripts),
   };
@@ -269,6 +275,8 @@ function validateUiState(value: unknown): Record<string, unknown> {
       "defaultScoutModel",
       "sidekickThinkingBySession",
       "defaultScoutThinkingLevel",
+      "defaultLeadThinkingLevel",
+      "defaultSidekickThinkingLevel",
       "composerAttachmentsBySession",
       "transcripts",
     ],
@@ -378,7 +386,12 @@ function validateUiState(value: unknown): Record<string, unknown> {
       if (!id || toThinkingLevel(value) === undefined) fail(`sidekickThinkingBySession.${id}`);
     }
   }
-  optional(root, "defaultScoutThinkingLevel", (v) => toThinkingLevel(v) !== undefined);
+  for (const key of [
+    "defaultScoutThinkingLevel",
+    "defaultLeadThinkingLevel",
+    "defaultSidekickThinkingLevel",
+  ])
+    optional(root, key, (v) => toThinkingLevel(v) !== undefined);
   optional(root, "activeView", (v) => toAppView(v) !== undefined);
   optional(root, "threadGrouping", isThreadGrouping);
   optional(root, "themeMode", isThemeMode);

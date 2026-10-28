@@ -157,6 +157,8 @@ type SettingsOwner = Pick<
   | "setDefaultLeadModel"
   | "setDefaultScoutModel"
   | "setDefaultScoutThinkingLevel"
+  | "setDefaultLeadThinkingLevel"
+  | "setDefaultSidekickThinkingLevel"
   | "setDefaultThinkingLevel"
   | "loginProvider"
   | "logoutProvider"
@@ -498,6 +500,16 @@ export function registerDesktopIpc({
   ipcMain.handle(desktopIpc.setDefaultScoutThinkingLevel, (event, thinkingLevel: unknown) =>
     run(event, () =>
       owners.settings.setDefaultScoutThinkingLevel(expectNullableThinkingLevel(thinkingLevel)),
+    ),
+  );
+  ipcMain.handle(desktopIpc.setDefaultLeadThinkingLevel, (event, thinkingLevel: unknown) =>
+    run(event, () =>
+      owners.settings.setDefaultLeadThinkingLevel(expectNullableThinkingLevel(thinkingLevel)),
+    ),
+  );
+  ipcMain.handle(desktopIpc.setDefaultSidekickThinkingLevel, (event, thinkingLevel: unknown) =>
+    run(event, () =>
+      owners.settings.setDefaultSidekickThinkingLevel(expectNullableThinkingLevel(thinkingLevel)),
     ),
   );
   ipcMain.handle(

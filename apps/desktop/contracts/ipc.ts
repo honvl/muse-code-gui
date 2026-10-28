@@ -171,6 +171,8 @@ export const desktopIpc = {
   setDefaultLeadModel: "pi-gui:set-default-lead-model",
   setDefaultScoutModel: "pi-gui:set-default-scout-model",
   setDefaultScoutThinkingLevel: "pi-gui:set-default-scout-thinking-level",
+  setDefaultLeadThinkingLevel: "pi-gui:set-default-lead-thinking-level",
+  setDefaultSidekickThinkingLevel: "pi-gui:set-default-sidekick-thinking-level",
   loginProvider: "pi-gui:login-provider",
   logoutProvider: "pi-gui:logout-provider",
   setProviderApiKey: "pi-gui:set-provider-api-key",
@@ -791,7 +793,7 @@ export interface PiDesktopApi {
     sessionId: string,
     selection: SessionModelSelection | null,
   ): Promise<DesktopAppState>;
-  /** `null` clears back to the workspace default reasoning effort. */
+  /** `null` clears back to the app-global sidekick reasoning effort. */
   setSessionSidekickThinkingLevel(
     workspaceId: string,
     sessionId: string,
@@ -801,6 +803,10 @@ export interface PiDesktopApi {
   setDefaultScoutModel(selection: SessionModelSelection | null): Promise<DesktopAppState>;
   /** `null` clears back to the thread's sidekick reasoning effort. */
   setDefaultScoutThinkingLevel(thinkingLevel: ThinkingLevel | null): Promise<DesktopAppState>;
+  /** `null` clears back to the built-in lead reasoning effort (high). */
+  setDefaultLeadThinkingLevel(thinkingLevel: ThinkingLevel | null): Promise<DesktopAppState>;
+  /** `null` clears back to the built-in sidekick reasoning effort (xhigh). */
+  setDefaultSidekickThinkingLevel(thinkingLevel: ThinkingLevel | null): Promise<DesktopAppState>;
   loginProvider(workspaceId: string, providerId: string): Promise<DesktopAppState>;
   logoutProvider(workspaceId: string, providerId: string): Promise<DesktopAppState>;
   setProviderApiKey(
