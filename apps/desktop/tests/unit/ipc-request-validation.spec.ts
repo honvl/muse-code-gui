@@ -12,6 +12,7 @@ import {
   expectOptionalDeliverOptions,
   expectSessionTarget,
   expectStartThreadInput,
+  expectSubagentTranscriptRequest,
   expectStringArray,
   expectTerminalSize,
   expectThemeMode,
@@ -26,6 +27,35 @@ test("IPC request validation returns a fresh trusted session target", () => {
 
   expect(target).toEqual({ workspaceId: "workspace-a", sessionId: "session-a" });
   expect(target).not.toBe(request);
+});
+
+test("IPC request validation accepts a subagent transcript request", () => {
+  const request = {
+    workspaceId: "ws",
+    sessionName: "agent:explore: Explore auth flow",
+    worktreeDir: "/tmp/pi-subagent-x",
+    agentId: "session-uuid",
+  };
+
+  const parsed = expectSubagentTranscriptRequest(request);
+
+  expect(parsed).toEqual(request);
+  expect(parsed).not.toBe(request);
+  expect(
+    expectSubagentTranscriptRequest({ workspaceId: "ws", sessionName: "agent:x" }),
+  ).toEqual({ workspaceId: "ws", sessionName: "agent:x" });
+});
+
+test("IPC request validation rejects malformed subagent transcript requests", () => {
+  expect(() => expectSubagentTranscriptRequest({ workspaceId: "ws" })).toThrow(
+    "input.sessionName must be a string",
+  );
+  expect(() => expectSubagentTranscriptRequest({ sessionName: "agent:x" })).toThrow(
+    "input.workspaceId must be a string",
+  );
+  expect(() =>
+    expectSubagentTranscriptRequest({ workspaceId: "ws", sessionName: "agent:x", agentId: 42 }),
+  ).toThrow("input.agentId must be a string");
 });
 
 test("IPC request validation rejects malformed targets and string lists", () => {

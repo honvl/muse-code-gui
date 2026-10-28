@@ -56,6 +56,7 @@ import {
   expectSendChildThreadFollowUpInput,
   expectSaveTaskWorkbenchTemplateInput,
   expectSessionTarget,
+  expectSubagentTranscriptRequest,
   expectRecord,
   expectStartThreadInput,
   expectCreateScheduledTaskInput,
@@ -76,6 +77,7 @@ type StateOwner = Pick<
   DesktopAppStore,
   | "getStateForView"
   | "getSelectedTranscriptForView"
+  | "getSubagentTranscript"
   | "setActiveView"
   | "setSidebarCollapsed"
   | "setThreadGrouping"
@@ -328,6 +330,11 @@ export function registerDesktopIpc({
   ipcMain.handle(desktopIpc.selectedTranscriptRequest, (event) =>
     windows.pullSelectedTranscript(event.sender),
   );
+  // Pure read: the renderer only ever receives projected transcript rows.
+  ipcMain.handle(desktopIpc.subagentTranscriptRequest, (event, rawInput: unknown) => {
+    windows.windowForSender(event.sender);
+    return owners.state.getSubagentTranscript(expectSubagentTranscriptRequest(rawInput));
+  });
 
   ipcMain.handle(desktopIpc.addWorkspacePath, (event, rawPath: unknown) =>
     run(event, () => owners.workspace.addWorkspace(expectNonEmptyString(rawPath, "workspacePath"))),

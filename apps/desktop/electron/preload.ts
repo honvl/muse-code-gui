@@ -63,6 +63,8 @@ import type {
   SendChildThreadFollowUpInput,
   SelectedTranscriptRecord,
   StartThreadInput,
+  SubagentTranscriptRequest,
+  SubagentTranscriptResult,
   ThemePresetId,
   ThinkingLevel,
   ThreadGrouping,
@@ -174,6 +176,11 @@ contextBridge.exposeInMainWorld("piApp", {
     ipcRenderer.invoke(
       desktopIpc.selectedTranscriptRequest,
     ) as Promise<SelectedTranscriptRecord | null>,
+  getSubagentTranscript: (input: SubagentTranscriptRequest) =>
+    ipcRenderer.invoke(
+      desktopIpc.subagentTranscriptRequest,
+      input,
+    ) as Promise<SubagentTranscriptResult>,
   onSelectedTranscriptChanged: (listener: (payload: SelectedTranscriptRecord | null) => void) => {
     const handle = (
       _event: Electron.IpcRendererEvent,

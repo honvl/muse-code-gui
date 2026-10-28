@@ -232,6 +232,27 @@ export interface SelectedTranscriptRecord {
   readonly schemaInfo?: SessionSchemaInfo;
 }
 
+export interface SubagentTranscriptRequest {
+  readonly workspaceId: string;
+  /** Expected pi session name, e.g. `agent:explore: Explore auth flow`. */
+  readonly sessionName: string;
+  /** Isolated worktree dir from the tool result, when present. */
+  readonly worktreeDir?: string;
+  /** The subagent's pi session uuid, when the tool result reported one. */
+  readonly agentId?: string;
+}
+
+export type SubagentTranscriptResult =
+  | {
+      readonly found: true;
+      readonly sessionName: string;
+      readonly sessionId: string;
+      readonly transcript: readonly TranscriptMessage[];
+      /** Rows omitted from the head when the transcript exceeded the cap. */
+      readonly omittedRows: number;
+    }
+  | { readonly found: false; readonly sessionName: string };
+
 export interface WorktreeRecord {
   readonly id: string;
   readonly rootWorkspaceId: string;

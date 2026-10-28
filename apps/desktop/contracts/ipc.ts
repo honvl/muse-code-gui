@@ -42,6 +42,8 @@ import type {
   SendChildThreadFollowUpInput,
   SelectedTranscriptRecord,
   StartThreadInput,
+  SubagentTranscriptRequest,
+  SubagentTranscriptResult,
   ThemePresetId,
   ThinkingLevel,
   ThreadGrouping,
@@ -120,6 +122,7 @@ export const desktopIpc = {
   saveTaskWorkbenchTemplate: "pi-gui:save-task-workbench-template",
   selectedTranscriptRequest: "pi-gui:selected-transcript-request",
   selectedTranscriptChanged: "pi-gui:selected-transcript-changed",
+  subagentTranscriptRequest: "pi-gui:subagent-transcript-request",
   appCommand: "pi-gui:app-command",
   workspacePicked: "pi-gui:workspace-picked",
   clipboardImagePasted: "pi-gui:clipboard-image-pasted",
@@ -711,6 +714,7 @@ export interface PiDesktopApi {
   onStateChanged(listener: PiDesktopStateListener): () => void;
   getSelectedTranscript(): Promise<SelectedTranscriptRecord | null>;
   onSelectedTranscriptChanged(listener: PiDesktopSelectedTranscriptListener): () => void;
+  getSubagentTranscript(input: SubagentTranscriptRequest): Promise<SubagentTranscriptResult>;
   onCommand(listener: (command: PiDesktopCommand) => void): () => void;
   onWorkspacePicked(listener: (workspaceId: string) => void): () => void;
   onClipboardImagePasted(listener: (result: ClipboardImageRead) => void): () => void;

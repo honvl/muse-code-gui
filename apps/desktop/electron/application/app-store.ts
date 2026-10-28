@@ -64,6 +64,8 @@ import {
   type SessionExtensionNoticeRecord,
   type StartThreadInput,
   type StartupDiagnostic,
+  type SubagentTranscriptRequest,
+  type SubagentTranscriptResult,
   type ThemeMode,
   type ThemePresetId,
   type ThinkingLevel,
@@ -181,6 +183,8 @@ import {
 
 type StateListener = (state: DesktopAppState) => void;
 type SelectedTranscriptListener = (payload: SelectedTranscriptRecord | null) => void;
+/** Newest subagent transcript rows forwarded to the renderer on open. */
+export const SUBAGENT_TRANSCRIPT_ROW_LIMIT = 200;
 type SessionEventListener = (
   event: SessionDriverEvent,
   state: DesktopAppState,
@@ -708,6 +712,37 @@ export class DesktopAppStore {
     }
     await this.ensureTranscriptLoaded(sessionRef);
     return this.buildSelectedTranscriptRecord(sessionRef);
+  }
+
+  /**
+   * Read-only transcript of a session pi-gui does not own (a third-party
+   * subagent session found by name/cwd). Returns the newest rows only, capped
+   * so a long subagent run cannot flood the renderer; the lane always shows
+   * the tool-row status even when no session file is found.
+   */
+  async getSubagentTranscript(input: SubagentTranscriptRequest): Promise<SubagentTranscriptResult> {
+    await this.initialize();
+    const found = await this.driver.readExternalSessionTranscript({
+      workspaceId: input.workspaceId,
+      sessionName: input.sessionName,
+      ...(input.agentId ? { agentId: input.agentId } : {}),
+      ...(input.worktreeDir ? { extraCwds: [input.worktreeDir] } : {}),
+    });
+    if (!found) {
+      return { found: false, sessionName: input.sessionName };
+    }
+    const transcript = timelineFromDriverTranscript(
+      found.transcript,
+      extensionToolLabels(this.runtimeByWorkspace.get(input.workspaceId)),
+    ).filter((row) => row.kind !== "pin");
+    const tail = transcript.slice(-SUBAGENT_TRANSCRIPT_ROW_LIMIT);
+    return {
+      found: true,
+      sessionName: found.sessionName,
+      sessionId: found.sessionId,
+      transcript: tail,
+      omittedRows: transcript.length - tail.length,
+    };
   }
 
   async getSelectedTranscriptForView(

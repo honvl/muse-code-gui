@@ -20,6 +20,7 @@ import {
   type RemoveWorktreeInput,
   type SendChildThreadFollowUpInput,
   type StartThreadInput,
+  type SubagentTranscriptRequest,
   type ThemeMode,
   type ThemePresetId,
   type ThreadGrouping,
@@ -129,6 +130,27 @@ export function expectSessionTarget(value: unknown, name = "target"): WorkspaceS
   return {
     workspaceId: expectNonEmptyString(record.workspaceId, `${name}.workspaceId`),
     sessionId: expectNonEmptyString(record.sessionId, `${name}.sessionId`),
+  };
+}
+
+export function expectSubagentTranscriptRequest(
+  value: unknown,
+  name = "input",
+): SubagentTranscriptRequest {
+  const record = expectRecord(value, name);
+  const worktreeDir =
+    record.worktreeDir === undefined
+      ? undefined
+      : expectNonEmptyString(record.worktreeDir, `${name}.worktreeDir`);
+  const agentId =
+    record.agentId === undefined
+      ? undefined
+      : expectNonEmptyString(record.agentId, `${name}.agentId`);
+  return {
+    workspaceId: expectNonEmptyString(record.workspaceId, `${name}.workspaceId`),
+    sessionName: expectNonEmptyString(record.sessionName, `${name}.sessionName`).slice(0, 256),
+    ...(worktreeDir ? { worktreeDir } : {}),
+    ...(agentId ? { agentId } : {}),
   };
 }
 
