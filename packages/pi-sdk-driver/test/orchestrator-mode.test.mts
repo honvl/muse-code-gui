@@ -45,6 +45,13 @@ await test("lead prompt covers the six lead rules in order", () => {
   assert.match(lines[0] ?? "", /reading the diff/i);
 });
 
+await test("lead prompt offers worktree isolation for overlapping parallel writers once", () => {
+  const lines = ORCHESTRATOR_SYSTEM_PROMPT.split("\n");
+  assert.match(lines[3] ?? "", /isolation:"worktree"/);
+  assert.match(lines[3] ?? "", /which you land yourself/i);
+  assert.equal(ORCHESTRATOR_SYSTEM_PROMPT.split('isolation:"worktree"').length - 1, 1);
+});
+
 await test("lead prompt says the host reuses the sidekick and fresh:true opts out", () => {
   assert.match(
     ORCHESTRATOR_SYSTEM_PROMPT,
