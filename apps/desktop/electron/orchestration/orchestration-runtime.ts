@@ -100,6 +100,7 @@ export interface OrchestrationRuntimeBridge {
       readonly sourcePrompt?: string;
       readonly toolCallId: string;
       readonly mode?: OrchestrationChildMode;
+      readonly scope?: string;
     },
   ) => Promise<AgentToolResult<CreateChildThreadToolDetails>>;
   readonly listThreads: (ctx: ExtensionContext) => Promise<AgentToolResult<ListThreadsToolDetails>>;
@@ -184,11 +185,13 @@ function createCreateChildThreadTool(
       }
       const sourcePrompt = createChildThreadPromptFromParams(params);
       const warnings = briefWarningsFromParams(params);
+      const scope = createChildThreadScopeFromParams(params);
       const result = await bridge.createChildThread(ctx, {
         prompt,
         ...(sourcePrompt ? { sourcePrompt } : {}),
         toolCallId,
         mode: createChildThreadModeFromParams(params),
+        ...(scope ? { scope } : {}),
       });
       return attachBriefWarnings(result, warnings);
     },
@@ -498,6 +501,12 @@ export function createChildThreadModeFromParams(
 ): OrchestrationChildMode | undefined {
   if (!isRecord(params)) return undefined;
   return params.mode === "scout" || params.mode === "worker" ? params.mode : undefined;
+}
+
+/** Raw `scope` string from create_child_thread params, when present. Host-side overlap checks use this; the composed brief text carries it to the child. */
+export function createChildThreadScopeFromParams(params: unknown): string | undefined {
+  if (!isRecord(params)) return undefined;
+  return optionalBriefParam(params, "scope");
 }
 
 export function createChildThreadModeFromToolOutput(

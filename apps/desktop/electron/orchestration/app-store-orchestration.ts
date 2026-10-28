@@ -13,6 +13,7 @@ import type {
   WorkspaceRef,
 } from "@pi-gui/session-driver";
 import type { PiSdkDriver } from "@pi-gui/pi-sdk-driver";
+import { parseWriteScope, scopesOverlap } from "./writer-scope";
 import type {
   DesktopAppState,
   OrchestrationEvidenceRecord,
@@ -197,6 +198,7 @@ export interface OrchestrationOwner {
       readonly sourcePrompt?: string;
       readonly toolCallId: string;
       readonly mode?: OrchestrationChildMode;
+      readonly scope?: string;
     },
   ): Promise<AgentToolResult<CreateChildThreadToolDetails>>;
   listThreadsToolResult(parentRef: SessionRef): AgentToolResult<ListThreadsToolDetails>;
@@ -255,7 +257,52 @@ interface SpawnChildThreadInput {
   readonly prompt: string;
   readonly sourcePrompt?: string;
   readonly mode?: OrchestrationChildMode;
+  readonly scope?: string;
   readonly sourceToolCallId?: string;
+}
+
+class WriterScopeConflictError extends Error {}
+
+function writerScopeConflictMessage(blockerTitle: string, scopeDisplay: string): string {
+  return (
+    `Another worker is writing "${scopeDisplay}" (child "${blockerTitle}"). ` +
+    `Wait for it, narrow your scope so they do not overlap, or send it a follow-up instead of starting a second writer.`
+  );
+}
+
+/** Statuses that hold the single-writer slot. Terminal children release it. */
+function isActiveWriterStatus(status: OrchestrationChildThreadStatus): boolean {
+  return status === "running" || status === "queued" || status === "waiting";
+}
+
+/**
+ * Phase A seam for worktree isolation (phase B).
+ *
+ * Existing children carry no persisted scope (no contract change), so today
+ * every known worker counts as the whole workspace (`[]` overlaps
+ * everything). Phase B will return each blocker's real scope here — e.g.
+ * from its worktree record or persisted brief — at which point disjoint
+ * scopes stop conflicting and route to separate worktrees instead. The
+ * `scopesOverlap` call below already honors that; only this function changes.
+ */
+function existingChildWriteScopes(_child: OrchestrationChildThread): readonly string[] {
+  return [];
+}
+
+function findConflictingWorker(
+  children: readonly OrchestrationChildThread[],
+  parentWorkspaceId: string,
+  parentSessionId: string,
+  newScopes: readonly string[],
+): OrchestrationChildThread | undefined {
+  return children.find(
+    (child) =>
+      child.parentWorkspaceId === parentWorkspaceId &&
+      child.parentSessionId === parentSessionId &&
+      child.mode !== "scout" &&
+      isActiveWriterStatus(child.status) &&
+      scopesOverlap(newScopes, existingChildWriteScopes(child)),
+  );
 }
 
 interface CreatedChildThreadResult {
@@ -321,6 +368,29 @@ async function createChildThreadRecord(
       child: existing,
       deliveryStatus: requireInitialPromptRun(store, childRef, prompt),
     };
+  }
+
+  // Single-writer rule (phase A): one active worker per overlapping scope.
+  // Scouts never block and are never blocked; an idempotent retry above
+  // bypasses this like the budget below. An unscoped worker is treated as the
+  // WHOLE workspace, not as "no claim": two unscoped writers are exactly the
+  // collision this rule exists to stop, so it must be the strictest case, not
+  // the exempt one. Existing scopes are unknown (no contract field), so any
+  // active worker of the same parent conflicts — see `existingChildWriteScopes`
+  // for the phase B seam.
+  const newScopes = parseWriteScope(input.scope);
+  if (mode !== "scout") {
+    const blocker = findConflictingWorker(
+      store.orchestrationState().orchestrationChildren,
+      input.parentWorkspaceId,
+      input.parentSessionId,
+      newScopes,
+    );
+    if (blocker) {
+      throw new WriterScopeConflictError(
+        writerScopeConflictMessage(blocker.title || blocker.id, newScopes[0] ?? "the workspace"),
+      );
+    }
   }
 
   // Unbounded-spawn protection: cap child records per parent regardless of
@@ -621,6 +691,7 @@ async function createChildThreadToolResult(
     readonly sourcePrompt?: string;
     readonly toolCallId: string;
     readonly mode?: OrchestrationChildMode;
+    readonly scope?: string;
   },
 ): Promise<AgentToolResult<CreateChildThreadToolDetails>> {
   const displayPrompt = (input.sourcePrompt ?? input.prompt).trim();
@@ -633,6 +704,7 @@ async function createChildThreadToolResult(
       prompt: input.prompt,
       ...(input.sourcePrompt ? { sourcePrompt: input.sourcePrompt } : {}),
       ...(input.mode ? { mode: input.mode } : {}),
+      ...(input.scope ? { scope: input.scope } : {}),
       sourceToolCallId: input.toolCallId,
     }));
   } catch (error) {
@@ -644,6 +716,9 @@ async function createChildThreadToolResult(
         ...refused,
         details: { ...refused.details, delegationsRemaining: 0 },
       };
+    }
+    if (error instanceof WriterScopeConflictError) {
+      return createChildThreadErrorResult(displayPrompt, errorMessage(error));
     }
     throw error;
   }
@@ -1241,7 +1316,7 @@ export function childCompletionReportText(
     "",
     body,
     "",
-    `Continue the orchestrator plan. Call read_thread("${child.id}") only if you need detail this report omits.`,
+    `Continue the lead plan. Call read_thread("${child.id}") only if you need detail this report omits.`,
   ].join("\n");
 }
 
@@ -2163,7 +2238,7 @@ function evidenceFromParentTranscript(
           kind: "orchestrator_observation",
           source: "orchestrator-observed",
           status: "reported",
-          title: "Orchestrator read child output",
+          title: "Lead read child output",
           detail: truncateEvidenceDetail(textFromToolOutput(message.output)),
           parentSessionId: child.parentSessionId,
           childSessionId: child.childSessionId,
@@ -2179,7 +2254,7 @@ function evidenceFromParentTranscript(
           kind: "orchestrator_action",
           source: "orchestrator-action",
           status: "reported",
-          title: "Orchestrator sent follow-up",
+          title: "Lead sent follow-up",
           ...(typeof details.message === "string"
             ? { detail: truncateEvidenceDetail(details.message) }
             : {}),
