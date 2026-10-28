@@ -8,6 +8,7 @@ import {
 } from "react";
 import type { DesktopAppState, SelectedTranscriptRecord } from "../../contracts/desktop-state";
 import type { PiDesktopApi } from "../../contracts/ipc";
+import { mergePushedTranscript } from "./transcript-merge";
 
 export type HydrationOperation = "state" | "selected-transcript";
 
@@ -58,6 +59,8 @@ export interface DesktopHydrationModel {
   readonly transcriptSettled: boolean;
   readonly transcriptRecord: SelectedTranscriptRecord | null;
   readonly receivedPushedTranscript: boolean;
+  /** A pushed tail could not be spliced on; the hook must pull the full list. */
+  readonly transcriptNeedsPull: boolean;
 }
 
 export type DesktopHydrationEvent =
@@ -126,6 +129,7 @@ export function initialDesktopHydrationModel(): DesktopHydrationModel {
     transcriptSettled: false,
     transcriptRecord: null,
     receivedPushedTranscript: false,
+    transcriptNeedsPull: false,
   };
 }
 
@@ -184,6 +188,7 @@ function withLiveSnapshot(
     transcriptSettled: false,
     transcriptRecord: null,
     receivedPushedTranscript: false,
+    transcriptNeedsPull: false,
     transcriptInFlightId: null,
   };
 }
@@ -252,6 +257,7 @@ export function reduceDesktopHydration(
         transcriptFailed: false,
         transcriptSettled: true,
         transcriptRecord: event.record,
+        transcriptNeedsPull: false,
       };
     case "transcript-pull-failed":
       if (current.transcriptInFlightId !== event.attemptId) {
@@ -271,14 +277,19 @@ export function reduceDesktopHydration(
         transcriptFailed: true,
         transcriptSettled: true,
       };
-    case "transcript-pushed":
+    case "transcript-pushed": {
+      const merged = mergePushedTranscript(current.transcriptRecord, event.record);
       return {
         ...current,
         receivedPushedTranscript: true,
         transcriptFailed: false,
         transcriptSettled: true,
-        transcriptRecord: event.record,
+        transcriptRecord: merged.record,
+        // A tail we could not splice onto what we hold needs the full list; the
+        // subscription hook re-pulls when this flips.
+        transcriptNeedsPull: merged.needsPull,
       };
+    }
   }
 }
 
@@ -413,8 +424,14 @@ export function useDesktopAppState(): DesktopAppSession {
       }
     });
     const unsubscribeTranscript = api.onSelectedTranscriptChanged((record) => {
-      if (active) {
-        apply({ type: "transcript-pushed", record });
+      if (!active) {
+        return;
+      }
+      apply({ type: "transcript-pushed", record });
+      // A tail that could not be spliced onto the rows we hold means we missed
+      // an update; ask for the full list instead of showing a partial thread.
+      if (modelRef.current.transcriptNeedsPull) {
+        pullTranscript(api);
       }
     });
 

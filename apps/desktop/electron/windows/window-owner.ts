@@ -4,10 +4,13 @@ import type {
   AppView,
   DesktopAppState,
   DesktopAppViewState,
+  OrchestrationChildThread,
   SelectedTranscriptRecord,
 } from "../../contracts/desktop-state";
 import { desktopIpc } from "../../contracts/ipc";
 import { SerializedActionQueue } from "./action-queue";
+import { stateForRenderer } from "./renderer-state-projection";
+import { toIncrementalTranscript } from "./transcript-incremental";
 
 interface WindowViewState {
   readonly selectedWorkspaceId: string;
@@ -178,10 +181,11 @@ export class WindowOwner {
   }
 
   async stateForWindow(window?: BrowserWindow | null): Promise<DesktopAppState> {
-    if (window && canPublishToWindow(window)) {
-      return this.stateOwner.getStateForView(this.viewForWindow(window));
-    }
-    return this.stateOwner.getState();
+    const state =
+      window && canPublishToWindow(window)
+        ? await this.stateOwner.getStateForView(this.viewForWindow(window))
+        : await this.stateOwner.getState();
+    return stateForRenderer(state, this.rendererChildrenCache);
   }
 
   isSessionVisibleInAnotherWindow(sessionRef: SessionRef): boolean {
@@ -293,6 +297,11 @@ export class WindowOwner {
     }
   }
 
+  private readonly rendererChildrenCache = new WeakMap<
+    readonly OrchestrationChildThread[],
+    readonly OrchestrationChildThread[]
+  >();
+
   private resolveView(sourceView?: DesktopAppViewState): WindowViewState {
     const state = this.stateOwner.snapshot();
     return viewFromState(
@@ -312,9 +321,12 @@ export class WindowOwner {
       this.composerDraftPersistOriginWebContentsId !== undefined &&
       webContentsId !== this.composerDraftPersistOriginWebContentsId
     ) {
-      return { ...projected, composerDraftSyncSource: "remote-persist" };
+      return stateForRenderer(
+        { ...projected, composerDraftSyncSource: "remote-persist" },
+        this.rendererChildrenCache,
+      );
     }
-    return projected;
+    return stateForRenderer(projected, this.rendererChildrenCache);
   }
 
   private projectAndRemember(webContentsId: number, state: DesktopAppState): DesktopAppState {
@@ -376,8 +388,21 @@ export class WindowOwner {
     } else if (previous === null) {
       return;
     }
+    const outgoing = payload ? toIncrementalTranscript(previous, payload) : null;
     this.lastPublishedTranscript.set(webContentsId, payload);
-    window.webContents.send(desktopIpc.selectedTranscriptChanged, payload);
+    window.webContents.send(desktopIpc.selectedTranscriptChanged, outgoing);
+  }
+
+  /**
+   * Serve a transcript pull, and remember it as what this window now holds so
+   * the next publish can keep sending incremental tails.
+   */
+  async pullSelectedTranscript(sender: WebContents): Promise<SelectedTranscriptRecord | null> {
+    const record = await this.stateOwner.getSelectedTranscriptForView(this.viewForSender(sender));
+    if (!sender.isDestroyed()) {
+      this.lastPublishedTranscript.set(sender.id, record);
+    }
+    return record;
   }
 
   private publishTranscriptSoon(window: BrowserWindow): void {

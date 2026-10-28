@@ -1,6 +1,8 @@
 import { useEffect, useRef } from "react";
 import type { PiDesktopApi } from "../../../contracts/ipc";
+import type { SelectedTranscriptRecord } from "../../../contracts/desktop-state";
 import type { TranscriptMessage } from "../../../contracts/timeline-types";
+import { mergePushedTranscript } from "../../app/transcript-merge";
 import type { DesktopExtensionViewInfo } from "../../../contracts/extension-views";
 import type { ToolRef } from "../../../contracts/workbench";
 
@@ -78,6 +80,9 @@ export function useActivityAutoOpen({
       return undefined;
     }
     let disposed = false;
+    // Pushes carry only the rows that changed, so this consumer keeps its own
+    // copy and splices them on rather than reading a partial transcript.
+    let held: SelectedTranscriptRecord | null = null;
 
     const handleTranscript = (transcript: readonly TranscriptMessage[] | null | undefined) => {
       if (disposed) {
@@ -113,6 +118,7 @@ export function useActivityAutoOpen({
           // Only the matching thread primes or fires. A record for another
           // session (switch race) or a transient null waits for its push.
           if (record && record.workspaceId === workspaceId && record.sessionId === sessionId) {
+            held = record;
             handleTranscript(record.transcript);
           }
         },
@@ -123,7 +129,9 @@ export function useActivityAutoOpen({
       if (!record || record.workspaceId !== workspaceId || record.sessionId !== sessionId) {
         return;
       }
-      handleTranscript(record.transcript);
+      const merged = mergePushedTranscript(held, record);
+      held = merged.record;
+      handleTranscript(merged.record?.transcript);
     });
     return () => {
       disposed = true;
