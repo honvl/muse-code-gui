@@ -43,6 +43,8 @@ import {
   expectNewMcpServerInput,
   expectNavigateSessionTreeOptions,
   expectNonEmptyString,
+  expectDefaultLeadModelSelection,
+  expectDefaultScoutModelSelection,
   expectSessionSidekickSelection,
   expectNotificationPreferences,
   expectOptionalDeliverOptions,
@@ -54,7 +56,6 @@ import {
   expectSaveTaskWorkbenchTemplateInput,
   expectSessionTarget,
   expectRecord,
-  expectSetChildSupervisionLoopInput,
   expectStartThreadInput,
   expectCreateScheduledTaskInput,
   expectUpdateScheduledTaskInput,
@@ -134,10 +135,7 @@ type ConversationOwner = Pick<
   | "withError"
 >;
 
-type OrchestrationOwner = Pick<
-  DesktopAppStore,
-  "sendChildThreadFollowUp" | "setChildSupervisionLoop"
->;
+type OrchestrationOwner = Pick<DesktopAppStore, "sendChildThreadFollowUp">;
 
 type ScheduledTaskOwner = Pick<
   DesktopAppStore,
@@ -152,6 +150,8 @@ type SettingsOwner = Pick<
   | "refreshRuntime"
   | "setModelSettingsScopeMode"
   | "setDefaultModel"
+  | "setDefaultLeadModel"
+  | "setDefaultScoutModel"
   | "setDefaultThinkingLevel"
   | "loginProvider"
   | "logoutProvider"
@@ -323,7 +323,7 @@ export function registerDesktopIpc({
     owners.state.getStateForView(windows.viewForSender(event.sender)),
   );
   ipcMain.handle(desktopIpc.selectedTranscriptRequest, (event) =>
-    owners.state.getSelectedTranscriptForView(windows.viewForSender(event.sender)),
+    windows.pullSelectedTranscript(event.sender),
   );
 
   ipcMain.handle(desktopIpc.addWorkspacePath, (event, rawPath: unknown) =>
@@ -474,6 +474,16 @@ export function registerDesktopIpc({
           expectOptionalThinkingLevel(thinkingLevel),
         ),
       ),
+  );
+  ipcMain.handle(desktopIpc.setDefaultLeadModel, (event, rawSelection: unknown) =>
+    run(event, () =>
+      owners.settings.setDefaultLeadModel(expectDefaultLeadModelSelection(rawSelection)),
+    ),
+  );
+  ipcMain.handle(desktopIpc.setDefaultScoutModel, (event, rawSelection: unknown) =>
+    run(event, () =>
+      owners.settings.setDefaultScoutModel(expectDefaultScoutModelSelection(rawSelection)),
+    ),
   );
   ipcMain.handle(
     desktopIpc.setSessionThinkingLevel,
@@ -727,11 +737,6 @@ export function registerDesktopIpc({
   ipcMain.handle(desktopIpc.sendChildThreadFollowUp, (event, rawInput: unknown) =>
     run(event, () =>
       owners.orchestration.sendChildThreadFollowUp(expectSendChildThreadFollowUpInput(rawInput)),
-    ),
-  );
-  ipcMain.handle(desktopIpc.setChildSupervisionLoop, (event, rawInput: unknown) =>
-    run(event, () =>
-      owners.orchestration.setChildSupervisionLoop(expectSetChildSupervisionLoopInput(rawInput)),
     ),
   );
   ipcMain.handle(desktopIpc.createScheduledTask, (event, rawInput: unknown) =>

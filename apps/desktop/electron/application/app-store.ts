@@ -59,7 +59,6 @@ import {
   type QueuedComposerMessage,
   type RemoveWorktreeInput,
   type SendChildThreadFollowUpInput,
-  type SetChildSupervisionLoopInput,
   type SelectedTranscriptRecord,
   type SessionExtensionNoticeRecord,
   type StartThreadInput,
@@ -89,6 +88,7 @@ import {
 } from "../conversation/app-store-session-state";
 import { StreamingUiPublisher } from "../conversation/streaming-ui-publisher";
 import type { RefreshStateOptions } from "./refresh-state-options";
+import { isDefaultScoutModelEqual } from "./default-scout-model";
 import {
   readPersistedUiState,
   type LegacyPersistedUiState,
@@ -275,8 +275,6 @@ export class DesktopAppStore {
   private composerDraftProjectionNonce = 0;
   private persistUiStateTimer: NodeJS.Timeout | undefined;
   private persistenceReadiness: "pending" | "ready" | "blocked" = "pending";
-  private orchestrationSupervisionTimer: NodeJS.Timeout | undefined;
-  private scheduledOrchestrationSupervisionRunAt: string | undefined;
   private scheduledTaskTimer: NodeJS.Timeout | undefined;
   private scheduledTaskWakeAt: string | undefined;
   private readonly extensionDialogTimeoutTimers = new Map<string, NodeJS.Timeout>();
@@ -417,6 +415,7 @@ export class DesktopAppStore {
       reloadTranscriptFromDriver: (sessionRef) => this.reloadTranscriptFromDriver(sessionRef),
       publishSelectedTranscriptFor: (sessionRef) => this.publishSelectedTranscriptFor(sessionRef),
       clearPendingAutoTitle: (sessionRef) => this.clearPendingAutoTitle(sessionRef),
+      defaultLeadModel: () => this.state.defaultLeadModel,
     });
 
     this.workspaceOwner = createWorkspaceOwner({
@@ -481,6 +480,7 @@ export class DesktopAppStore {
       getPendingAutoTitle: (sessionRef) => this.getPendingAutoTitle(sessionRef),
       sendMessageToSession: (sessionRef, text, attachments, sendOptions) =>
         this.conversationOwner.sendMessageToSession(sessionRef, text, attachments, sendOptions),
+      defaultLeadModel: () => this.state.defaultLeadModel,
     });
 
     this.orchestrationOwner = createOrchestrationOwner({
@@ -507,6 +507,7 @@ export class DesktopAppStore {
       updateSessionConfig: (sessionRef, config) => this.updateSessionConfig(sessionRef, config),
       isOrchestratorSession: (sessionRef) => this.isOrchestratorSession(sessionRef),
       sidekickModelFor: (sessionRef) => this.sidekickModelFor(sessionRef),
+      defaultScoutModel: () => this.defaultScoutModel(),
       sessionModelFor: (sessionRef) => this.sessionModelFor(sessionRef),
       buildCreateSessionOptions: (workspaceId) => this.buildCreateSessionOptions(workspaceId),
       getQueuedComposerMessages: (sessionRef) => this.getQueuedComposerMessages(sessionRef),
@@ -758,34 +759,6 @@ export class DesktopAppStore {
     await this.persistScheduledTasks();
   }
 
-  private scheduleOrchestrationSupervision(): void {
-    const nextRunAt = orchestration.nextSupervisionRunAt(this.state.orchestrationChildren);
-    if (
-      nextRunAt &&
-      nextRunAt === this.scheduledOrchestrationSupervisionRunAt &&
-      this.orchestrationSupervisionTimer
-    ) {
-      return;
-    }
-    if (this.orchestrationSupervisionTimer) {
-      clearTimeout(this.orchestrationSupervisionTimer);
-      this.orchestrationSupervisionTimer = undefined;
-    }
-    this.scheduledOrchestrationSupervisionRunAt = nextRunAt;
-    if (!nextRunAt) {
-      return;
-    }
-    const delayMs = Math.max(0, Date.parse(nextRunAt) - Date.now());
-    this.orchestrationSupervisionTimer = setTimeout(() => {
-      this.orchestrationSupervisionTimer = undefined;
-      this.scheduledOrchestrationSupervisionRunAt = undefined;
-      void this.runOrchestrationSupervisionTick().catch((error: unknown) => {
-        console.error("[app-store] runOrchestrationSupervisionTick failed", error);
-      });
-    }, delayMs);
-    this.orchestrationSupervisionTimer.unref?.();
-  }
-
   private scheduleScheduledTasks(): void {
     if (!this.scheduledTasksWritable) {
       if (this.scheduledTaskTimer) {
@@ -827,16 +800,6 @@ export class DesktopAppStore {
       return;
     }
     await writeScheduledTasksFile(this.scheduledTasksFilePath, this.state.scheduledTasks);
-  }
-
-  private async runOrchestrationSupervisionTick(): Promise<void> {
-    await this.initialize();
-    const result = this.orchestrationOwner.reconcileDueSupervisionLoops();
-    if (result.changed) {
-      await this.persistUiState();
-      this.emit();
-    }
-    this.scheduleOrchestrationSupervision();
   }
 
   async emitTestSessionEvent(event: SessionDriverEvent): Promise<void> {
@@ -1345,9 +1308,7 @@ export class DesktopAppStore {
   }
 
   async sendChildThreadFollowUp(input: SendChildThreadFollowUpInput): Promise<DesktopAppState> {
-    const state = await this.orchestrationOwner.sendChildThreadFollowUp(input);
-    this.scheduleOrchestrationSupervision();
-    return state;
+    return this.orchestrationOwner.sendChildThreadFollowUp(input);
   }
 
   async createChildThreadToolResult(
@@ -1386,12 +1347,6 @@ export class DesktopAppStore {
   ) {
     await this.initialize();
     return this.orchestrationOwner.sendMessageToThreadToolResult(parentRef, input);
-  }
-
-  async setChildSupervisionLoop(input: SetChildSupervisionLoopInput): Promise<DesktopAppState> {
-    const state = await this.orchestrationOwner.setChildSupervisionLoopGate(input);
-    this.scheduleOrchestrationSupervision();
-    return state;
   }
 
   async createScheduledTask(input: CreateScheduledTaskInput): Promise<DesktopAppState> {
@@ -1733,6 +1688,53 @@ export class DesktopAppStore {
     selection: SessionModelSelection | null,
   ): Promise<DesktopAppState> {
     return this.conversationOwner.setSessionSidekickModel(sessionRef, selection);
+  }
+
+  async setDefaultLeadModel(selection: SessionModelSelection | null): Promise<DesktopAppState> {
+    await this.initialize();
+    const next = selection ?? undefined;
+    const current = this.state.defaultLeadModel;
+    const unchanged =
+      (current === undefined && next === undefined) ||
+      (current !== undefined &&
+        next !== undefined &&
+        current.provider === next.provider &&
+        current.modelId === next.modelId);
+    if (unchanged) {
+      return structuredClone(this.state);
+    }
+    this.state = {
+      ...this.state,
+      defaultLeadModel: next,
+      lastError: undefined,
+      revision: this.state.revision + 1,
+    };
+    await this.persistUiState();
+    return this.emit();
+  }
+
+  /**
+   * App-global default model for read-only scout children; absent means the
+   * spawn path falls back to the thread's sidekick model. The orchestration
+   * layer calls this when resolving a scout child's model.
+   */
+  defaultScoutModel(): SessionModelSelection | undefined {
+    return this.state.defaultScoutModel;
+  }
+
+  async setDefaultScoutModel(selection: SessionModelSelection | null): Promise<DesktopAppState> {
+    await this.initialize();
+    if (isDefaultScoutModelEqual(this.state.defaultScoutModel, selection)) {
+      return structuredClone(this.state);
+    }
+    this.state = {
+      ...this.state,
+      defaultScoutModel: selection ?? undefined,
+      lastError: undefined,
+      revision: this.state.revision + 1,
+    };
+    await this.persistUiState();
+    return this.emit();
   }
 
   async loginProvider(
@@ -2348,7 +2350,6 @@ export class DesktopAppStore {
         this.restoredSelectedSessionKeysAwaitingSelection.add(sessionKey(restoredSessionRef));
       }
       this.startSelectedSessionHydration(restoredSessionRef, { markViewed: false });
-      this.scheduleOrchestrationSupervision();
       this.scheduleScheduledTasks();
       this.publishStartupDiagnostics(startupDiagnostics);
     } catch (error) {
@@ -2385,6 +2386,8 @@ export class DesktopAppStore {
       composerDraft: persisted.composerDraft ?? this.state.composerDraft,
       modelSettingsScopeMode: persisted.modelSettingsScopeMode ?? this.state.modelSettingsScopeMode,
       globalModelSettings: persisted.appGlobalModelSettings ?? this.state.globalModelSettings,
+      defaultLeadModel: persisted.defaultLeadModel ?? undefined,
+      defaultScoutModel: persisted.defaultScoutModel ?? undefined,
       notificationPreferences: {
         ...this.state.notificationPreferences,
         ...persisted.notificationPreferences,
@@ -2751,7 +2754,6 @@ export class DesktopAppStore {
         ...this.state,
         orchestrationChildren: this.orchestrationOwner.projectOrchestrationChildren(),
       };
-      this.scheduleOrchestrationSupervision();
 
       if (options.markSelectedSessionViewed ?? true) {
         this.markSelectedSessionViewedIfVisible();
@@ -3717,9 +3719,17 @@ export class DesktopAppStore {
       const isOrchestrationChild = this.orchestrationOwner.hasOrchestrationChildSession(
         event.sessionRef,
       );
+      // Re-projecting every child costs a full scan of each parent transcript
+      // plus an evidence merge per child. Token-level ticks (assistant deltas and
+      // the redundant running sessionUpdated that rides with each one) cannot
+      // change a child record, so they used to pay that entire cost per token and
+      // froze the UI while an orchestrated thread streamed. Reuse the streaming
+      // publisher's notion of "no structural change" and skip them.
+      const tokenLevelTick = this.streamingUiPublisher.shouldDefer(event);
       if (
-        isOrchestrationChild ||
-        this.orchestrationOwner.hasOrchestrationParentSession(event.sessionRef)
+        !tokenLevelTick &&
+        (isOrchestrationChild ||
+          this.orchestrationOwner.hasOrchestrationParentSession(event.sessionRef))
       ) {
         this.state = {
           ...this.state,
@@ -3727,7 +3737,6 @@ export class DesktopAppStore {
             event.sessionRef,
           ),
         };
-        this.scheduleOrchestrationSupervision();
       }
       // A finished child wakes its orchestrator with a report instead of
       // leaving the parent to poll read_thread. Only real run endings qualify:
@@ -4214,6 +4223,8 @@ export class DesktopAppStore {
       ),
       orchestratorModeBySession: this.orchestratorModeRecord(),
       sidekickBySession: this.sidekickRecord(),
+      defaultLeadModel: this.state.defaultLeadModel ?? undefined,
+      defaultScoutModel: this.state.defaultScoutModel ?? undefined,
     };
 
     await writePersistedUiState(this.uiStateFilePath, payload);

@@ -61,7 +61,6 @@ import type {
   NotificationPreferences,
   RemoveWorktreeInput,
   SendChildThreadFollowUpInput,
-  SetChildSupervisionLoopInput,
   SelectedTranscriptRecord,
   StartThreadInput,
   ThemePresetId,
@@ -258,8 +257,6 @@ contextBridge.exposeInMainWorld("piApp", {
     ipcRenderer.invoke(desktopIpc.forkThread, input) as Promise<DesktopAppState>,
   sendChildThreadFollowUp: (input: SendChildThreadFollowUpInput) =>
     ipcRenderer.invoke(desktopIpc.sendChildThreadFollowUp, input) as Promise<DesktopAppState>,
-  setChildSupervisionLoop: (input: SetChildSupervisionLoopInput) =>
-    ipcRenderer.invoke(desktopIpc.setChildSupervisionLoop, input) as Promise<DesktopAppState>,
   createScheduledTask: (input: CreateScheduledTaskInput) =>
     ipcRenderer.invoke(desktopIpc.createScheduledTask, input) as Promise<DesktopAppState>,
   updateScheduledTask: (id: string, patch: UpdateScheduledTaskInput) =>
@@ -358,6 +355,10 @@ contextBridge.exposeInMainWorld("piApp", {
       sessionId,
       selection,
     ) as Promise<DesktopAppState>,
+  setDefaultLeadModel: (selection: SessionModelSelection | null) =>
+    ipcRenderer.invoke(desktopIpc.setDefaultLeadModel, selection) as Promise<DesktopAppState>,
+  setDefaultScoutModel: (selection: SessionModelSelection | null) =>
+    ipcRenderer.invoke(desktopIpc.setDefaultScoutModel, selection) as Promise<DesktopAppState>,
   loginProvider: (workspaceId: string, providerId: string) =>
     ipcRenderer.invoke(
       desktopIpc.loginProvider,

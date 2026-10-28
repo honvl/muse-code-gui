@@ -216,12 +216,12 @@ export function ModelSelector({
             disabled={disabled}
             title={
               orchestratorMode
-                ? "Lead mode on: delegates bulky work, keeps all tools"
-                : "Turn on orchestrator mode"
+                ? "Lead: delegates bulky work and reviews what children report"
+                : "Solo: works in this thread; can still delegate when needed"
             }
             onClick={() => onToggleOrchestrator?.(!orchestratorMode)}
           >
-            {orchestratorMode ? "Orchestrator" : "Orchestrate"}
+            {orchestratorMode ? "Lead" : "Solo"}
           </button>
         </span>
       ) : null}

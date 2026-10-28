@@ -30,6 +30,9 @@ export interface CreateChildThreadToolDetails {
   readonly childSessionId?: string;
   readonly title?: string;
   readonly deliveryStatus?: "running" | "responded";
+  readonly delegationsRemaining?: number;
+  readonly briefWarnings?: readonly string[];
+  readonly generation?: number;
   readonly error?: string;
 }
 
@@ -43,9 +46,6 @@ export interface OrchestrationThreadListEntry {
   readonly updatedAt: string;
   readonly preview: string;
   readonly childThreadId?: string;
-  readonly supervisionGate?: "continue" | "wake" | "stop";
-  readonly supervisionReason?: string;
-  readonly nextSupervisionRunAt?: string;
 }
 
 export interface OrchestrationThreadTranscriptMessage {
@@ -88,6 +88,7 @@ export interface SendMessageToThreadToolDetails {
   readonly status?: "queued" | "sent";
   readonly queuedMessageCount?: number;
   readonly interrupted?: boolean;
+  readonly generation?: number;
   readonly error?: string;
 }
 
@@ -130,16 +131,17 @@ function createCreateChildThreadTool(
     name: createChildThreadToolName,
     label: "Create child thread",
     description:
-      "Delegate an independent investigation or implementation task to a separate pi-gui child thread that runs in parallel. Child threads run on the thread's configured sidekick model, falling back to the workspace default. Brief the child like a stranger: give it the objective, context, and verification it needs to finish without asking. Children report back automatically when a run ends. Use mode scout for read-only investigations and worker when file or shell changes are required.",
+      "Delegate an independent investigation or implementation task to a separate pi-gui child thread that runs in parallel. Child threads run on the thread's configured sidekick model, falling back to the workspace default. Brief the child like a stranger: give it the objective, context, and verification it needs to finish without asking. Children report back automatically when a run ends. Use mode scout for read-only investigations and worker when file changes or mutating shell are required.",
     promptSnippet:
       "create_child_thread: delegate independent work to a separate pi-gui child thread running in parallel.",
     promptGuidelines: [
       "When a task splits into independent parts (parallel investigations, independent implementations), spawn one child thread per part proactively instead of doing everything serially in this thread.",
-      "Prefer mode scout for searches, exploration, and reviews; it is read-only and cannot edit files or run shell commands. Use worker only when the child must change files or run commands.",
+      "Reuse a child whose context already covers the work via send_message_to_thread (preserves context/cache); spawn fresh only for parallel or independent slices.",
+      "Prefer mode scout for searches, exploration, and reviews; it is read-only but may run read-only, workspace-confined shell commands such as rg, grep, and git log — it cannot edit, write, or run mutating/background shell. Use worker only when the child must change files or run mutating commands.",
       "Brief the child like a stranger: the prompt must stand alone with objective, context, constraints, scope, success criteria, and the verification to run. Use the scope, constraints, success_criteria, and verify fields for those blocks.",
       "Children report back automatically when a run ends; act on the report instead of polling read_thread.",
       "Children end every run with a four-part report: result summary, files changed or inspected, validation commands and outcomes, risks/blockers/questions.",
-      "Treat a report with no summary as unverified: call read_thread on the child to inspect what it actually did before trusting the task.",
+      "Treat a report with no summary as unverified — a report is a claim, not proof: call read_thread or check the diff/files against the success criteria before trusting it.",
       "Child threads are isolated: they cannot leave the workspace, write dotenv files, run destructive shell commands, or recurse past 3 levels. A scout thread cannot spawn a worker.",
       "Prefer reading a child thread before summarizing its status back to the user.",
     ],
@@ -170,7 +172,7 @@ function createCreateChildThreadTool(
           type: "string",
           enum: ["scout", "worker"],
           description:
-            'Isolation mode: "scout" is read-only (search and review), "worker" may edit files and run shell commands. Defaults to "worker".',
+            'Isolation mode: "scout" is read-only (search and review, plus read-only workspace-confined shell), "worker" may edit files and run shell commands. Defaults to "worker".',
         },
       },
       required: ["prompt"],
@@ -181,12 +183,14 @@ function createCreateChildThreadTool(
         throw new Error("create_child_thread requires a non-empty prompt.");
       }
       const sourcePrompt = createChildThreadPromptFromParams(params);
-      return bridge.createChildThread(ctx, {
+      const warnings = briefWarningsFromParams(params);
+      const result = await bridge.createChildThread(ctx, {
         prompt,
         ...(sourcePrompt ? { sourcePrompt } : {}),
         toolCallId,
         mode: createChildThreadModeFromParams(params),
       });
+      return attachBriefWarnings(result, warnings);
     },
   };
 }
@@ -373,10 +377,11 @@ export interface ChildBriefParts {
 /**
  * Always-on closing instruction appended to every child brief so each handoff
  * ends with a structured report. The lead acts on that report and only calls
- * read_thread for detail it omits.
+ * read_thread for detail it omits. The character budget keeps the expensive
+ * half of delegation (the child's output) bounded: summarize, don't paste.
  */
 export const CHILD_REPORT_SUFFIX =
-  "Report back with: 1) the result summary, 2) files changed or inspected, 3) the validation commands you ran and their outcomes, 4) risks, blockers, or open questions. Do not commit or push.";
+  "Report back with: 1) the result summary, 2) files changed or inspected, 3) the validation commands you ran and their outcomes, 4) risks, blockers, or open questions. Do not commit or push. Keep the final report under ~1200 characters: summarize rather than pasting files, diffs, or logs.";
 
 /**
  * Compose the single prompt string handed to the child-thread bridge.
@@ -399,6 +404,63 @@ export function composeChildBrief(parts: ChildBriefParts): string {
   }
   blocks.push(CHILD_REPORT_SUFFIX);
   return blocks.join("\n\n");
+}
+
+/**
+ * Feedback for the lead when a brief is missing the blocks a child needs to
+ * self-direct. These warnings are never delivered to the child: they are
+ * attached to the tool result so the lead writes better briefs next time.
+ * A thin brief still spawns; this never rejects.
+ */
+export const SCOPE_BRIEF_WARNING = "Brief hint: add scope so the child knows where to work.";
+export const SUCCESS_CRITERIA_BRIEF_WARNING =
+  "Brief hint: add success_criteria so the child can self-check.";
+
+export function briefWarningsFromParams(params: unknown): readonly string[] {
+  if (!isRecord(params)) {
+    return [];
+  }
+  const warnings: string[] = [];
+  if (!optionalBriefParam(params, "scope")) {
+    warnings.push(SCOPE_BRIEF_WARNING);
+  }
+  if (!optionalBriefParam(params, "success_criteria")) {
+    warnings.push(SUCCESS_CRITERIA_BRIEF_WARNING);
+  }
+  return warnings;
+}
+
+/**
+ * Attach brief-quality feedback to a create_child_thread result. Appends a
+ * single line to the result text and records the warnings on the details.
+ * The child prompt itself is untouched.
+ */
+export function attachBriefWarnings(
+  result: AgentToolResult<CreateChildThreadToolDetails>,
+  warnings: readonly string[],
+): AgentToolResult<CreateChildThreadToolDetails> {
+  if (warnings.length === 0) {
+    return result;
+  }
+  const hintLine = warnings.join(" ");
+  const content = [...result.content];
+  let appended = false;
+  for (let index = content.length - 1; index >= 0; index -= 1) {
+    const item = content[index];
+    if (item?.type === "text") {
+      content[index] = { ...item, text: `${item.text}\n${hintLine}` };
+      appended = true;
+      break;
+    }
+  }
+  if (!appended) {
+    content.push({ type: "text", text: hintLine });
+  }
+  return {
+    ...result,
+    content,
+    details: { ...result.details, briefWarnings: [...warnings] },
+  };
 }
 
 /**

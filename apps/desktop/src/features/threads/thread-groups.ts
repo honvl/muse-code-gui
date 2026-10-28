@@ -389,6 +389,8 @@ export interface ChildGroupSummary {
   readonly count: number;
   readonly running: number;
   readonly failed: number;
+  /** Children whose run ended successfully; shown even when the group is collapsed. */
+  readonly done: number;
 }
 
 /**
@@ -399,14 +401,20 @@ export interface ChildGroupSummary {
 export function summarizeChildGroup(entries: readonly ThreadListEntry[]): ChildGroupSummary {
   let running = 0;
   let failed = 0;
+  let done = 0;
   for (const entry of entries) {
-    if (entry.session.status === "failed" || entry.child?.status === "failed") {
+    const status = entry.child?.status ?? entry.session.status;
+    if (status === "failed") {
       failed += 1;
-    } else if (entry.session.status === "running" || entry.child?.status === "running") {
+    } else if (status === "running" || status === "queued" || status === "waiting") {
       running += 1;
+    } else if (status === "complete") {
+      // A collapsed group must still show that work finished: otherwise a child
+      // that completed produces no visible change anywhere in the sidebar.
+      done += 1;
     }
   }
-  return { count: entries.length, running, failed };
+  return { count: entries.length, running, failed, done };
 }
 
 const EMPTY_EXPANDED_HISTORY: ReadonlySet<string> = new Set();

@@ -19,7 +19,6 @@ import {
   type NotificationPreferences,
   type RemoveWorktreeInput,
   type SendChildThreadFollowUpInput,
-  type SetChildSupervisionLoopInput,
   type StartThreadInput,
   type ThemeMode,
   type ThemePresetId,
@@ -310,17 +309,6 @@ export function expectSendChildThreadFollowUpInput(value: unknown): SendChildThr
   };
 }
 
-export function expectSetChildSupervisionLoopInput(value: unknown): SetChildSupervisionLoopInput {
-  const record = expectRecord(value, "input");
-  if (record.gate !== "continue" && record.gate !== "stop") {
-    throw new TypeError("input.gate must be continue or stop");
-  }
-  return {
-    childThreadId: expectNonEmptyString(record.childThreadId, "input.childThreadId"),
-    gate: record.gate,
-  };
-}
-
 export function expectNotificationPreferences(value: unknown): Partial<NotificationPreferences> {
   const record = expectRecord(value, "preferences");
   let preferences: Partial<NotificationPreferences> = {};
@@ -421,6 +409,28 @@ export function expectHostUiResponse(value: unknown): HostUiResponse {
 }
 
 export function expectSessionSidekickSelection(value: unknown): SessionModelSelection | null {
+  if (value === null) {
+    return null;
+  }
+  const record = expectRecord(value, "selection");
+  return {
+    provider: expectNonEmptyString(record.provider, "selection.provider"),
+    modelId: expectNonEmptyString(record.modelId, "selection.modelId"),
+  };
+}
+
+export function expectDefaultLeadModelSelection(value: unknown): SessionModelSelection | null {
+  if (value === null) {
+    return null;
+  }
+  const record = expectRecord(value, "selection");
+  return {
+    provider: expectNonEmptyString(record.provider, "selection.provider"),
+    modelId: expectNonEmptyString(record.modelId, "selection.modelId"),
+  };
+}
+
+export function expectDefaultScoutModelSelection(value: unknown): SessionModelSelection | null {
   if (value === null) {
     return null;
   }

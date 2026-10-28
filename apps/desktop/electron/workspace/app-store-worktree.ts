@@ -13,6 +13,7 @@ import type {
 import type { CreateWorktreeOptions } from "../platform/worktrees/worktree-manager";
 import type { WorkspaceOwnerHost } from "./app-store-workspace";
 import { NEW_THREAD_PLACEHOLDER_TITLE } from "../conversation/thread-title-constants";
+import { resolveInitialModelForLeadThread } from "../application/default-lead-model";
 
 /* ── Public methods ─────────────────────────────────────── */
 
@@ -140,16 +141,22 @@ export async function startThread(
     try {
       const createOptions =
         (await store.buildCreateSessionOptions(targetWorkspace.workspaceId)) ?? {};
-      initialModel =
-        input.provider && input.modelId
-          ? { provider: input.provider, modelId: input.modelId }
-          : createOptions.initialModel;
+      initialModel = resolveInitialModelForLeadThread({
+        ...(input.provider ? { explicitProvider: input.provider } : {}),
+        ...(input.modelId ? { explicitModelId: input.modelId } : {}),
+        ...(input.orchestratorMode ? { orchestratorMode: true as const } : {}),
+        defaultLeadModel: input.orchestratorMode ? store.defaultLeadModel() : undefined,
+        ...(createOptions.initialModel
+          ? { workspaceInitialModel: createOptions.initialModel }
+          : {}),
+      });
       initialThinkingLevel = input.thinkingLevel ?? createOptions.initialThinkingLevel;
       session = await store.driver.createSession(targetWorkspace, {
         ...createOptions,
         title: NEW_THREAD_PLACEHOLDER_TITLE,
         ...(initialModel ? { initialModel } : {}),
         ...(initialThinkingLevel ? { initialThinkingLevel } : {}),
+        ...(input.orchestratorMode ? { initialOrchestratorMode: true as const } : {}),
         extensionFlagValues: extensionFlags.applied,
       });
     } catch (error) {

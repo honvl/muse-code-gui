@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { sessionKey } from "@pi-gui/session-driver";
+import { defaultLeadModelForLeadToggle } from "../application/default-lead-model";
 import type {
   SessionConfig,
   SessionModelSelection,
@@ -138,6 +139,8 @@ interface ConversationOwnerHost {
   reloadTranscriptFromDriver(sessionRef: SessionRef): Promise<void>;
   publishSelectedTranscriptFor(sessionRef: SessionRef): void;
   clearPendingAutoTitle(sessionRef: SessionRef): void;
+  /** App-global default model for lead-mode threads, when configured. */
+  defaultLeadModel(): SessionModelSelection | undefined;
 }
 
 type ComposerStore = ConversationOwnerHost;
@@ -765,18 +768,45 @@ async function setSessionOrchestratorMode(
 ): Promise<DesktopAppState> {
   await store.initialize();
   const key = sessionKey(sessionRef);
+  // Lead threads start on the app-global default, but only when no model would
+  // be lost: an empty thread (no conversation history) has no prompt cache to
+  // invalidate. History blocks the switch; the existing announcement below
+  // still reports the toggle itself.
+  let leadSwitch: SessionModelSelection | undefined;
+  if (enabled) {
+    const def = store.defaultLeadModel();
+    if (def && store.conversationState.loadedTranscriptKeys.has(key)) {
+      const transcript = store.conversationState.transcriptCache.get(key) ?? [];
+      const current = store.conversationState.sessionConfigBySession.get(key);
+      leadSwitch = defaultLeadModelForLeadToggle({
+        enabled: true,
+        defaultLeadModel: def,
+        transcript,
+        ...(current?.provider ? { currentProvider: current.provider } : {}),
+        ...(current?.modelId ? { currentModelId: current.modelId } : {}),
+      });
+    }
+  }
   // Eager first: the driver's sessionUpdated is emitted inside setSessionOrchestratorMode,
   // before it resolves. For off, the snapshot omits the mode; without the eager false
   // already in place, updateSessionConfig would preserve the old true and push it back.
-  syncSessionConfig(store, key, { orchestratorMode: enabled });
+  syncSessionConfig(store, key, {
+    orchestratorMode: enabled,
+    ...(leadSwitch ? { provider: leadSwitch.provider, modelId: leadSwitch.modelId } : {}),
+  });
   return store.withErrorHandling(async () => {
+    if (leadSwitch) {
+      await store.driver.setSessionModel(sessionRef, leadSwitch);
+    }
     await store.driver.setSessionOrchestratorMode(sessionRef, enabled);
     store.schedulePersistUiState();
     return finishSessionChange(
       store,
       sessionRef,
       key,
-      enabled ? "Lead mode on: delegates bulky work, keeps all tools" : "Orchestrator mode off",
+      enabled
+        ? "Lead: delegates bulky work and reviews what children report"
+        : "Solo: works in this thread",
     );
   });
 }

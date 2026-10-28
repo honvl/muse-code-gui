@@ -2,6 +2,7 @@ import type {
   ExtensionFlagValues,
   HostUiRequest,
   SessionConfig,
+  SessionModelSelection,
   SessionUsageSnapshot,
 } from "@pi-gui/session-driver";
 import type {
@@ -119,8 +120,7 @@ export interface SessionRecord {
 
 export type OrchestrationChildThreadStatus =
   "queued" | "running" | "waiting" | "complete" | "failed";
-export type OrchestrationSupervisionGate = "continue" | "stop" | "wake";
-export type OrchestrationSupervisionStatus = "monitoring" | "attention" | "stopped";
+
 export type OrchestrationEvidenceKind =
   | "worker_report"
   | "orchestrator_acceptance"
@@ -164,19 +164,6 @@ export interface OrchestrationEvidenceRecord {
   readonly updatedAt?: string;
 }
 
-export interface OrchestrationSupervisionLoop {
-  readonly id: string;
-  readonly status: OrchestrationSupervisionStatus;
-  readonly gate: OrchestrationSupervisionGate;
-  readonly intervalMs: number;
-  readonly iterationCount: number;
-  readonly lastCheckedAt: string;
-  readonly nextRunAt?: string;
-  readonly reason: string;
-  readonly lastChildStatus: OrchestrationChildThreadStatus;
-  readonly stoppedAt?: string;
-}
-
 export interface OrchestrationChildTranscriptMessage {
   readonly id: string;
   readonly role: "parent" | "child" | "system";
@@ -201,7 +188,6 @@ export interface OrchestrationChildThread {
   readonly latestTranscript: string;
   readonly transcript: readonly OrchestrationChildTranscriptMessage[];
   readonly evidence: readonly OrchestrationEvidenceRecord[];
-  readonly supervisionLoop?: OrchestrationSupervisionLoop;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -211,15 +197,17 @@ export interface SendChildThreadFollowUpInput {
   readonly text: string;
 }
 
-export interface SetChildSupervisionLoopInput {
-  readonly childThreadId: string;
-  readonly gate: Extract<OrchestrationSupervisionGate, "continue" | "stop">;
-}
-
 export interface SelectedTranscriptRecord {
   readonly workspaceId: string;
   readonly sessionId: string;
   readonly transcript: readonly TranscriptMessage[];
+  /**
+   * Present when `transcript` carries only the rows from this index on, to be
+   * spliced onto what the renderer already holds. Timeline rows are immutable
+   * once settled, so a streaming turn re-sends only its own row instead of a
+   * multi-megabyte transcript on every publish. Absent means the full list.
+   */
+  readonly replacedFrom?: number;
   // Session-file schema-version skew, when known. `writtenByNewerRuntime` drives the version-skew
   // notice; undefined until the (async, static-per-session) header read resolves.
   readonly schemaInfo?: SessionSchemaInfo;
@@ -381,6 +369,10 @@ export interface DesktopAppState {
   readonly workspaceOrder: readonly string[];
   readonly modelSettingsScopeMode: ModelSettingsScopeMode;
   readonly globalModelSettings: ModelSettingsSnapshot;
+  /** App-global default model for new lead-mode threads; absent means no override. */
+  readonly defaultLeadModel?: SessionModelSelection;
+  /** App-global default model for read-only scout children; absent falls back to the thread sidekick. */
+  readonly defaultScoutModel?: SessionModelSelection;
   readonly themeMode: ThemeMode;
   readonly themePresetId: ThemePresetId;
   readonly sidebarCollapsed: boolean;

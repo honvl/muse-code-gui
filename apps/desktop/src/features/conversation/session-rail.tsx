@@ -1,19 +1,23 @@
 import { useState } from "react";
 import type { BackgroundTaskOutput, BackgroundTaskSnapshot } from "@pi-gui/pi-sdk-driver";
-import type { SessionRecord } from "../../../contracts/desktop-state";
+import type { OrchestrationChildThread, SessionRecord } from "../../../contracts/desktop-state";
 import type { SessionUsageSnapshot } from "@pi-gui/session-driver";
 import type { TurnChangeSummary } from "../../../contracts/review";
+import type { LaneUsage } from "../threads/orchestration-usage";
 import { ContextMeter } from "./context-meter";
 import { LONG_RUN_MS, formatElapsed, truncateCommand } from "./session-task-format";
 
 interface SessionRailProps {
   readonly session: SessionRecord;
+  readonly workspaceId: string | undefined;
   readonly workspaceName: string;
   readonly workspacePath: string;
   readonly provider: string | undefined;
   readonly modelId: string | undefined;
   readonly thinkingLevel: string | undefined;
   readonly usage: SessionUsageSnapshot | undefined;
+  readonly laneUsage: { readonly lead: LaneUsage; readonly delegated: LaneUsage } | undefined;
+  readonly delegatedThreadCount?: number;
   readonly tasks: readonly BackgroundTaskSnapshot[];
   readonly stoppingTaskId: string | undefined;
   readonly onStopTask: (taskId: string) => void;
@@ -21,6 +25,7 @@ interface SessionRailProps {
   readonly turns: readonly TurnChangeSummary[];
   readonly onOpenTurnChange: (turn: TurnChangeSummary, path: string) => void;
   readonly onStopRun: () => void;
+  readonly orchestrationChildren?: readonly OrchestrationChildThread[];
 }
 
 /**
@@ -31,12 +36,15 @@ interface SessionRailProps {
  */
 export function SessionRail({
   session,
+  workspaceId,
   workspaceName,
   workspacePath,
   provider,
   modelId,
   thinkingLevel,
   usage,
+  laneUsage,
+  delegatedThreadCount = 0,
   tasks,
   stoppingTaskId,
   onStopTask,
@@ -44,10 +52,16 @@ export function SessionRail({
   turns,
   onOpenTurnChange,
   onStopRun,
+  orchestrationChildren = [],
 }: SessionRailProps) {
   const runningTasks = tasks.filter((task) => task.status === "running");
   const showLongRunBanner = session.status === "running" && isLongRun(session.runningSince);
   const changedFiles = recentChangedFiles(turns);
+  const runningRailChildren = runningChildrenForRail(
+    orchestrationChildren,
+    { workspaceId, sessionId: session.id },
+    RAIL_RUNNING_CHILD_LIMIT,
+  );
 
   return (
     <aside className="session-rail" data-testid="session-rail" aria-label="Session details">
@@ -88,8 +102,16 @@ export function SessionRail({
         >
           {provider && modelId ? `${provider} · ${modelId}` : "No model selected"}
           {thinkingLevel ? ` · ${thinkingLevel}` : null}
-          {session.config?.orchestratorMode ? " · Orchestrator" : null}
+          {session.config?.orchestratorMode ? " · Lead" : null}
         </div>
+        {laneUsage && (laneUsage.lead.sessions > 0 || laneUsage.delegated.sessions > 0) ? (
+          <div
+            className="session-rail__row session-rail__row--muted"
+            data-testid="session-rail-lane-usage"
+          >
+            {formatLaneUsageRow(laneUsage, delegatedThreadCount)}
+          </div>
+        ) : null}
       </section>
 
       <section className="session-rail__card" data-testid="session-rail-status">
@@ -125,28 +147,56 @@ export function SessionRail({
         ) : null}
       </section>
 
-      <section className="session-rail__card" data-testid="session-rail-changes">
-        <h3 className="session-rail__card-title">Changed</h3>
-        {changedFiles.length === 0 ? (
-          <div className="session-rail__row session-rail__row--muted">No file changes yet</div>
-        ) : (
-          <ul className="session-rail__files">
-            {changedFiles.map((file) => (
-              <li key={`${file.turn.checkpointId}:${file.path}`}>
-                <button
-                  className="session-rail__file"
-                  data-testid={`session-rail-file-${file.turn.checkpointId}-${file.path}`}
-                  type="button"
-                  onClick={() => onOpenTurnChange(file.turn, file.path)}
-                  title={file.path}
-                >
-                  {file.path}
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+      {runningRailChildren.length > 0 ? (
+        <section className="session-rail__card" data-testid="session-rail-running-children">
+          <h3 className="session-rail__card-title">Running</h3>
+          {runningRailChildren.map((child) => {
+            const snippet = childOutputSnippet(child.latestTranscript);
+            return (
+              <div key={child.id} data-testid={`session-rail-running-child-${child.id}`}>
+                <div className="session-rail__row">
+                  <span className="session-rail__child-head" title={child.title}>
+                    {child.title}{" "}
+                    {child.mode ? <span className="meta-chip">{child.mode}</span> : null}
+                  </span>
+                </div>
+                {snippet ? (
+                  <div
+                    className="session-rail__row session-rail__row--muted session-rail__child-output"
+                    data-testid="session-rail-child-output"
+                    title={snippet}
+                  >
+                    {snippet}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </section>
+      ) : (
+        <section className="session-rail__card" data-testid="session-rail-changes">
+          <h3 className="session-rail__card-title">Changed</h3>
+          {changedFiles.length === 0 ? (
+            <div className="session-rail__row session-rail__row--muted">No file changes yet</div>
+          ) : (
+            <ul className="session-rail__files">
+              {changedFiles.map((file) => (
+                <li key={`${file.turn.checkpointId}:${file.path}`}>
+                  <button
+                    className="session-rail__file"
+                    data-testid={`session-rail-file-${file.turn.checkpointId}-${file.path}`}
+                    type="button"
+                    onClick={() => onOpenTurnChange(file.turn, file.path)}
+                    title={file.path}
+                  >
+                    {file.path}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
 
       <section className="session-rail__card" data-testid="session-rail-context">
         <h3 className="session-rail__card-title">Context</h3>
@@ -250,6 +300,56 @@ function BackgroundTaskRow({
   );
 }
 
+function formatLaneTokens(tokens: number): string {
+  if (!Number.isFinite(tokens) || tokens < 0) {
+    return "0";
+  }
+  if (tokens >= 1_000_000) {
+    const value = tokens / 1_000_000;
+    return `${value >= 100 ? Math.round(value) : Math.round(value * 10) / 10}M`;
+  }
+  if (tokens >= 1_000) {
+    const value = tokens / 1_000;
+    return `${value >= 100 ? Math.round(value) : Math.round(value * 10) / 10}k`;
+  }
+  return String(Math.round(tokens));
+}
+
+function formatLaneCost(cost: number): string {
+  if (!Number.isFinite(cost) || cost <= 0) {
+    return "$0.00";
+  }
+  if (cost < 10) {
+    return `$${cost.toFixed(2)}`;
+  }
+  if (cost < 100) {
+    return `$${cost.toFixed(1)}`;
+  }
+  return `$${Math.round(cost)}`;
+}
+
+function formatLaneUsage(label: string, lane: LaneUsage, threadCount?: number): string {
+  const tokens = `${formatLaneTokens(lane.inputTokens)}→${formatLaneTokens(lane.outputTokens)}`;
+  const money = lane.billable && lane.sessions > 0 ? ` · ${formatLaneCost(lane.cost)}` : "";
+  const threads =
+    threadCount === undefined
+      ? ""
+      : ` (${threadCount} ${threadCount === 1 ? "thread" : "threads"})`;
+  const partial = lane.partial ? " · partial" : "";
+  return `${label} ${tokens}${money}${threads}${partial}`;
+}
+
+function formatLaneUsageRow(
+  laneUsage: { readonly lead: LaneUsage; readonly delegated: LaneUsage },
+  delegatedThreadCount: number,
+): string {
+  return `${formatLaneUsage("Lead", laneUsage.lead)}  ${formatLaneUsage(
+    "Children",
+    laneUsage.delegated,
+    delegatedThreadCount,
+  )}`;
+}
+
 function isLongRun(runningSince: string | undefined): boolean {
   if (!runningSince) {
     return false;
@@ -259,6 +359,63 @@ function isLongRun(runningSince: string | undefined): boolean {
     return false;
   }
   return Date.now() - startedAt >= LONG_RUN_MS;
+}
+
+/** Max running children shown in the rail's Running card. */
+export const RAIL_RUNNING_CHILD_LIMIT = 3;
+
+export interface RailParentRef {
+  readonly workspaceId?: string;
+  readonly sessionId: string;
+}
+
+/**
+ * Running children of one lead session, in list order, capped at `limit`.
+ * Children of other sessions/workspaces and non-running statuses are ignored.
+ */
+export function runningChildrenForRail(
+  children: readonly OrchestrationChildThread[],
+  parentRef: RailParentRef,
+  limit = RAIL_RUNNING_CHILD_LIMIT,
+): readonly OrchestrationChildThread[] {
+  const running: OrchestrationChildThread[] = [];
+  for (const child of children) {
+    if (child.status !== "running") continue;
+    if (child.parentSessionId !== parentRef.sessionId) continue;
+    if (parentRef.workspaceId !== undefined && child.parentWorkspaceId !== parentRef.workspaceId) {
+      continue;
+    }
+    running.push(child);
+    if (running.length >= limit) break;
+  }
+  return running;
+}
+
+/**
+ * Short display snippet for a child's `latestTranscript` preview: trailing
+ * whitespace stripped, blank runs collapsed to one line, then truncated to
+ * `maxLines` lines and `maxChars` chars. Returns "" for blank input.
+ */
+export function childOutputSnippet(latestTranscript: string, maxLines = 3, maxChars = 240): string {
+  const compact: string[] = [];
+  for (const line of latestTranscript.split("\n")) {
+    const trimmed = line.trimEnd();
+    if (trimmed.trim() === "") {
+      if (compact.length > 0 && compact[compact.length - 1] !== "") {
+        compact.push("");
+      }
+      continue;
+    }
+    compact.push(trimmed);
+  }
+  while (compact.length > 0 && compact[compact.length - 1] === "") {
+    compact.pop();
+  }
+  const snippet = compact.slice(0, Math.max(0, maxLines)).join("\n").trimEnd();
+  if (snippet === "" || snippet.length <= maxChars) {
+    return snippet;
+  }
+  return `${snippet.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
 }
 
 interface ChangedFileRef {

@@ -1186,6 +1186,7 @@ function ChildThreadGroup({
   const noun = summary.count === 1 ? "child thread" : "child threads";
   const statusBits = [
     summary.running > 0 ? `${summary.running} running` : null,
+    summary.done > 0 ? `${summary.done} done` : null,
     summary.failed > 0 ? `${summary.failed} failed` : null,
   ].filter((bit): bit is string => bit !== null);
   const label =

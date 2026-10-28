@@ -19,10 +19,7 @@ import type {
   OrchestrationChildThread,
   OrchestrationChildThreadStatus,
   OrchestrationChildTranscriptMessage,
-  OrchestrationSupervisionLoop,
-  OrchestrationSupervisionStatus,
   SendChildThreadFollowUpInput,
-  SetChildSupervisionLoopInput,
   TimelineToolCall,
   TranscriptMessage,
 } from "../../contracts/desktop-state";
@@ -63,8 +60,58 @@ const READ_THREAD_MESSAGE_LIMIT = 2000;
 const MAX_EVIDENCE_RECORDS_PER_CHILD = 80;
 const CHILD_REPORT_CUSTOM_TYPE = "pi-gui.child-report";
 const CHILD_REPORT_MESSAGE_LIMIT = 4_000;
-const DEFAULT_SUPERVISION_INTERVAL_MS = 60_000;
-const MIN_SUPERVISION_INTERVAL_MS = 250;
+/** Trailing marker on a host-truncated child report so the lead knows content is missing. */
+const REPORT_TRUNCATED_NOTE = "…(report truncated; call read_thread for detail)";
+/** Default cap on child records per parent session (unbounded-spawn protection). */
+export const DEFAULT_DELEGATION_BUDGET = 12;
+export const DELEGATION_BUDGET_ENV_VAR = "PI_APP_ORCHESTRATION_MAX_CHILDREN";
+
+/**
+ * Cap on child records per parent session. Overridable with
+ * PI_APP_ORCHESTRATION_MAX_CHILDREN (positive integer; junk falls back to
+ * the default). Read at call time so tests and restarts can reconfigure.
+ */
+export function resolveDelegationBudgetLimit(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env[DELEGATION_BUDGET_ENV_VAR]?.trim();
+  if (raw !== undefined && raw !== "" && /^\d+$/.test(raw)) {
+    const value = Number.parseInt(raw, 10);
+    if (Number.isSafeInteger(value) && value > 0) {
+      return value;
+    }
+  }
+  return DEFAULT_DELEGATION_BUDGET;
+}
+
+export function delegationBudgetExceededMessage(limit: number): string {
+  return (
+    `Delegation budget exhausted (${limit} children on this thread). ` +
+    `Summarize what you have and finish, or continue an existing child with send_message_to_thread.`
+  );
+}
+
+export function countChildrenForParent(
+  children: readonly OrchestrationChildThread[],
+  parentWorkspaceId: string,
+  parentSessionId: string,
+): number {
+  return children.filter(
+    (child) =>
+      child.parentWorkspaceId === parentWorkspaceId && child.parentSessionId === parentSessionId,
+  ).length;
+}
+
+class DelegationBudgetError extends Error {}
+
+/**
+ * Handoff generation per child thread id: 1 on creation, +1 each time the
+ * child is continued via send_message_to_thread, so a lead reading several
+ * reports can tell runs apart. In-memory only; never persisted on the record.
+ */
+const childGenerationByThreadId = new Map<string, number>();
+
+function generationForChildThread(childThreadId: string): number {
+  return childGenerationByThreadId.get(childThreadId) ?? 1;
+}
 const CHILD_START_TIMEOUT_MS = 10_000;
 const CHILD_RUNNING_FAILURE_GRACE_MS = 1_000;
 const pendingCreateChildThreadToolCalls = new Set<string>();
@@ -105,6 +152,7 @@ interface OrchestrationOwnerHost {
   updateSessionConfig(sessionRef: SessionRef, config: SessionConfig | undefined): void;
   isOrchestratorSession(sessionRef: SessionRef): boolean;
   sidekickModelFor(sessionRef: SessionRef): SessionModelSelection | undefined;
+  defaultScoutModel(): SessionModelSelection | undefined;
   sessionModelFor(sessionRef: SessionRef): SessionModelSelection | undefined;
   buildCreateSessionOptions(workspaceId: string): Promise<CreateSessionOptions | undefined>;
   getQueuedComposerMessages(
@@ -126,11 +174,9 @@ interface OrchestrationOwnerHost {
 }
 
 export interface OrchestrationOwner {
-  reconcileDueSupervisionLoops(): { readonly changed: boolean };
   reportChildCompletion(sessionRef: SessionRef): Promise<void>;
   cancelChildRunsForParent(parentRef: SessionRef): Promise<void>;
   sendChildThreadFollowUp(input: SendChildThreadFollowUpInput): Promise<DesktopAppState>;
-  setChildSupervisionLoopGate(input: SetChildSupervisionLoopInput): Promise<DesktopAppState>;
   hydrateOrchestrationChildren(): Promise<void>;
   hydrateVisibleOrchestrationChildren(): Promise<void>;
   projectOrchestrationChildren(
@@ -178,12 +224,10 @@ export function createOrchestrationOwner(store: OrchestrationOwnerHost): Orchest
   // Cleared when the child starts running again so a follow-up run reports too.
   const reportedChildRuns = new Map<string, string>();
   return {
-    reconcileDueSupervisionLoops: () => reconcileDueSupervisionLoops(store),
     reportChildCompletion: (sessionRef) =>
       reportChildCompletion(store, sessionRef, reportedChildRuns),
     cancelChildRunsForParent: (parentRef) => cancelChildRunsForParent(store, parentRef),
     sendChildThreadFollowUp: (input) => sendChildThreadFollowUp(store, input),
-    setChildSupervisionLoopGate: (input) => setChildSupervisionLoopGate(store, input),
     hydrateOrchestrationChildren: () => hydrateOrchestrationChildren(store),
     hydrateVisibleOrchestrationChildren: () => hydrateVisibleOrchestrationChildren(store),
     projectOrchestrationChildren: (children) => projectOrchestrationChildren(store, children),
@@ -279,19 +323,33 @@ async function createChildThreadRecord(
     };
   }
 
+  // Unbounded-spawn protection: cap child records per parent regardless of
+  // status. An idempotent retry above bypasses the cap; fresh spawns do not.
+  const budgetLimit = resolveDelegationBudgetLimit();
+  const delegatedCount = countChildrenForParent(
+    store.orchestrationState().orchestrationChildren,
+    input.parentWorkspaceId,
+    input.parentSessionId,
+  );
+  if (delegatedCount >= budgetLimit) {
+    throw new DelegationBudgetError(delegationBudgetExceededMessage(budgetLimit));
+  }
+
   if (pendingKey) {
     pendingCreateChildThreadToolCalls.add(pendingKey);
   }
   try {
-    // Children run on the spawning thread's configured sidekick model so the
-    // lead stays on the frontier/expensive model. A child session without its
-    // own sidekick passes its own model down, keeping a delegation subtree on
-    // one model; otherwise the workspace default applies.
+    // Model for a child, most specific first: the app-global scout model for a
+    // read-only sweep, then the thread's sidekick, then (for a child spawning a
+    // grandchild) the spawning session's own model, then the workspace default.
+    // Workers never take the scout model: it exists so cheap read-only sweeps
+    // stay cheap without downgrading edits.
     const parentRef: SessionRef = {
       workspaceId: input.parentWorkspaceId,
       sessionId: input.parentSessionId,
     };
     const sidekick =
+      (mode === "scout" ? store.defaultScoutModel() : undefined) ??
       store.sidekickModelFor(parentRef) ??
       (parentChild ? store.sessionModelFor(parentRef) : undefined);
     const createOptions = await store.buildCreateSessionOptions(input.parentWorkspaceId);
@@ -337,7 +395,6 @@ async function createChildThreadRecord(
           createdAt: now,
         },
       ],
-      supervisionLoop: createSupervisionLoop(status, now),
       createdAt: now,
       updatedAt: session.updatedAt || now,
     };
@@ -345,6 +402,7 @@ async function createChildThreadRecord(
       ...child,
       evidence: child.evidence.map((record) => ({ ...record, childThreadId: child.id })),
     };
+    childGenerationByThreadId.set(child.id, 1);
 
     store.replaceOrchestrationChildren(
       projectOrchestrationChildren(store, [
@@ -522,42 +580,6 @@ async function sendChildThreadFollowUp(
     deliverAs: "followUp",
     allowCommands: false,
   });
-  updateChildSupervisionLoop(
-    store,
-    child.id,
-    "continue",
-    "Follow-up sent; monitoring child progress.",
-  );
-  await store.persistUiState();
-  return store.emit();
-}
-
-async function setChildSupervisionLoopGate(
-  store: OrchestrationOwnerHost,
-  input: SetChildSupervisionLoopInput,
-): Promise<DesktopAppState> {
-  await store.initialize();
-  const child = store
-    .orchestrationState()
-    .orchestrationChildren.find((entry) => entry.id === input.childThreadId);
-  if (!child) {
-    return store.withError("Unknown child thread.");
-  }
-
-  // Stopping supervision must also stop the child agent: otherwise the loop
-  // stops watching but the child keeps running (and spending) unsupervised.
-  if (input.gate === "stop") {
-    await cancelChildRun(store, child);
-  }
-
-  updateChildSupervisionLoop(
-    store,
-    input.childThreadId,
-    input.gate,
-    input.gate === "stop"
-      ? "Parent stopped app-owned supervision for this child."
-      : "Parent continued app-owned supervision.",
-  );
   await store.persistUiState();
   return store.emit();
 }
@@ -601,17 +623,34 @@ async function createChildThreadToolResult(
     readonly mode?: OrchestrationChildMode;
   },
 ): Promise<AgentToolResult<CreateChildThreadToolDetails>> {
-  const { child, deliveryStatus } = await createChildThreadRecord(store, {
-    parentWorkspaceId: parentRef.workspaceId,
-    parentSessionId: parentRef.sessionId,
-    prompt: input.prompt,
-    ...(input.sourcePrompt ? { sourcePrompt: input.sourcePrompt } : {}),
-    ...(input.mode ? { mode: input.mode } : {}),
-    sourceToolCallId: input.toolCallId,
-  });
+  const displayPrompt = (input.sourcePrompt ?? input.prompt).trim();
+  let child: OrchestrationChildThread;
+  let deliveryStatus: CreatedChildThreadResult["deliveryStatus"];
+  try {
+    ({ child, deliveryStatus } = await createChildThreadRecord(store, {
+      parentWorkspaceId: parentRef.workspaceId,
+      parentSessionId: parentRef.sessionId,
+      prompt: input.prompt,
+      ...(input.sourcePrompt ? { sourcePrompt: input.sourcePrompt } : {}),
+      ...(input.mode ? { mode: input.mode } : {}),
+      sourceToolCallId: input.toolCallId,
+    }));
+  } catch (error) {
+    // A refused delegation is a normal result, not a throw: the lead needs
+    // the actionable text, not a failed tool call.
+    if (error instanceof DelegationBudgetError) {
+      const refused = createChildThreadErrorResult(displayPrompt, errorMessage(error));
+      return {
+        ...refused,
+        details: { ...refused.details, delegationsRemaining: 0 },
+      };
+    }
+    throw error;
+  }
+  const budgetLimit = resolveDelegationBudgetLimit();
   const details: CreateChildThreadToolDetails = {
     action: createChildThreadAction,
-    prompt: (input.sourcePrompt ?? input.prompt).trim(),
+    prompt: displayPrompt,
     ...(child.mode ? { mode: child.mode } : {}),
     ...(typeof child.depth === "number" ? { depth: child.depth } : {}),
     childThreadId: child.id,
@@ -619,6 +658,16 @@ async function createChildThreadToolResult(
     childSessionId: child.childSessionId,
     title: child.title,
     deliveryStatus,
+    delegationsRemaining: Math.max(
+      0,
+      budgetLimit -
+        countChildrenForParent(
+          store.orchestrationState().orchestrationChildren,
+          parentRef.workspaceId,
+          parentRef.sessionId,
+        ),
+    ),
+    generation: generationForChildThread(child.id),
   };
 
   return {
@@ -935,13 +984,15 @@ async function sendMessageToThreadToolResult(
     allowCommands: false,
   });
   if (target.child) {
-    updateChildSupervisionLoop(
-      store,
-      target.child.id,
-      "continue",
-      "Follow-up sent; monitoring child progress.",
-    );
     await store.persistUiState();
+  }
+
+  // Every continuation starts a new run of the same thread: bump its
+  // generation so reports from different runs stay distinguishable.
+  let generation: number | undefined;
+  if (target.child) {
+    generation = generationForChildThread(target.child.id) + 1;
+    childGenerationByThreadId.set(target.child.id, generation);
   }
 
   const queuedMessages = store.getQueuedComposerMessages(target.sessionRef);
@@ -954,6 +1005,7 @@ async function sendMessageToThreadToolResult(
     status,
     queuedMessageCount: queuedMessages.length,
     ...(interrupted ? { interrupted: true as const } : {}),
+    ...(generation !== undefined ? { generation } : {}),
     message: input.message,
   };
 
@@ -967,10 +1019,9 @@ function projectOrchestrationChildren(
   store: OrchestrationOwnerHost,
   children: readonly OrchestrationChildThread[] = store.orchestrationState().orchestrationChildren,
 ): readonly OrchestrationChildThread[] {
-  const now = new Date().toISOString();
   const parentEvidenceByChild = parentEvidenceIndex(store, children);
   return children.map((child) =>
-    projectOrchestrationChild(store, child, now, parentEvidenceByChild.get(child.id) ?? []),
+    projectOrchestrationChild(store, child, parentEvidenceByChild.get(child.id) ?? []),
   );
 }
 
@@ -978,71 +1029,14 @@ function projectOrchestrationChildrenForSession(
   store: OrchestrationOwnerHost,
   sessionRef: SessionRef,
 ): readonly OrchestrationChildThread[] {
-  const now = new Date().toISOString();
   const children = store.orchestrationState().orchestrationChildren;
   const parentEvidenceByChild = parentEvidenceIndex(store, children);
   return children.map((child) =>
     child.childWorkspaceId === sessionRef.workspaceId &&
     child.childSessionId === sessionRef.sessionId
-      ? projectOrchestrationChild(store, child, now, parentEvidenceByChild.get(child.id) ?? [])
+      ? projectOrchestrationChild(store, child, parentEvidenceByChild.get(child.id) ?? [])
       : child,
   );
-}
-
-function reconcileDueSupervisionLoops(
-  store: OrchestrationOwnerHost,
-  now: Date = new Date(),
-): { readonly changed: boolean; readonly nextRunAt?: string } {
-  let shouldPublish = false;
-  const nowMs = now.getTime();
-  const nowIso = now.toISOString();
-  const currentChildren = store.orchestrationState().orchestrationChildren;
-  const parentEvidenceByChild = parentEvidenceIndex(store, currentChildren);
-  const children = currentChildren.map((child) => {
-    const beforeKey = supervisionPublishKey(child);
-    const projectedChild = projectOrchestrationChild(
-      store,
-      child,
-      nowIso,
-      parentEvidenceByChild.get(child.id) ?? [],
-    );
-    if (supervisionPublishKey(projectedChild) !== beforeKey) {
-      shouldPublish = true;
-    }
-    if (isTerminalChildStatus(projectedChild.status) && !isTerminalChildStatus(child.status)) {
-      if (finalizeChildThreadToolRow(store, projectedChild)) {
-        shouldPublish = true;
-      }
-    }
-    if (!projectedChild.childSessionId || projectedChild.supervisionLoop?.status === "stopped") {
-      return projectedChild;
-    }
-    const loop = projectSupervisionLoop(
-      projectedChild.supervisionLoop,
-      projectedChild.status,
-      nowIso,
-    );
-    if (!loop.nextRunAt || Date.parse(loop.nextRunAt) > nowMs) {
-      return loop === projectedChild.supervisionLoop
-        ? projectedChild
-        : { ...projectedChild, supervisionLoop: loop };
-    }
-    const advancedChild = {
-      ...projectedChild,
-      supervisionLoop: advanceSupervisionLoop(loop, projectedChild.status, now),
-    };
-    if (supervisionPublishKey(advancedChild) !== beforeKey) {
-      shouldPublish = true;
-    }
-    return advancedChild;
-  });
-
-  store.replaceOrchestrationChildren(children);
-
-  return {
-    changed: shouldPublish,
-    nextRunAt: nextSupervisionRunAt(children),
-  };
 }
 
 async function hydrateOrchestrationChildren(store: OrchestrationOwnerHost): Promise<void> {
@@ -1170,6 +1164,11 @@ async function reportChildCompletion(
     return;
   }
 
+  // The supervision timer used to flip the parent's `create_child_thread`
+  // tool row to its completed/failed text. Keep that visible outcome on the
+  // event-driven path now that the timer is gone.
+  finalizeChildThreadToolRow(store, { ...child, status });
+
   const parentRef: SessionRef = {
     workspaceId: child.parentWorkspaceId,
     sessionId: child.parentSessionId,
@@ -1196,7 +1195,13 @@ async function reportChildCompletion(
       parentRef,
       {
         customType: CHILD_REPORT_CUSTOM_TYPE,
-        text: childCompletionReportText(child, status, finalText, error),
+        text: childCompletionReportText(
+          child,
+          status,
+          finalText,
+          error,
+          generationForChildThread(child.id),
+        ),
         display: true,
       },
       { triggerTurn: true, deliverAs: "followUp" },
@@ -1214,15 +1219,22 @@ export function childCompletionReportText(
   status: OrchestrationChildThreadStatus,
   finalText: string | undefined,
   error?: string,
+  generation?: number,
 ): string {
-  const body = finalText?.trim()
-    ? truncateReadThreadText(finalText.trim(), CHILD_REPORT_MESSAGE_LIMIT)
+  const trimmed = finalText?.trim();
+  // The child's output is the expensive half of delegation: cap what the
+  // host injects at CHILD_REPORT_MESSAGE_LIMIT and say so explicitly, so
+  // the lead knows content is missing instead of assuming completeness.
+  const body = trimmed
+    ? trimmed.length > CHILD_REPORT_MESSAGE_LIMIT
+      ? `${trimmed.slice(0, CHILD_REPORT_MESSAGE_LIMIT)}${REPORT_TRUNCATED_NOTE}`
+      : trimmed
     : status === "failed"
       ? "No final answer: the child run failed."
       : `Child finished without a final report. Nothing was summarized, so this work is unverified: call read_thread("${child.id}") to inspect what it actually did before trusting this task.`;
   return [
     `Child thread "${child.title}" ${status === "failed" ? "failed" : "finished"}.`,
-    `thread_id: ${child.id}`,
+    `thread_id: ${child.id}${generation !== undefined ? ` (run ${generation})` : ""}`,
     `status: ${status}`,
     `goal: ${truncateReadThreadText(child.goal, READ_THREAD_GOAL_LIMIT)}`,
     ...(error ? [`error: ${truncateReadThreadText(error, READ_THREAD_GOAL_LIMIT)}`] : []),
@@ -1257,20 +1269,6 @@ export function toPersistedOrchestrationChildren(
     transcript: child.childSessionId ? [] : child.transcript,
     evidence: capEvidenceRecords(child.evidence),
   }));
-}
-
-export function nextSupervisionRunAt(
-  children: readonly OrchestrationChildThread[],
-): string | undefined {
-  return children
-    .flatMap((child) =>
-      child.supervisionLoop?.status !== "stopped" &&
-      child.supervisionLoop?.nextRunAt &&
-      Number.isFinite(Date.parse(child.supervisionLoop.nextRunAt))
-        ? [child.supervisionLoop.nextRunAt]
-        : [],
-    )
-    .sort()[0];
 }
 
 function childSessionRef(child: OrchestrationChildThread): SessionRef {
@@ -1463,7 +1461,6 @@ function markInitialPromptDeliveryFailed(
 function projectOrchestrationChild(
   store: OrchestrationOwnerHost,
   child: OrchestrationChildThread,
-  nowIso: string,
   parentEvidence: readonly OrchestrationEvidenceRecord[],
 ): OrchestrationChildThread {
   if (!child.childSessionId) {
@@ -1489,160 +1486,8 @@ function projectOrchestrationChild(
       ...parentEvidence,
       ...blockerEvidenceFromChildStatus(child, status, updatedAt),
     ]),
-    supervisionLoop: projectSupervisionLoop(child.supervisionLoop, status, nowIso),
     updatedAt,
   };
-}
-
-function createSupervisionLoop(
-  status: OrchestrationChildThreadStatus,
-  nowIso: string,
-): OrchestrationSupervisionLoop {
-  const intervalMs = supervisionIntervalMs();
-  return {
-    id: randomUUID(),
-    status: "monitoring",
-    gate: "continue",
-    intervalMs,
-    iterationCount: 0,
-    lastCheckedAt: nowIso,
-    nextRunAt: nextIso(nowIso, intervalMs),
-    reason: monitoringReason(status),
-    lastChildStatus: status,
-  };
-}
-
-function projectSupervisionLoop(
-  loop: OrchestrationSupervisionLoop | undefined,
-  status: OrchestrationChildThreadStatus,
-  nowIso: string,
-): OrchestrationSupervisionLoop {
-  if (!loop) {
-    return createSupervisionLoop(status, nowIso);
-  }
-  if (loop.status === "stopped" || loop.gate === "stop") {
-    return loop;
-  }
-  if (status === "complete" || status === "failed") {
-    if (loop.gate === "wake" && loop.lastChildStatus === status) {
-      return loop;
-    }
-    return {
-      ...loop,
-      status: "attention",
-      gate: "wake",
-      lastCheckedAt: nowIso,
-      nextRunAt: undefined,
-      reason:
-        status === "failed"
-          ? "Child failed; parent review is needed."
-          : "Child completed; parent review is ready.",
-      lastChildStatus: status,
-    };
-  }
-  if (loop.gate !== "continue" || loop.status !== "monitoring" || loop.lastChildStatus !== status) {
-    return {
-      ...loop,
-      status: "monitoring",
-      gate: "continue",
-      lastCheckedAt: nowIso,
-      nextRunAt: loop.nextRunAt ?? nextIso(nowIso, loop.intervalMs),
-      reason: monitoringReason(status),
-      lastChildStatus: status,
-    };
-  }
-  return loop;
-}
-
-function advanceSupervisionLoop(
-  loop: OrchestrationSupervisionLoop,
-  status: OrchestrationChildThreadStatus,
-  now: Date,
-): OrchestrationSupervisionLoop {
-  const nowIso = now.toISOString();
-  const projected = projectSupervisionLoop(loop, status, nowIso);
-  if (projected.gate === "wake" || projected.status === "stopped") {
-    return {
-      ...projected,
-      iterationCount: loop.iterationCount + 1,
-    };
-  }
-  return {
-    ...projected,
-    iterationCount: loop.iterationCount + 1,
-    lastCheckedAt: nowIso,
-    nextRunAt: nextIso(nowIso, projected.intervalMs),
-    reason: monitoringReason(status),
-    lastChildStatus: status,
-  };
-}
-
-function monitoringReason(status: OrchestrationChildThreadStatus): string {
-  if (status === "waiting") {
-    return "Child has queued follow-up; waiting for the run to continue.";
-  }
-  if (status === "queued") {
-    return "Child queued; waiting for the run to start.";
-  }
-  return "Monitoring child thread.";
-}
-
-function supervisionPublishKey(child: OrchestrationChildThread): string {
-  const loop = child.supervisionLoop;
-  return [
-    child.id,
-    child.status,
-    loop?.status ?? "",
-    loop?.gate ?? "",
-    loop?.reason ?? "",
-    loop?.lastChildStatus ?? "",
-    loop?.stoppedAt ?? "",
-  ].join("\0");
-}
-
-function updateChildSupervisionLoop(
-  store: OrchestrationOwnerHost,
-  childThreadId: string,
-  gate: SetChildSupervisionLoopInput["gate"],
-  reason: string,
-): void {
-  const nowIso = new Date().toISOString();
-  store.replaceOrchestrationChildren(
-    store.orchestrationState().orchestrationChildren.map((child) => {
-      if (child.id !== childThreadId) {
-        return child;
-      }
-      const existing = child.supervisionLoop ?? createSupervisionLoop(child.status, nowIso);
-      const intervalMs = existing.intervalMs || supervisionIntervalMs();
-      const status: OrchestrationSupervisionStatus = gate === "stop" ? "stopped" : "monitoring";
-      return {
-        ...child,
-        supervisionLoop: {
-          ...existing,
-          status,
-          gate,
-          intervalMs,
-          lastCheckedAt: nowIso,
-          nextRunAt: gate === "stop" ? undefined : nextIso(nowIso, intervalMs),
-          reason,
-          lastChildStatus: child.status,
-          ...(gate === "stop" ? { stoppedAt: nowIso } : { stoppedAt: undefined }),
-        },
-      };
-    }),
-  );
-}
-
-function supervisionIntervalMs(): number {
-  const configured = Number(process.env.PI_APP_ORCHESTRATION_SUPERVISION_INTERVAL_MS);
-  if (!Number.isFinite(configured) || configured <= 0) {
-    return DEFAULT_SUPERVISION_INTERVAL_MS;
-  }
-  return Math.max(MIN_SUPERVISION_INTERVAL_MS, Math.floor(configured));
-}
-
-function nextIso(fromIso: string, intervalMs: number): string {
-  return new Date(Date.parse(fromIso) + intervalMs).toISOString();
 }
 
 function isTerminalChildStatus(status: OrchestrationChildThreadStatus): boolean {
@@ -1732,6 +1577,16 @@ function updateCreateChildThreadToolOutput(
       childSessionId: child.childSessionId,
       title: child.title,
       deliveryStatus,
+      delegationsRemaining: Math.max(
+        0,
+        resolveDelegationBudgetLimit() -
+          countChildrenForParent(
+            store.orchestrationState().orchestrationChildren,
+            event.sessionRef.workspaceId,
+            event.sessionRef.sessionId,
+          ),
+      ),
+      generation: generationForChildThread(child.id),
     },
   });
 }
@@ -2001,7 +1856,6 @@ function listThreadsForContext(
         sessionId: session.id,
         title: child?.title ?? session.title,
         status: child?.status ?? session.status,
-        ...(child ? threadListSupervisionFields(child) : {}),
         relationship: child
           ? "child"
           : session.id === parentRef.sessionId && workspace.id === parentRef.workspaceId
@@ -2025,7 +1879,6 @@ function listThreadsForContext(
       sessionId: child.childSessionId,
       title: child.title,
       status: child.status,
-      ...threadListSupervisionFields(child),
       relationship: "child",
       updatedAt: child.updatedAt,
       preview: child.latestTranscript,
@@ -2053,21 +1906,6 @@ function relationshipRank(relationship: ThreadListEntry["relationship"]): number
     return 1;
   }
   return 2;
-}
-
-function threadListSupervisionFields(
-  child: OrchestrationChildThread,
-): Pick<ThreadListEntry, "supervisionGate" | "supervisionReason" | "nextSupervisionRunAt"> {
-  if (!child.supervisionLoop) {
-    return {};
-  }
-  return {
-    supervisionGate: child.supervisionLoop.gate,
-    supervisionReason: child.supervisionLoop.reason,
-    ...(child.supervisionLoop.nextRunAt
-      ? { nextSupervisionRunAt: child.supervisionLoop.nextRunAt }
-      : {}),
-  };
 }
 
 function resolveThreadTarget(
@@ -2114,9 +1952,6 @@ function formatThreadList(threads: readonly ThreadListEntry[]): string {
     ...threads.map(
       (thread) =>
         `- ${thread.threadId} (${thread.relationship}, ${thread.status}): ${thread.title}` +
-        (thread.supervisionGate
-          ? ` [gate=${thread.supervisionGate}: ${thread.supervisionReason ?? "monitoring"}]`
-          : "") +
         (thread.preview ? ` - ${thread.preview}` : ""),
     ),
   ].join("\n");
@@ -2155,6 +1990,9 @@ function formatCreateChildThreadResult(result: CreateChildThreadToolDetails): st
     `childSessionId: ${result.childSessionId ?? ""}` +
     (result.mode ? `\nmode: ${result.mode}` : "") +
     (result.deliveryStatus ? `\ninitialPrompt: ${result.deliveryStatus}` : "") +
+    (result.delegationsRemaining !== undefined
+      ? `\ndelegationsRemaining: ${result.delegationsRemaining}`
+      : "") +
     "\nTo wait for completion, call read_thread once with wait_seconds (up to 120) instead of polling."
   );
 }

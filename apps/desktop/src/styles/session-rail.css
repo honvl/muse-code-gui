@@ -244,3 +244,20 @@
     display: none;
   }
 }
+
+/* A running child in the rail: one-line title with its mode chip, then a
+   clamped preview of what it is doing right now. */
+.session-rail__child-head {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-rail__child-output {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  white-space: pre-wrap;
+}

@@ -40,7 +40,6 @@ import type {
   NotificationPreferences,
   RemoveWorktreeInput,
   SendChildThreadFollowUpInput,
-  SetChildSupervisionLoopInput,
   SelectedTranscriptRecord,
   StartThreadInput,
   ThemePresetId,
@@ -146,7 +145,6 @@ export const desktopIpc = {
   startThread: "pi-gui:start-thread",
   forkThread: "pi-gui:fork-thread",
   sendChildThreadFollowUp: "pi-gui:send-child-thread-follow-up",
-  setChildSupervisionLoop: "pi-gui:set-child-supervision-loop",
   createScheduledTask: "pi-gui:create-scheduled-task",
   updateScheduledTask: "pi-gui:update-scheduled-task",
   deleteScheduledTask: "pi-gui:delete-scheduled-task",
@@ -165,6 +163,8 @@ export const desktopIpc = {
   setSessionThinkingLevel: "pi-gui:set-session-thinking-level",
   setSessionOrchestratorMode: "pi-gui:set-session-orchestrator-mode",
   setSessionSidekickModel: "pi-gui:set-session-sidekick-model",
+  setDefaultLeadModel: "pi-gui:set-default-lead-model",
+  setDefaultScoutModel: "pi-gui:set-default-scout-model",
   loginProvider: "pi-gui:login-provider",
   logoutProvider: "pi-gui:logout-provider",
   setProviderApiKey: "pi-gui:set-provider-api-key",
@@ -735,7 +735,6 @@ export interface PiDesktopApi {
   startThread(input: StartThreadInput): Promise<DesktopAppState>;
   forkThread(input: ForkThreadInput): Promise<DesktopAppState>;
   sendChildThreadFollowUp(input: SendChildThreadFollowUpInput): Promise<DesktopAppState>;
-  setChildSupervisionLoop(input: SetChildSupervisionLoopInput): Promise<DesktopAppState>;
   createScheduledTask(input: CreateScheduledTaskInput): Promise<DesktopAppState>;
   updateScheduledTask(id: string, patch: UpdateScheduledTaskInput): Promise<DesktopAppState>;
   deleteScheduledTask(id: string): Promise<DesktopAppState>;
@@ -785,6 +784,8 @@ export interface PiDesktopApi {
     sessionId: string,
     selection: SessionModelSelection | null,
   ): Promise<DesktopAppState>;
+  setDefaultLeadModel(selection: SessionModelSelection | null): Promise<DesktopAppState>;
+  setDefaultScoutModel(selection: SessionModelSelection | null): Promise<DesktopAppState>;
   loginProvider(workspaceId: string, providerId: string): Promise<DesktopAppState>;
   logoutProvider(workspaceId: string, providerId: string): Promise<DesktopAppState>;
   setProviderApiKey(

@@ -1,5 +1,9 @@
 import { useBackgroundTasks } from "./hooks/use-background-tasks";
 import { SessionRail } from "./session-rail";
+import {
+  collectDelegatedSessionKeys,
+  summarizeOrchestrationUsage,
+} from "../threads/orchestration-usage";
 import type { PiDesktopApi } from "../../../contracts/ipc";
 import type {
   DesktopAppState,
@@ -37,16 +41,34 @@ export function ThreadRailColumn({
     ? { workspaceId: workspace.id, sessionId: session.id }
     : null;
   const backgroundTasks = useBackgroundTasks(api, target);
+  const sessionRef = { workspaceId: workspace.id, sessionId: session.id };
+  const hasOrchestrationChildren = (state?.orchestrationChildren ?? []).some(
+    (child) => child.parentSessionId === session.id,
+  );
+  const laneUsage =
+    state && hasOrchestrationChildren
+      ? summarizeOrchestrationUsage(
+          sessionRef,
+          state.orchestrationChildren,
+          state.sessionUsageBySession,
+        )
+      : undefined;
+  const delegatedThreadCount = laneUsage
+    ? collectDelegatedSessionKeys(sessionRef, state?.orchestrationChildren ?? []).length
+    : 0;
 
   return (
     <SessionRail
       session={session}
+      workspaceId={workspace.id}
       workspaceName={workspace.name}
       workspacePath={workspace.path}
       provider={session.config?.provider}
       modelId={session.config?.modelId}
       thinkingLevel={session.config?.thinkingLevel}
       usage={state?.sessionUsageBySession[sessionKey]}
+      laneUsage={laneUsage}
+      delegatedThreadCount={delegatedThreadCount}
       tasks={backgroundTasks.tasks}
       stoppingTaskId={backgroundTasks.stoppingTaskId}
       onStopTask={backgroundTasks.stopTask}
@@ -54,6 +76,7 @@ export function ThreadRailColumn({
       turns={turnChanges.turns}
       onOpenTurnChange={turnChanges.openTurnChange}
       onStopRun={onStopRun}
+      orchestrationChildren={state?.orchestrationChildren ?? []}
     />
   );
 }

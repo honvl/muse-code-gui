@@ -6,7 +6,6 @@ import type {
   OrchestrationEvidenceRecord,
   OrchestrationChildThread,
   OrchestrationChildTranscriptMessage,
-  OrchestrationSupervisionLoop,
   ThemeMode,
   ThemePresetId,
   ThreadGrouping,
@@ -61,6 +60,10 @@ export interface PersistedUiState {
   readonly orchestratorModeBySession?: Record<string, boolean>;
   /** Per-thread sidekick model for child threads, by session key. */
   readonly sidekickBySession?: Record<string, SessionModelSelection>;
+  /** App-global default model for new lead-mode threads. */
+  readonly defaultLeadModel?: SessionModelSelection;
+  /** App-global default model for read-only scout children. */
+  readonly defaultScoutModel?: SessionModelSelection;
 }
 
 export interface LegacyPersistedUiState extends PersistedUiState {
@@ -145,6 +148,8 @@ export function decodePersistedUiState(parsed: unknown): LegacyPersistedUiState 
     orchestrationChildren: toPersistedOrchestrationChildren(candidate.orchestrationChildren),
     orchestratorModeBySession: toBooleanRecord(candidate.orchestratorModeBySession),
     sidekickBySession: toSidekickRecord(candidate.sidekickBySession),
+    defaultLeadModel: toDefaultLeadModel(candidate.defaultLeadModel),
+    defaultScoutModel: toDefaultScoutModel(candidate.defaultScoutModel),
     composerAttachmentsBySession: toObjectArrayRecord(candidate.composerAttachmentsBySession),
     transcripts: toObjectArrayRecord(candidate.transcripts),
   };
@@ -242,6 +247,8 @@ function validateUiState(value: unknown): Record<string, unknown> {
       "orchestrationChildren",
       "orchestratorModeBySession",
       "sidekickBySession",
+      "defaultLeadModel",
+      "defaultScoutModel",
       "composerAttachmentsBySession",
       "transcripts",
     ],
@@ -319,6 +326,30 @@ function validateUiState(value: unknown): Record<string, unknown> {
       )
         fail(`sidekickBySession.${id}`);
     }
+  }
+  if (root.defaultLeadModel !== undefined) {
+    const selection = objectRecord(root.defaultLeadModel) ?? fail("defaultLeadModel");
+    const provider = selection.provider;
+    const modelId = selection.modelId;
+    if (
+      typeof provider !== "string" ||
+      !provider.trim() ||
+      typeof modelId !== "string" ||
+      !modelId.trim()
+    )
+      fail("defaultLeadModel");
+  }
+  if (root.defaultScoutModel !== undefined) {
+    const selection = objectRecord(root.defaultScoutModel) ?? fail("defaultScoutModel");
+    const provider = selection.provider;
+    const modelId = selection.modelId;
+    if (
+      typeof provider !== "string" ||
+      !provider.trim() ||
+      typeof modelId !== "string" ||
+      !modelId.trim()
+    )
+      fail("defaultScoutModel");
   }
   optional(root, "activeView", (v) => toAppView(v) !== undefined);
   optional(root, "threadGrouping", isThreadGrouping);
@@ -430,6 +461,8 @@ function validateUiState(value: unknown): Record<string, unknown> {
           "latestTranscript",
           "transcript",
           "evidence",
+          // Removed loop field, still listed so pre-removal ui-state.json
+          // files validate; hydration below drops it.
           "supervisionLoop",
           "createdAt",
           "updatedAt",
@@ -527,38 +560,6 @@ function validateUiState(value: unknown): Record<string, unknown> {
           }
         }
       }
-      if (
-        record.supervisionLoop !== undefined &&
-        !toPersistedSupervisionLoop(record.supervisionLoop, toOrchestrationStatus(record.status))
-      )
-        fail(`${path}.supervisionLoop`);
-      if (record.supervisionLoop !== undefined) {
-        const loop = objectRecord(record.supervisionLoop) ?? fail(`${path}.supervisionLoop`);
-        knownKeys(
-          loop,
-          [
-            "id",
-            "status",
-            "gate",
-            "intervalMs",
-            "iterationCount",
-            "lastCheckedAt",
-            "nextRunAt",
-            "reason",
-            "lastChildStatus",
-            "stoppedAt",
-          ],
-          `${path}.supervisionLoop`,
-        );
-        for (const key of ["nextRunAt", "stoppedAt"])
-          optional(loop, key, string, `${path}.supervisionLoop.${key}`);
-        optional(
-          loop,
-          "lastChildStatus",
-          (v) => toOptionalOrchestrationStatus(v) !== undefined,
-          `${path}.supervisionLoop.lastChildStatus`,
-        );
-      }
     }
   }
   return root;
@@ -650,7 +651,6 @@ function toPersistedOrchestrationChildren(value: unknown): OrchestrationChildThr
 
     const sourceToolCallId = stringValue(candidate.sourceToolCallId);
     const status = toOrchestrationStatus(candidate.status);
-    const supervisionLoop = toPersistedSupervisionLoop(candidate.supervisionLoop, status);
     const mode =
       candidate.mode === "scout" || candidate.mode === "worker" ? candidate.mode : undefined;
     const depth =
@@ -676,7 +676,6 @@ function toPersistedOrchestrationChildren(value: unknown): OrchestrationChildThr
           stringValue(candidate.latestTranscript) || retainedTranscript.at(-1)?.text || goal,
         transcript: retainedTranscript,
         evidence: toPersistedEvidence(candidate.evidence, id),
-        ...(supervisionLoop ? { supervisionLoop } : {}),
         createdAt,
         updatedAt,
       },
@@ -794,58 +793,6 @@ function toEvidenceSeverity(value: unknown): OrchestrationEvidenceRecord["severi
   return value === "P0" || value === "P1" || value === "P2" || value === "P3" ? value : undefined;
 }
 
-function toPersistedSupervisionLoop(
-  value: unknown,
-  lastChildStatus: OrchestrationChildThread["status"],
-): OrchestrationSupervisionLoop | undefined {
-  if (!value || typeof value !== "object") {
-    return undefined;
-  }
-  const candidate = value as Record<string, unknown>;
-  const id = stringValue(candidate.id);
-  const status = toSupervisionStatus(candidate.status);
-  const gate = toSupervisionGate(candidate.gate);
-  const intervalMs = numberValue(candidate.intervalMs);
-  const iterationCount = numberValue(candidate.iterationCount);
-  const lastCheckedAt = stringValue(candidate.lastCheckedAt);
-  const reason = stringValue(candidate.reason);
-  if (
-    !id ||
-    !status ||
-    !gate ||
-    !intervalMs ||
-    iterationCount === undefined ||
-    !lastCheckedAt ||
-    !reason
-  ) {
-    return undefined;
-  }
-  return {
-    id,
-    status,
-    gate,
-    intervalMs,
-    iterationCount,
-    lastCheckedAt,
-    ...(stringValue(candidate.nextRunAt) ? { nextRunAt: stringValue(candidate.nextRunAt) } : {}),
-    reason,
-    lastChildStatus: toOptionalOrchestrationStatus(candidate.lastChildStatus) ?? lastChildStatus,
-    ...(stringValue(candidate.stoppedAt) ? { stoppedAt: stringValue(candidate.stoppedAt) } : {}),
-  };
-}
-
-function toSupervisionStatus(value: unknown): OrchestrationSupervisionLoop["status"] | undefined {
-  return value === "monitoring" || value === "attention" || value === "stopped" ? value : undefined;
-}
-
-function toSupervisionGate(value: unknown): OrchestrationSupervisionLoop["gate"] | undefined {
-  return value === "continue" || value === "stop" || value === "wake" ? value : undefined;
-}
-
-function numberValue(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
@@ -901,6 +848,38 @@ function toSidekickRecord(value: unknown): Record<string, SessionModelSelection>
       : [];
   });
   return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+/** A cleared scout default persists as absent, like a cleared sidekick. */
+function toDefaultScoutModel(value: unknown): SessionModelSelection | undefined {
+  const record = objectRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const provider = record.provider;
+  const modelId = record.modelId;
+  return typeof provider === "string" &&
+    provider.trim() &&
+    typeof modelId === "string" &&
+    modelId.trim()
+    ? { provider, modelId }
+    : undefined;
+}
+
+/** A cleared default persists as absent, like a cleared sidekick. */
+function toDefaultLeadModel(value: unknown): SessionModelSelection | undefined {
+  const record = objectRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const provider = record.provider;
+  const modelId = record.modelId;
+  return typeof provider === "string" &&
+    provider.trim() &&
+    typeof modelId === "string" &&
+    modelId.trim()
+    ? { provider, modelId }
+    : undefined;
 }
 
 /** Only true entries persist; false/off is the default and is dropped. */
