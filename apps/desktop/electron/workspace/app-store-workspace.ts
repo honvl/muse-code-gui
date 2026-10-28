@@ -5,6 +5,7 @@ import type {
   CreateSessionOptions,
   ExtensionFlagValues,
   SessionConfig,
+  SessionModelSelection,
   SessionRef,
   SessionSnapshot,
   WorkspaceRef,
@@ -78,6 +79,8 @@ export interface WorkspaceOwnerHost {
   clearPendingAutoTitle(sessionRef: SessionRef): void;
   updateSessionConfig(sessionRef: SessionRef, config: SessionConfig | undefined): void;
   buildCreateSessionOptions(workspaceId: string): Promise<CreateSessionOptions | undefined>;
+  /** App-global default model for new lead-mode threads, when configured. */
+  defaultLeadModel(): SessionModelSelection | undefined;
   /** Check a new thread's flag choices against the flags this workspace's extensions registered. */
   resolveExtensionFlags(
     workspaceId: string,
