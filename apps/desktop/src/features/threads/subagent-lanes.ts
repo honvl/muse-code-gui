@@ -43,17 +43,6 @@ export function subagentSessionName(type: string, description: string): string {
   return `agent:${type}: ${description}`.slice(0, 80);
 }
 
-const SUBAGENT_SESSION_NAME_PATTERN = /^agent:[A-Za-z0-9_-]+: /;
-
-/**
- * Whether a session title is a third-party subagent session name
- * (`agent:<type>: <desc>`, set by the extension's `pi --name`). The sidebar
- * hides these: their entry point is the parent lane, not a top-level row.
- */
-export function isSubagentSessionName(name: string | undefined): boolean {
-  return typeof name === "string" && SUBAGENT_SESSION_NAME_PATTERN.test(name);
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
