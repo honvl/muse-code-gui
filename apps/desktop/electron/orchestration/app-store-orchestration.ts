@@ -974,8 +974,10 @@ async function readThreadToolResult(
   await store.ensureSessionReady(target.sessionRef);
   // Read status fresh on every check: the child record captured in `target`
   // goes stale across the async ready above, and a stale "running" would miss
-  // an already-fired runCompleted and block for the full timeout.
-  const liveChildStatus = () => resolveThreadTarget(store, parentRef, threadId)?.child?.status;
+  // an already-fired runCompleted and block for the full timeout. The thread
+  // list is resolved once; only the child record is re-read, by id.
+  const liveChild = () => (target.child ? childRecordById(store, target.child.id) : undefined);
+  const liveChildStatus = () => liveChild()?.status;
   const isRunning = () => {
     if (store.sessionFromState(target.sessionRef)?.status === "running") return true;
     const status = liveChildStatus();
@@ -1001,8 +1003,12 @@ async function readThreadToolResult(
     timedOut = outcome === "timeout";
   }
 
-  // Re-resolve after a wait so the transcript and status reflect the settle.
-  const fresh = resolveThreadTarget(store, parentRef, threadId) ?? target;
+  // Re-read the child after a wait so the transcript and status reflect the settle.
+  const freshChild = liveChild() ?? target.child;
+  const fresh: ResolvedThreadTarget = {
+    sessionRef: target.sessionRef,
+    ...(freshChild ? { child: freshChild } : {}),
+  };
   const transcript = store.transcriptFor(fresh.sessionRef);
   const session = store.sessionFromState(fresh.sessionRef);
   // Bound the window before converting: a cheap kind-only pass counts the
@@ -2244,6 +2250,15 @@ function truncateListThreadsPreview(preview: string): string {
   return preview.length > LIST_THREADS_PREVIEW_LIMIT
     ? `${preview.slice(0, LIST_THREADS_PREVIEW_LIMIT)}…`
     : preview;
+}
+
+function childRecordById(
+  store: OrchestrationOwnerHost,
+  childThreadId: string,
+): OrchestrationChildThread | undefined {
+  return store
+    .orchestrationState()
+    .orchestrationChildren.find((child) => child.id === childThreadId);
 }
 
 function relationshipRank(relationship: ThreadListEntry["relationship"]): number {
