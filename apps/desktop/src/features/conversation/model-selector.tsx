@@ -7,6 +7,8 @@ import {
   THINKING_OPTIONS,
   type ComposerModelOption,
 } from "./composer-commands";
+import { DEFAULT_SIDEKICK_THINKING_LEVEL } from "../../../contracts/desktop-state";
+import { effectiveThinkingLevel, modelThinkingLevels } from "../../../contracts/thinking-levels";
 
 interface ModelSelectorProps {
   readonly runtime: RuntimeSnapshot | undefined;
@@ -17,6 +19,8 @@ interface ModelSelectorProps {
   readonly sidekickProvider?: string | undefined;
   readonly sidekickModelId?: string | undefined;
   readonly sidekickThinkingLevel?: string | undefined;
+  /** App-global sidekick reasoning children inherit when the thread sets none. */
+  readonly defaultSidekickThinkingLevel?: string | undefined;
   readonly disabled?: boolean;
   readonly dropdownPlacement?: "above" | "below";
   readonly showEmptyModelControl?: boolean;
@@ -28,7 +32,7 @@ interface ModelSelectorProps {
   readonly onToggleOrchestrator?: (enabled: boolean) => void;
   readonly onSetSidekickModel?: (provider: string, modelId: string) => void;
   readonly onClearSidekickModel?: () => void;
-  /** `null` clears the sidekick's reasoning back to the workspace default. */
+  /** `null` clears the sidekick's reasoning back to the app-global default. */
   readonly onSetSidekickThinkingLevel?: (level: string | null) => void;
 }
 
@@ -54,6 +58,26 @@ export function sidekickMatchesLead(input: {
   );
 }
 
+/**
+ * Labels for the sidekick reasoning badge, showing what pi will apply on the
+ * sidekick's model rather than a level it cannot run. Without a thread
+ * override children inherit the app-global default, shown as "Default (xhigh)".
+ */
+export function describeSidekickThinking(input: {
+  readonly threadLevel: string | undefined;
+  readonly defaultLevel: string;
+  readonly modelLevels: readonly string[] | undefined;
+}): { readonly badgeLabel: string; readonly inheritedLabel: string } {
+  const inheritedLabel = `Default (${effectiveThinkingLevel(input.defaultLevel, input.modelLevels)})`;
+  const effective = input.threadLevel
+    ? effectiveThinkingLevel(input.threadLevel, input.modelLevels)
+    : undefined;
+  const label = effective
+    ? (THINKING_OPTIONS.find((option) => option.value === effective)?.label ?? effective)
+    : inheritedLabel;
+  return { badgeLabel: `Sidekick reasoning: ${label}`, inheritedLabel };
+}
+
 type OpenDropdown = "none" | "model" | "thinking" | "sidekick" | "sidekick-thinking";
 
 export function ModelSelector({
@@ -65,6 +89,7 @@ export function ModelSelector({
   sidekickProvider,
   sidekickModelId,
   sidekickThinkingLevel,
+  defaultSidekickThinkingLevel = DEFAULT_SIDEKICK_THINKING_LEVEL,
   disabled,
   dropdownPlacement = "above",
   showEmptyModelControl = false,
@@ -104,9 +129,13 @@ export function ModelSelector({
     () => filterThinkingOptionsForModelLevels(currentModelThinkingLevels),
     [currentModelThinkingLevels],
   );
-  const sidekickModelThinkingLevels = runtime?.models.find(
-    (model) => model.providerId === sidekickProvider && model.modelId === sidekickModelId,
-  )?.thinkingLevels;
+  // Children run on the sidekick model, or the workspace default model when none is set.
+  const hasSidekickSelection = Boolean(sidekickProvider && sidekickModelId);
+  const sidekickModelThinkingLevels = modelThinkingLevels(
+    runtime,
+    hasSidekickSelection ? sidekickProvider : runtime?.settings.defaultProvider,
+    hasSidekickSelection ? sidekickModelId : runtime?.settings.defaultModelId,
+  );
   const visibleSidekickThinkingOptions = useMemo(
     () => filterThinkingOptionsForModelLevels(sidekickModelThinkingLevels),
     [sidekickModelThinkingLevels],
@@ -157,7 +186,6 @@ export function ModelSelector({
     orchestratorMode === true &&
     onSetSidekickModel !== undefined &&
     onClearSidekickModel !== undefined;
-  const hasSidekickSelection = Boolean(sidekickProvider && sidekickModelId);
   const sidekickOption =
     hasSidekickSelection && sidekickProvider && sidekickModelId
       ? modelOptions.find(
@@ -178,12 +206,12 @@ export function ModelSelector({
       defaultProvider: runtime?.settings.defaultProvider,
       defaultModelId: runtime?.settings.defaultModelId,
     });
-  const sidekickThinkingOption = THINKING_OPTIONS.find(
-    (option) => option.value === sidekickThinkingLevel,
-  );
-  const sidekickThinkingBadgeLabel = `Sidekick reasoning: ${
-    sidekickThinkingOption?.label ?? sidekickThinkingLevel ?? "default"
-  }`;
+  const { badgeLabel: sidekickThinkingBadgeLabel, inheritedLabel: inheritedSidekickThinkingLabel } =
+    describeSidekickThinking({
+      threadLevel: sidekickThinkingLevel,
+      defaultLevel: defaultSidekickThinkingLevel,
+      modelLevels: sidekickModelThinkingLevels,
+    });
   if (
     !shouldRenderModelControl &&
     !thinkingLevel &&
@@ -390,7 +418,7 @@ export function ModelSelector({
                   setOpen("none");
                 }}
               >
-                <span className="model-selector__item-label">Workspace default</span>
+                <span className="model-selector__item-label">{inheritedSidekickThinkingLabel}</span>
                 {sidekickThinkingLevel ? null : (
                   <span className="model-selector__item-meta">active</span>
                 )}

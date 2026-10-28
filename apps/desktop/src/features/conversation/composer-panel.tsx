@@ -60,6 +60,7 @@ interface ComposerPanelProps {
   readonly sidekickProvider?: string | undefined;
   readonly sidekickModelId?: string | undefined;
   readonly sidekickThinkingLevel?: string | undefined;
+  readonly defaultSidekickThinkingLevel?: string | undefined;
   readonly slashSections: readonly ComposerSlashCommandSection[];
   readonly slashOptions: readonly ComposerSlashOption[];
   readonly selectedSlashCommand?: ComposerSlashCommand;
@@ -149,6 +150,7 @@ export function ComposerPanel({
   sidekickProvider,
   sidekickModelId,
   sidekickThinkingLevel,
+  defaultSidekickThinkingLevel,
   onSetSidekickModel,
   onClearSidekickModel,
   onSetSidekickThinkingLevel,
@@ -250,6 +252,7 @@ export function ComposerPanel({
                     sidekickProvider={sidekickProvider}
                     sidekickModelId={sidekickModelId}
                     sidekickThinkingLevel={sidekickThinkingLevel}
+                    defaultSidekickThinkingLevel={defaultSidekickThinkingLevel}
                     disabled={selectedSession.status === "running"}
                     unselectedModelLabel={modelOnboarding.unselectedModelLabel}
                     emptyModelTitle={modelOnboarding.emptyModelTitle}

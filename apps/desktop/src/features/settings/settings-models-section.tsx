@@ -5,7 +5,13 @@ import type {
   RuntimeSnapshot,
 } from "@pi-gui/session-driver/runtime-types";
 import type { SessionModelSelection } from "@pi-gui/session-driver/types";
-import type { DesktopAppState, ThinkingLevel } from "../../../contracts/desktop-state";
+import {
+  DEFAULT_LEAD_THINKING_LEVEL,
+  DEFAULT_SIDEKICK_THINKING_LEVEL,
+  type DesktopAppState,
+  type ThinkingLevel,
+} from "../../../contracts/desktop-state";
+import { THINKING_LEVEL_ORDER } from "../../../contracts/thinking-levels";
 import type { PiDesktopApi } from "../../../contracts/ipc";
 import { SearchIcon } from "../../ui/icons";
 import { SettingsSelect, SettingsSwitch } from "./settings-controls";
@@ -191,7 +197,7 @@ export const DEFAULT_SCOUT_THINKING_DESCRIPTION =
 export function scoutThinkingOptions(): readonly LeadModelOption[] {
   return [
     { value: DEFAULT_SCOUT_THINKING_SIDEKICK_VALUE, label: "Sidekick's reasoning" },
-    ...THINKING_OPTIONS,
+    ...ALL_THINKING_OPTIONS,
   ];
 }
 
@@ -205,10 +211,58 @@ export function resolveScoutThinkingLevel(value: string): ThinkingLevel | null {
   return value === DEFAULT_SCOUT_THINKING_SIDEKICK_VALUE ? null : (value as ThinkingLevel);
 }
 
+export const DEFAULT_LEAD_THINKING_TITLE = "Default lead reasoning";
+
+export const DEFAULT_LEAD_THINKING_DESCRIPTION =
+  "Lead threads start at this reasoning effort, and switching a thread to Lead applies it. A model without this level uses its nearest one.";
+
+export const DEFAULT_SIDEKICK_THINKING_TITLE = "Default sidekick reasoning";
+
+export const DEFAULT_SIDEKICK_THINKING_DESCRIPTION =
+  "Child threads start at this reasoning effort unless a Lead thread sets its own next to the sidekick model. A model without this level uses its nearest one.";
+
+/**
+ * Every level for an app-global reasoning default. Unlike the composer, no
+ * single model is chosen here, so nothing is filtered; pi clamps per model.
+ */
+export function allThinkingOptions(): readonly LeadModelOption[] {
+  return ALL_THINKING_OPTIONS;
+}
+
+/** Bridge wiring for one app-global reasoning row; module-level so the loader effect fires once. */
+interface ThinkingRowBridge {
+  readonly committed: (state: DesktopAppState) => ThinkingLevel | undefined;
+  readonly setDefault: (api: PiDesktopApi, level: ThinkingLevel | null) => Promise<DesktopAppState>;
+  readonly failureLabel: string;
+}
+
+const SCOUT_THINKING_ROW: ThinkingRowBridge = {
+  committed: (state) => state.defaultScoutThinkingLevel,
+  setDefault: (api, level) => api.setDefaultScoutThinkingLevel(level),
+  failureLabel: "setDefaultScoutThinkingLevel",
+};
+
+const LEAD_THINKING_ROW: ThinkingRowBridge = {
+  committed: (state) => state.defaultLeadThinkingLevel,
+  setDefault: (api, level) => api.setDefaultLeadThinkingLevel(level),
+  failureLabel: "setDefaultLeadThinkingLevel",
+};
+
+const SIDEKICK_THINKING_ROW: ThinkingRowBridge = {
+  committed: (state) => state.defaultSidekickThinkingLevel,
+  setDefault: (api, level) => api.setDefaultSidekickThinkingLevel(level),
+  failureLabel: "setDefaultSidekickThinkingLevel",
+};
+
 /** Same bridge pattern as the default-model rows: load once, then reflect each result. */
-function useDefaultScoutThinkingLevel(seed: ThinkingLevel | undefined): {
+function useAppThinkingLevel({
+  seed,
+  committed,
+  setDefault,
+  failureLabel,
+}: ThinkingRowBridge & { readonly seed: ThinkingLevel | undefined }): {
   readonly level: ThinkingLevel | undefined;
-  readonly onChange: (value: string) => void;
+  readonly onChange: (level: ThinkingLevel | null) => void;
 } {
   const [level, setLevel] = useState<ThinkingLevel | undefined>(seed);
   useEffect(() => {
@@ -224,7 +278,7 @@ function useDefaultScoutThinkingLevel(seed: ThinkingLevel | undefined): {
       .getState()
       .then((state) => {
         if (!cancelled) {
-          setLevel(state.defaultScoutThinkingLevel);
+          setLevel(committed(state));
         }
       })
       .catch((error: unknown) => {
@@ -235,20 +289,19 @@ function useDefaultScoutThinkingLevel(seed: ThinkingLevel | undefined): {
     return () => {
       cancelled = true;
     };
-  }, [seed]);
+  }, [seed, committed]);
 
-  const onChange = (value: string) => {
+  const onChange = (next: ThinkingLevel | null) => {
     const api = window.piApp;
     if (!api) {
       return;
     }
-    void api
-      .setDefaultScoutThinkingLevel(resolveScoutThinkingLevel(value))
+    void setDefault(api, next)
       .then((state) => {
-        setLevel(state.defaultScoutThinkingLevel);
+        setLevel(committed(state));
       })
       .catch((error: unknown) => {
-        console.error("[renderer] setDefaultScoutThinkingLevel failed", error);
+        console.error(`[renderer] ${failureLabel} failed`, error);
       });
   };
   return { level, onChange };
@@ -357,6 +410,9 @@ interface SettingsModelsSectionProps {
   readonly defaultScoutModel?: SessionModelSelection;
   /** Seed for the app-global scout reasoning; loaded from the bridge like the scout model. */
   readonly defaultScoutThinkingLevel?: ThinkingLevel;
+  /** Seeds for the app-global lead and sidekick reasoning; absent means the built-in default. */
+  readonly defaultLeadThinkingLevel?: ThinkingLevel;
+  readonly defaultSidekickThinkingLevel?: ThinkingLevel;
   readonly onSetDefaultModel: (provider: string, modelId: string) => void;
   readonly onSetThinkingLevel: (
     thinkingLevel: RuntimeSettingsSnapshot["defaultThinkingLevel"],
@@ -366,6 +422,11 @@ interface SettingsModelsSectionProps {
 }
 
 const THINKING_OPTIONS = THINKING_LEVELS.map((level) => ({
+  value: level,
+  label: labelForThinking(level),
+}));
+
+const ALL_THINKING_OPTIONS = THINKING_LEVEL_ORDER.map((level) => ({
   value: level,
   label: labelForThinking(level),
 }));
@@ -380,6 +441,8 @@ export function SettingsModelsSection({
   defaultLeadModel,
   defaultScoutModel,
   defaultScoutThinkingLevel,
+  defaultLeadThinkingLevel,
+  defaultSidekickThinkingLevel,
   onSetDefaultModel,
   onSetThinkingLevel,
   onSetScopedModelPatterns,
@@ -411,7 +474,18 @@ export function SettingsModelsSection({
   // Loaded from the bridge because no parent threads these values through yet.
   const leadRow = useDefaultModelSelection({ seed: defaultLeadModel, ...LEAD_MODEL_ROW });
   const scoutRow = useDefaultModelSelection({ seed: defaultScoutModel, ...SCOUT_MODEL_ROW });
-  const scoutThinking = useDefaultScoutThinkingLevel(defaultScoutThinkingLevel);
+  const scoutThinking = useAppThinkingLevel({
+    seed: defaultScoutThinkingLevel,
+    ...SCOUT_THINKING_ROW,
+  });
+  const leadThinking = useAppThinkingLevel({
+    seed: defaultLeadThinkingLevel,
+    ...LEAD_THINKING_ROW,
+  });
+  const sidekickThinking = useAppThinkingLevel({
+    seed: defaultSidekickThinkingLevel,
+    ...SIDEKICK_THINKING_ROW,
+  });
 
   const searching = query.trim().length > 0;
   const visibleAvailable = filterModels(availableModels, query);
@@ -447,6 +521,28 @@ export function SettingsModelsSection({
           />
         </SettingsRow>
         <SettingsRow
+          title={DEFAULT_LEAD_THINKING_TITLE}
+          description={DEFAULT_LEAD_THINKING_DESCRIPTION}
+        >
+          <SettingsSelect
+            label={DEFAULT_LEAD_THINKING_TITLE}
+            options={allThinkingOptions()}
+            value={leadThinking.level ?? DEFAULT_LEAD_THINKING_LEVEL}
+            onChange={(value) => leadThinking.onChange(value as ThinkingLevel)}
+          />
+        </SettingsRow>
+        <SettingsRow
+          title={DEFAULT_SIDEKICK_THINKING_TITLE}
+          description={DEFAULT_SIDEKICK_THINKING_DESCRIPTION}
+        >
+          <SettingsSelect
+            label={DEFAULT_SIDEKICK_THINKING_TITLE}
+            options={allThinkingOptions()}
+            value={sidekickThinking.level ?? DEFAULT_SIDEKICK_THINKING_LEVEL}
+            onChange={(value) => sidekickThinking.onChange(value as ThinkingLevel)}
+          />
+        </SettingsRow>
+        <SettingsRow
           title={DEFAULT_SCOUT_MODEL_TITLE}
           description={DEFAULT_SCOUT_MODEL_DESCRIPTION}
         >
@@ -465,7 +561,7 @@ export function SettingsModelsSection({
             label={DEFAULT_SCOUT_THINKING_TITLE}
             options={scoutThinkingOptions()}
             value={scoutThinkingSelectValue(scoutThinking.level)}
-            onChange={scoutThinking.onChange}
+            onChange={(value) => scoutThinking.onChange(resolveScoutThinkingLevel(value))}
           />
         </SettingsRow>
         <SettingsRow title="Reasoning" description="Default reasoning effort for new threads.">

@@ -1242,6 +1242,7 @@ export default function App() {
                 onSetSidekickModel={(provider, modelId) => setSidekick({ provider, modelId })}
                 onClearSidekickModel={() => setSidekick(null)}
                 sidekickThinkingLevel={snapshot.sidekickThinkingBySession?.[selectedSessionKey]}
+                defaultSidekickThinkingLevel={snapshot.defaultSidekickThinkingLevel}
                 onSetSidekickThinkingLevel={setSidekickThinkingLevel}
                 modelOnboarding={selectedSessionModelOnboarding}
                 onOpenModelSettings={(section) =>

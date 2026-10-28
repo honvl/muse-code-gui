@@ -12,6 +12,7 @@ import {
 } from "react";
 import type { ExtensionFlagValues } from "@pi-gui/session-driver";
 import {
+  DEFAULT_LEAD_THINKING_LEVEL,
   type AppView,
   type ComposerAttachment,
   type DesktopAppState,
@@ -20,6 +21,7 @@ import {
   type WorkspaceRecord,
 } from "../../../../contracts/desktop-state";
 import { acceptComposerAttachments } from "../../../../contracts/composer-attachments";
+import { effectiveThinkingLevel, modelThinkingLevels } from "../../../../contracts/thinking-levels";
 import { updateSnapshot } from "../../../app/desktop-app-state";
 import {
   extractFilesFromDataTransfer,
@@ -91,7 +93,19 @@ export function useNewThreadController(params: UseNewThreadControllerParams) {
     provider ?? (defaultEnabled ? runtime?.settings.defaultProvider : undefined);
   const resolvedModelId =
     modelId ?? (defaultEnabled ? runtime?.settings.defaultModelId : undefined);
-  const resolvedThinkingLevel = thinkingLevel ?? runtime?.settings.defaultThinkingLevel;
+  // A Lead thread starts at the default lead reasoning unless a level is picked here,
+  // shown as the level pi will apply on the chosen model.
+  const requestedThinkingLevel =
+    thinkingLevel ??
+    (orchestratorMode
+      ? (snapshot?.defaultLeadThinkingLevel ?? DEFAULT_LEAD_THINKING_LEVEL)
+      : runtime?.settings.defaultThinkingLevel);
+  const resolvedThinkingLevel = requestedThinkingLevel
+    ? effectiveThinkingLevel(
+        requestedThinkingLevel,
+        modelThinkingLevels(runtime, resolvedProvider, resolvedModelId),
+      )
+    : undefined;
   const workspaceFlagDefaults = workspace
     ? snapshot?.extensionFlagsByWorkspace[workspace.id]
     : undefined;
