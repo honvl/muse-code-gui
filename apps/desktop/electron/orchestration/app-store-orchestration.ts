@@ -1160,9 +1160,15 @@ async function hydrateRemainingOrchestrationChildren(
       continue;
     }
     seen.add(key);
-    // Skip orphans (no session in the catalog) and already-loaded children:
-    // orphans keep their stored status, loaded ones already project correctly.
-    if (!store.sessionFromState(childRef) || store.isTranscriptLoaded(childRef)) {
+    // Skip children whose workspace cannot be resolved (hydration has
+    // nothing to open them with) and already-loaded children: unresolvable
+    // ones keep their stored status, loaded ones already project correctly.
+    // A session missing from the catalog is not a skip — hydration is what
+    // opens it, and the transcript it loads heals the stored status.
+    if (
+      !store.workspaceRefFromState(child.childWorkspaceId) ||
+      store.isTranscriptLoaded(childRef)
+    ) {
       continue;
     }
     pending.push(childRef);
@@ -1658,10 +1664,12 @@ function projectOrchestrationChild(
   // background child to `queued` (counted as running) after a restart.
   // Only derive when the transcript is actually cached; otherwise preserve
   // the stored status and let definitive live signals override it. The
-  // background hydration pass loads the rest shortly after startup.
+  // background hydration pass loads the rest shortly after startup. A loaded
+  // transcript is sufficient evidence on its own: even without a session
+  // snapshot, hasStartedRun can tell a finished child from a never-started one.
   const status =
-    session && transcriptLoaded
-      ? toOrchestrationStatus(session.status, childRef, store)
+    transcriptLoaded
+      ? toOrchestrationStatus(session?.status ?? "idle", childRef, store)
       : (liveChildStatus(session?.status, childRef, store) ?? child.status);
 
   return {
