@@ -269,6 +269,7 @@ function verifyPiDependencyVersions(extractedDir) {
     "@earendil-works/pi-ai",
     "@earendil-works/pi-tui",
     "@earendil-works/chord",
+    "electron-updater",
   ].map((packageName) => path.join(extractedDir, "node_modules", packageName, "package.json"));
   const visited = new Set();
   while (pending.length > 0) {
