@@ -21,11 +21,11 @@ export const PACK_PACKAGES: readonly string[] = [
 /**
  * First-party extensions, relative to the shipped root (the repo checkout in
  * dev, the bundled extensions dir in the packaged app). muse-usage shows
- * token usage; subagents fronts pi-cc-subagent (hence the git package above).
+ * token usage. Child threads are the app's delegation model, so the old
+ * subagents view is no longer shipped.
  */
 export const PACK_EXTENSION_RELATIVE_PATHS: readonly string[] = [
   "examples/desktop-extensions/muse-usage/index.ts",
-  "examples/desktop-extensions/subagents/index.ts",
 ];
 
 /** Skill directory name under `<agentDir>/skills/`, auto-discovered by pi. */

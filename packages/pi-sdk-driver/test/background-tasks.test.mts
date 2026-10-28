@@ -180,3 +180,39 @@ await test("tool start validates its input without spawning", async () => {
     assert.equal(store.list().length, 0);
   });
 });
+
+await test("a task that finishes on its own is announced exactly once", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-bg-settled-"));
+  const settled: Array<{ taskId: string; status: string }> = [];
+  const store = new BackgroundTaskStore(join(dir, "logs"), (task) =>
+    settled.push({ taskId: task.taskId, status: task.status }),
+  );
+  try {
+    const id = store.start("exit 0", { cwd: dir });
+    await waitFor(() => settled.length > 0);
+    assert.deepEqual(settled, [{ taskId: id, status: "completed" }]);
+    // Settling is announced once: later reads must not re-announce.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(settled.length, 1);
+  } finally {
+    store.shutdown();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+await test("a stopped task is not announced, so Stop never wakes the thread", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-bg-stopped-"));
+  const settled: string[] = [];
+  const store = new BackgroundTaskStore(join(dir, "logs"), (task) => settled.push(task.taskId));
+  try {
+    const id = store.start("sleep 30", { cwd: dir });
+    await waitFor(() => store.get(id)?.status === "running");
+    store.stop(id);
+    await waitFor(() => store.get(id)?.status === "stopped");
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    assert.deepEqual(settled, []);
+  } finally {
+    store.shutdown();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

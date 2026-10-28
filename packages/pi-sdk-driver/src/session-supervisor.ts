@@ -64,7 +64,7 @@ import {
   type BuiltinExtensionEnabled,
 } from "./builtin-extensions.js";
 import { piAddonExtensions } from "./pi-addon-extensions.js";
-import { BackgroundTaskStore } from "./background-tasks.js";
+import { BackgroundTaskStore, type BackgroundTaskSnapshot } from "./background-tasks.js";
 import { createBackgroundTaskRuntimeExtension } from "./background-task-extension.js";
 import {
   createCrossSessionRuntimeExtension,
@@ -146,6 +146,11 @@ import {
   type PiCreateAgentSessionOptions,
   type PiModelInfo,
 } from "./npm-package-fallback.js";
+
+/** Custom message type for a background task finishing on its own. */
+const BACKGROUND_TASK_CUSTOM_TYPE = "pi-gui.background-task";
+
+
 
 type RuntimeModel = NonNullable<ReturnType<ModelRuntime["getModel"]>>;
 
@@ -325,7 +330,7 @@ export class SessionSupervisor {
   private readonly turnCaptureTimeoutMs: number | undefined;
   private readonly records = new Map<string, ManagedSessionRecord>();
   /** Detached shell processes started by the bash_background tool (app lifetime). */
-  private readonly backgroundTasks = new BackgroundTaskStore();
+  private readonly backgroundTasks: BackgroundTaskStore;
   /** Latest plan limits a provider reported, shared by every session on that provider. */
   private readonly planLimitsByProvider = new Map<string, SessionPlanLimits>();
   /** Isolation enforced on orchestration child sessions, keyed by pi session id. */
@@ -343,6 +348,12 @@ export class SessionSupervisor {
   private leaseHeartbeat: ReturnType<typeof setInterval> | undefined;
 
   constructor(options: PiSdkDriverOptions = {}) {
+    // A background shell that finishes on its own wakes the thread that started
+    // it (lead mode only): without this the agent sits idle until the person
+    // types, which reads as "nothing happens unless I poke it".
+    this.backgroundTasks = new BackgroundTaskStore(undefined, (task) =>
+      this.onBackgroundTaskSettled(task),
+    );
     this.catalogs =
       options.catalogStorage ??
       (options.catalogFilePath
@@ -779,6 +790,38 @@ export class SessionSupervisor {
   }
 
   /** Enable/disable dispatcher-only orchestrator mode for a session. */
+  /**
+   * Wake the thread that owns a finished background task. Lead mode only: a solo
+   * thread is the person's own conversation, and auto-continuing it would spend
+   * their tokens on a turn they did not ask for. A task the person stopped never
+   * reaches here (the store only announces natural endings).
+   */
+  private onBackgroundTaskSettled(task: BackgroundTaskSnapshot): void {
+    const { sessionId, workspaceId } = task;
+    if (!sessionId || !workspaceId) return;
+    if (this.orchestratorModes.get(sessionId) !== true) return;
+    const outcome =
+      task.status === "completed" ? "completed" : `failed (exit ${task.exitCode})`;
+    const rawCommand = task.command.replace(/\s+/g, " ").trim();
+    const shownCommand = rawCommand.length > 160 ? `${rawCommand.slice(0, 157)}…` : rawCommand;
+    void this.sendCustomMessage(
+      { workspaceId, sessionId },
+      {
+        customType: BACKGROUND_TASK_CUSTOM_TYPE,
+        text: [
+          `Background task ${task.taskId} ${outcome}.`,
+          `command: ${shownCommand}`,
+          "",
+          `Read its output with the background task row, then continue the plan.`,
+        ].join("\n"),
+        display: true,
+      },
+      { triggerTurn: true, deliverAs: "followUp" },
+    ).catch((error: unknown) => {
+      console.warn(`[pi-sdk-driver] could not report background task ${task.taskId}:`, error);
+    });
+  }
+
   async setSessionOrchestratorMode(sessionRef: SessionRef, enabled: boolean): Promise<void> {
     const record = await this.ensureRecord(sessionRef);
     const session = this.requireSession(record);

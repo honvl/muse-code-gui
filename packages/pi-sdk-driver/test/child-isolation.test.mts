@@ -5,14 +5,15 @@ import {
   isDeniedBashCommand,
   isDeniedEnvWrite,
   isOutsideWorkspace,
+  isScoutReadOnlyBashCommand,
   matchIsolationPattern,
 } from "../dist/child-isolation.js";
 
 const scout = { mode: "scout" as const, workspacePath: "/work/app", depth: 1 };
 const worker = { mode: "worker" as const, workspacePath: "/work/app", depth: 1 };
 
-await test("scout blocks edits, writes, and shell but allows reads", () => {
-  for (const tool of ["edit", "write", "bash", "bash_background"]) {
+await test("scout blocks edits, writes, and background shell but allows reads", () => {
+  for (const tool of ["edit", "write", "bash_background"]) {
     const decision = decideChildToolCall(
       tool,
       { file_path: "/work/app/src/a.ts", command: "echo hi" },
@@ -21,6 +22,11 @@ await test("scout blocks edits, writes, and shell but allows reads", () => {
     assert.equal(decision.allowed, false, tool);
     assert.match(decision.reason ?? "", /scout/);
   }
+  // `bash` is no longer blanket-blocked: the read-only policy decides.
+  assert.equal(decideChildToolCall("bash", { command: 'rg -n "foo" apps/' }, scout).allowed, true);
+  const denied = decideChildToolCall("bash", { command: "echo hi" }, scout);
+  assert.equal(denied.allowed, false);
+  assert.match(denied.reason ?? "", /scout/);
   assert.equal(
     decideChildToolCall("read", { file_path: "/work/app/src/a.ts" }, scout).allowed,
     true,
@@ -29,6 +35,120 @@ await test("scout blocks edits, writes, and shell but allows reads", () => {
     decideChildToolCall("grep", { path: "/work/app", pattern: "todo" }, scout).allowed,
     true,
   );
+});
+
+await test("scout bash allows read-only commands", () => {
+  for (const command of [
+    'rg -n "foo" apps/',
+    "ls -la",
+    "git log --oneline -5",
+    "git diff",
+    "cat package.json",
+    "head -20 README.md",
+    "rg foo apps/ | head -20",
+    "git -C /work/app log --oneline",
+    "find . -name '*.ts' 2>/dev/null | head",
+    "rg x 2>&1 | head -5",
+    "pwd",
+    "tail -50 app.log | grep error",
+    "git show HEAD --stat",
+    "sed -n '1,10p' README.md",
+    "awk '{print $1}' file | sort | uniq -c",
+    "LC_ALL=C rg -n foo apps/",
+  ]) {
+    assert.equal(decideChildToolCall("bash", { command }, scout).allowed, true, command);
+    assert.equal(isScoutReadOnlyBashCommand(command), true, command);
+  }
+});
+
+await test("scout bash denies mutating, network, and unclassifiable commands", () => {
+  for (const command of [
+    "rm -rf x",
+    "echo hi > file",
+    "rg x | tee out",
+    "git commit -m x",
+    "git push",
+    "pnpm install",
+    "curl https://x",
+    "$(whoami)",
+    "frobnicate --yes",
+    "sudo ls",
+    "sed -i 's/a/b/' file",
+    "find . -delete",
+    "find . -exec rm {} \\;",
+    "git checkout main",
+    "npm run build",
+    "echo `id`",
+    "rg a && rm b",
+    "ls; git push",
+    "cat /etc/passwd | xargs echo",
+    "(rg foo apps/)",
+    "GIT_DIR=/tmp/x git log",
+    "FOO=1 rg x apps/",
+    "git -c core.pager=cat log",
+    "git --config-env=core.pager=cat log",
+  ]) {
+    const decision = decideChildToolCall("bash", { command }, scout);
+    assert.equal(decision.allowed, false, command);
+    assert.match(decision.reason ?? "", /scout \(read-only\)/);
+    assert.match(decision.reason ?? "", /parent instead/);
+    assert.equal(isScoutReadOnlyBashCommand(command), false, command);
+  }
+});
+
+await test("scout bash is confined to the workspace", () => {
+  for (const command of [
+    "cat package.json",
+    'rg -n "foo" apps/desktop',
+    "git -C . log",
+    "head -20 ./README.md",
+    "sed -n '1,5p' src/index.ts",
+    "rg foo apps/ | head -20",
+    "ls",
+    "git log --oneline -5",
+    "find . -name '*.ts' | head",
+    "awk '{print $1}' file",
+  ]) {
+    assert.equal(decideChildToolCall("bash", { command }, scout).allowed, true, command);
+  }
+});
+
+await test("scout bash denies paths outside the workspace", () => {
+  for (const [command, offender] of [
+    ["cat ~/.ssh/id_rsa", "~/.ssh/id_rsa"],
+    ["cat /etc/passwd", "/etc/passwd"],
+    ["rg secrets /Users/honvl", "/Users/honvl"],
+    ["git -C /tmp/x log", "/tmp/x"],
+    ["head -5 ../../outside.txt", "../../outside.txt"],
+    ["ls ..", ".."],
+    ["cat $HOME/.ssh/id_rsa", "$HOME/.ssh/id_rsa"],
+    ["ls $HOME", "$HOME"],
+    ["git --git-dir=/tmp/x log", "/tmp/x"],
+    ["rg foo /etc/ | head", "/etc/"],
+  ] as const) {
+    const decision = decideChildToolCall("bash", { command }, scout);
+    assert.equal(decision.allowed, false, command);
+    assert.match(decision.reason ?? "", /confined to the workspace/);
+    assert.ok(
+      (decision.reason ?? "").includes(`"${offender}"`),
+      `${command} must name ${offender}`,
+    );
+  }
+});
+
+await test("worker bash is not workspace-confined", () => {
+  for (const command of ["cat /etc/passwd", "git -C /tmp/x log", "ls $HOME"]) {
+    assert.equal(decideChildToolCall("bash", { command }, worker).allowed, true, command);
+  }
+});
+
+await test("worker bash still follows worker rules, not the scout policy", () => {
+  assert.equal(decideChildToolCall("bash", { command: 'rg -n "foo" apps/' }, worker).allowed, true);
+  assert.equal(decideChildToolCall("bash", { command: "pnpm install" }, worker).allowed, true);
+  assert.equal(decideChildToolCall("bash", { command: "curl https://x" }, worker).allowed, true);
+  const blocked = decideChildToolCall("bash", { command: "rm -rf /" }, worker);
+  assert.equal(blocked.allowed, false);
+  assert.match(blocked.reason ?? "", /destructive/);
 });
 
 await test("scout cannot escalate to a worker child", () => {

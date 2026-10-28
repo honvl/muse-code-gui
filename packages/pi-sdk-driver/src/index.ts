@@ -28,11 +28,14 @@ export type { GenerateThreadTitleOptions } from "./thread-title-generator.js";
 export {
   MAX_CHILD_DEPTH,
   SCOUT_BLOCKED_TOOLS,
+  SCOUT_READ_ONLY_GIT_SUBCOMMANDS,
+  SCOUT_READ_ONLY_TOOLS,
   decideChildToolCall,
   extractChildToolArg,
   isDeniedBashCommand,
   isDeniedEnvWrite,
   isOutsideWorkspace,
+  isScoutReadOnlyBashCommand,
   matchIsolationPattern,
   requestedChildMode,
 } from "./child-isolation.js";

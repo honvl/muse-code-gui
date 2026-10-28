@@ -82,8 +82,28 @@ export class BackgroundTaskStore {
   private readonly tails = new Map<string, string>();
   private readonly logDir: string;
 
-  constructor(logDir?: string) {
+  /**
+   * @param onSettled Called once per task that finishes on its own — completed
+   * or failed, never when a person stopped it. The host uses this to wake the
+   * owning thread: a background shell that finishes silently leaves the agent
+   * idle until someone types, which is the difference between an assistant that
+   * continues its own work and one that waits to be poked.
+   */
+  constructor(
+    logDir?: string,
+    private readonly onSettled?: (task: BackgroundTaskSnapshot) => void,
+  ) {
     this.logDir = logDir ?? backgroundTaskDir();
+  }
+
+  /** Announce a task that finished on its own, exactly once. */
+  private announceSettled(task: LiveTask): void {
+    if (!this.onSettled) return;
+    try {
+      this.onSettled(this.snapshot(task));
+    } catch {
+      // A listener that throws must never break task bookkeeping.
+    }
   }
 
   /** Spawn `command` in `cwd` and return its task id immediately. */
@@ -172,6 +192,11 @@ export class BackgroundTaskStore {
       if (task.killTimer) {
         clearTimeout(task.killTimer);
         task.killTimer = undefined;
+      }
+      // A stopped task is the person's own action; only natural endings wake the
+      // thread, so pressing Stop never restarts the run it stopped.
+      if (wasRunning) {
+        this.announceSettled(task);
       }
     });
     return taskId;

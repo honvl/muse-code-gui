@@ -19,6 +19,16 @@ import type {
  * default).
  */
 
+/**
+ * One line for threads that are NOT in lead mode. The delegation tools are
+ * registered for every session, so "Solo" means "work in this thread by
+ * default", not "cannot delegate": the switch changes policy, not capability.
+ */
+export const SOLO_SYSTEM_GUIDELINE =
+  "Solo mode: do the work in this thread yourself. You may still delegate with " +
+  "create_child_thread when the user asks for it or the task genuinely splits into " +
+  "independent parts.";
+
 /** Delegation tools named by the lead prompt. The lead keeps its full toolset plus these. */
 export const ORCHESTRATOR_ALLOWED_TOOLS: readonly string[] = [
   "create_child_thread",
@@ -28,12 +38,12 @@ export const ORCHESTRATOR_ALLOWED_TOOLS: readonly string[] = [
 ];
 
 export const ORCHESTRATOR_SYSTEM_PROMPT = [
-  "You are the lead of a lead-plus-child team. You own the plan, the interpretation of ambiguity, and the final review of every result before it reaches the user.",
-  `Delegate first when work is bulky, parallel, or mechanical — multi-file sweeps, broad searches, running builds/tests, repetitive edits — spawning one child thread per independent part with parallel create_child_thread calls (mode "scout" for searches/reviews, "worker" for edits/shell). Your delegation tools are ${ORCHESTRATOR_ALLOWED_TOOLS.join(", ")}.`,
-  "Do it yourself when it is one small step: read one file, a one-line edit, one quick grep. Never delegate a trivial action just to stay in role; a child round-trip for seconds of work wastes time.",
+  "You are the lead of a lead-plus-child team. You own the plan, the interpretation of ambiguity, and the final review before anything reaches the user. A report is a claim, not proof: verify by reading the diff and the files the child named against the brief's success criteria. A child's validation counts as evidence unless the change is subtle or risky — never re-run a suite it already ran; for subtle or shared/critical changes delegate a read-only scout review instead.",
+  `Delegate by default: your own tokens are the expensive resource and a child's context is separate from yours. Spawn one child thread per independent part with parallel create_child_thread calls (mode "scout" for searches/reviews — scouts may run read-only shell commands such as rg, grep, and ls but cannot edit, write, or mutate — "worker" for edits and mutating shell). Reuse a child whose context already covers the work (list_threads to find it, send_message_to_thread to continue it — preserves context/cache); spawn fresh only for parallel/independent slices or when the child drifted or is out of scope. Your delegation tools are ${ORCHESTRATOR_ALLOWED_TOOLS.join(", ")}.`,
+  "Do it yourself only when briefing would cost you more than acting: a one-line edit you already know how to make, or a single lookup whose exact output you must see to decide.",
   "Write briefs a stranger could execute: objective, context, constraints, files/areas in scope, success criteria, what NOT to do, and the verification to run.",
   "Children report back automatically when a run ends; do not poll read_thread in a loop. Act on each report. If a report is thin, steer the child with send_message_to_thread; if a child is drifting, take the work back and do it yourself.",
-  "Keep your own context small: read only what you need to decide; do not re-read what a child already verified.",
+  "Keep your own context small: use targeted rg patterns, line ranges, and git diff --stat followed by only the files that matter. Never dump a whole file, a full diff, or a test log into your context; never re-read what a child already verified.",
 ].join("\n");
 
 /** Hidden inline extension: lead prompt nudge. Nothing is blocked at tool_call. */
@@ -42,7 +52,10 @@ export function createOrchestratorModeExtension(
 ): ExtensionFactory {
   return (pi: ExtensionAPI) => {
     pi.on("before_agent_start", async (event, ctx) => {
-      if (!resolveEnabled(ctx)) return undefined;
+      if (!resolveEnabled(ctx)) {
+        event.systemPromptOptions.promptGuidelines.push(SOLO_SYSTEM_GUIDELINE);
+        return undefined;
+      }
       // Lead mode restores pi's NORMAL default loadout on every run. A thread
       // resumed from the dispatcher-only era replays its transcript loadout at
       // open (_restoreToolsFromTranscript), which cages it to the 4 delegation
@@ -64,9 +77,10 @@ export function createOrchestratorModeExtension(
           .map((tool) => tool.name),
       );
       event.systemPromptOptions.promptGuidelines.push(
-        "Lead mode: you keep all your tools. Delegate bulky, parallel, or mechanical work " +
-          "to child threads, do small steps yourself, brief children like strangers, and " +
-          "never poll read_thread — finished children report back automatically.",
+        "Lead mode: your tokens are the expensive resource — delegate by default, keep " +
+          "your own context to targeted reads and diffs, verify children by their diff rather " +
+          "than re-running what they already ran, and never poll read_thread — finished " +
+          "children report back automatically.",
       );
       event.systemPromptOptions.sections["orchestrator_mode"] = ORCHESTRATOR_SYSTEM_PROMPT;
       return undefined;

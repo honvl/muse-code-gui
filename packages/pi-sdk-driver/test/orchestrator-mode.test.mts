@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   ORCHESTRATOR_ALLOWED_TOOLS,
   ORCHESTRATOR_SYSTEM_PROMPT,
+  SOLO_SYSTEM_GUIDELINE,
   createOrchestratorModeExtension,
 } from "../dist/orchestrator-mode.js";
 import { SessionSupervisor } from "../dist/session-supervisor.js";
@@ -21,16 +22,81 @@ await test("lead prompt covers the six lead rules in order", () => {
   assert.equal(lines.length, 6, "lead prompt must have exactly six rules");
   assert.match(lines[0] ?? "", /you own the plan/i);
   assert.match(lines[0] ?? "", /final review/i);
-  assert.match(lines[1] ?? "", /delegate first/i);
+  assert.match(lines[1] ?? "", /delegate by default/i);
   assert.match(lines[1] ?? "", /parallel/i);
   assert.match(lines[2] ?? "", /do it yourself/i);
-  assert.match(lines[2] ?? "", /trivial/i);
+  assert.match(lines[2] ?? "", /briefing would cost you more/i);
   assert.match(lines[3] ?? "", /stranger/i);
   assert.match(lines[3] ?? "", /what NOT to do/i);
   assert.match(lines[4] ?? "", /report back automatically/i);
   assert.match(lines[4] ?? "", /do not poll/i);
   assert.match(lines[4] ?? "", /take the work back/i);
   assert.match(lines[5] ?? "", /keep your own context small/i);
+  assert.match(lines[5] ?? "", /line ranges/i);
+  assert.match(lines[5] ?? "", /never dump a whole file/i);
+  assert.match(lines[0] ?? "", /never re-run a suite/i);
+  assert.match(lines[0] ?? "", /reading the diff/i);
+});
+
+await test("lead prompt teaches reusing a live child instead of always spawning fresh", () => {
+  assert.match(
+    ORCHESTRATOR_SYSTEM_PROMPT,
+    /reuse a child/i,
+    "prompt must teach reusing a child whose context covers the work",
+  );
+  assert.match(
+    ORCHESTRATOR_SYSTEM_PROMPT,
+    /send_message_to_thread/,
+    "reuse rule must name send_message_to_thread as the continue path",
+  );
+  assert.match(
+    ORCHESTRATOR_SYSTEM_PROMPT,
+    /list_threads/,
+    "reuse rule must name list_threads to find the child",
+  );
+  assert.match(
+    ORCHESTRATOR_SYSTEM_PROMPT,
+    /preserves context\/cache/i,
+    "prompt must make the context/cache tradeoff explicit",
+  );
+  assert.match(
+    ORCHESTRATOR_SYSTEM_PROMPT,
+    /parallel\/independent slices/i,
+    "prompt must scope fresh spawns to parallel/independent work",
+  );
+  assert.match(
+    ORCHESTRATOR_SYSTEM_PROMPT,
+    /drifted|out of scope/i,
+    "prompt must scope fresh spawns to drifted or out-of-scope children",
+  );
+});
+
+await test("lead prompt treats a child report as a claim requiring verification", () => {
+  assert.match(
+    ORCHESTRATOR_SYSTEM_PROMPT,
+    /a report is a claim, not proof/i,
+    "prompt must teach that a report is a claim, not proof",
+  );
+  assert.match(
+    ORCHESTRATOR_SYSTEM_PROMPT,
+    /verify by reading the diff/i,
+    "prompt must require checking the diff/files before signoff",
+  );
+  assert.match(
+    ORCHESTRATOR_SYSTEM_PROMPT,
+    /success criteria/i,
+    "prompt must require checking the brief's success criteria",
+  );
+  assert.match(
+    ORCHESTRATOR_SYSTEM_PROMPT,
+    /never re-run a suite/i,
+    "prompt must not spend lead tokens re-running a child's validation",
+  );
+  assert.match(
+    ORCHESTRATOR_SYSTEM_PROMPT,
+    /scout review/i,
+    "prompt must delegate risky reviews to a read-only scout",
+  );
 });
 
 await test("lead prompt names every delegation tool and teaches lead-first behavior", () => {
@@ -47,6 +113,19 @@ await test("lead prompt names every delegation tool and teaches lead-first behav
     ORCHESTRATOR_SYSTEM_PROMPT,
     /do not poll/i,
     "prompt must forbid polling read_thread",
+  );
+});
+
+await test("lead prompt teaches scout read-only shell", () => {
+  assert.match(
+    ORCHESTRATOR_SYSTEM_PROMPT,
+    /scouts may run read-only shell commands/i,
+    "scout guidance must grant read-only shell",
+  );
+  assert.match(
+    ORCHESTRATOR_SYSTEM_PROMPT,
+    /cannot edit, write, or mutate/i,
+    "scout guidance must still forbid edits and writes",
   );
 });
 
@@ -156,17 +235,21 @@ await test("lead extension blocks nothing at tool_call", async () => {
   }
 });
 
-await test("lead extension leaves prompt and tools untouched when disabled", async () => {
+await test("solo mode leaves tools untouched and adds only the solo guideline", async () => {
   const { pi, handlers, activeToolsCalls } = makeMockPi();
   await createOrchestratorModeExtension(() => false)(pi as never);
   const event = makePromptEvent();
   const before = handlers["before_agent_start"];
   assert.ok(before, "before_agent_start handler registered");
   await before(event as never, mockCtx as never);
+  // The switch changes policy, not capability: solo threads keep their tools
+  // and gain no loadout call, but the model is told to work here by default.
   assert.deepEqual(event.systemPromptOptions.selectedTools, ["read", "bash", "edit", "write"]);
   assert.deepEqual(activeToolsCalls, []);
   assert.deepEqual(event.systemPromptOptions.sections, {});
-  assert.deepEqual(event.systemPromptOptions.promptGuidelines, []);
+  assert.deepEqual(event.systemPromptOptions.promptGuidelines, [SOLO_SYSTEM_GUIDELINE]);
+  assert.match(SOLO_SYSTEM_GUIDELINE, /Solo mode/);
+  assert.match(SOLO_SYSTEM_GUIDELINE, /create_child_thread/);
   const toolCall = handlers["tool_call"];
   assert.ok(toolCall, "tool_call handler registered");
   assert.equal(await toolCall({ toolName: "read" } as never, mockCtx as never), undefined);
