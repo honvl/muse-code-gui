@@ -24,8 +24,9 @@ await test("lead prompt covers the six lead rules in order", () => {
   assert.match(lines[0] ?? "", /final review/i);
   assert.match(lines[1] ?? "", /delegate by default/i);
   assert.match(lines[1] ?? "", /parallel/i);
-  assert.match(lines[2] ?? "", /do it yourself/i);
-  assert.match(lines[2] ?? "", /briefing would cost you more/i);
+  assert.match(lines[2] ?? "", /one-line fixes/i);
+  assert.match(lines[2] ?? "", /worker child with a one-line brief/i);
+  assert.match(lines[2] ?? "", /writer rule/i);
   assert.match(lines[3] ?? "", /stranger/i);
   assert.match(lines[3] ?? "", /what NOT to do/i);
   assert.match(lines[4] ?? "", /report back automatically/i);
@@ -106,8 +107,13 @@ await test("lead prompt names every delegation tool and teaches lead-first behav
   assert.match(ORCHESTRATOR_SYSTEM_PROMPT, /delegate/i, "prompt must teach delegation-first");
   assert.match(
     ORCHESTRATOR_SYSTEM_PROMPT,
-    /do it yourself/i,
-    "prompt must teach the do-it-yourself-when-small rule",
+    /your own hands are for reading/i,
+    "prompt must limit the lead's own hands to reads and one-line fixes",
+  );
+  assert.match(
+    ORCHESTRATOR_SYSTEM_PROMPT,
+    /wait or narrow scope instead of doing the edit yourself/i,
+    "prompt must route writer-rule blocks to waiting or narrower scope, not lead edits",
   );
   assert.match(
     ORCHESTRATOR_SYSTEM_PROMPT,
@@ -213,11 +219,12 @@ await test("lead extension restores pi's default loadout to defeat a resumed cag
   );
 });
 
-await test("lead extension blocks nothing at tool_call", async () => {
+await test("lead extension allows the first mutations at tool_call", async () => {
   const { pi, handlers } = makeMockPi();
   await createOrchestratorModeExtension(() => true)(pi as never);
   const toolCall = handlers["tool_call"];
   assert.ok(toolCall, "tool_call handler registered");
+  // The soft gate only trips past the limit: three direct mutations pass.
   for (const tool of [
     ...ORCHESTRATOR_ALLOWED_TOOLS,
     "read",
@@ -376,4 +383,117 @@ await test("setSessionSidekickModel is idempotent: redundant calls write nothing
   await supervisor.setSessionSidekickModel(record.ref, undefined);
   assert.equal(catalog.writes.length, 2, "second clear must not persist again");
   assert.equal(emitted.length, 2, "second clear must not emit again");
+});
+
+async function makeLeadHarness(sessionId: string, enabled = true) {
+  const { pi, handlers } = makeMockPi();
+  await createOrchestratorModeExtension(() => enabled)(pi as never);
+  const before = handlers["before_agent_start"];
+  const toolCall = handlers["tool_call"];
+  assert.ok(before, "before_agent_start handler registered");
+  assert.ok(toolCall, "tool_call handler registered");
+  const ctx = { sessionManager: { getSessionId: () => sessionId } };
+  await before(makePromptEvent() as never, ctx as never);
+  const call = (event: unknown) =>
+    (toolCall as (e: never, c: never) => Promise<unknown>)(event as never, ctx as never);
+  const rerun = () => before(makePromptEvent() as never, ctx as never);
+  return { call, rerun };
+}
+
+function editCall(path: string, id: string) {
+  return { toolName: "edit", input: { path, edits: [] }, toolCallId: id };
+}
+
+await test("lead soft gate blocks the 4th direct mutation and names create_child_thread", async () => {
+  const { call } = await makeLeadHarness("lead-gate-block");
+  assert.equal(await call(editCall("apps/a/x.ts", "c1")), undefined);
+  assert.equal(await call(editCall("apps/a/y.ts", "c2")), undefined);
+  assert.equal(await call(editCall("apps/a/z.ts", "c3")), undefined);
+  const blocked = (await call(editCall("apps/a/w.ts", "c4"))) as
+    { block?: boolean; reason?: string } | undefined;
+  assert.equal(blocked?.block, true, "4th mutation must block");
+  assert.match(blocked?.reason ?? "", /create_child_thread/);
+  assert.match(blocked?.reason ?? "", /3 direct edits/);
+});
+
+await test("read-only bash, reads, and delegation tools never consume the mutation budget", async () => {
+  const { call } = await makeLeadHarness("lead-gate-readonly");
+  const freeCalls: unknown[] = [
+    { toolName: "bash", input: { command: "rg foo" } },
+    { toolName: "bash", input: { command: "git log --oneline" } },
+    { toolName: "bash", input: { command: "ls apps" } },
+    { toolName: "read", input: { path: "apps/a/x.ts" } },
+    { toolName: "grep", input: { pattern: "foo" } },
+    { toolName: "find", input: { path: "apps" } },
+    { toolName: "ls", input: { path: "apps" } },
+    ...ORCHESTRATOR_ALLOWED_TOOLS.map((toolName) => ({ toolName })),
+  ];
+  for (const event of freeCalls) {
+    assert.equal(await call(event), undefined);
+  }
+  assert.equal(await call(editCall("apps/a/x.ts", "c1")), undefined);
+  assert.equal(await call(editCall("apps/a/y.ts", "c2")), undefined);
+  assert.equal(await call(editCall("apps/a/z.ts", "c3")), undefined, "3rd mutation still allowed");
+  const blocked = (await call(editCall("apps/a/w.ts", "c4"))) as
+    { block?: boolean; reason?: string } | undefined;
+  assert.equal(blocked?.block, true, "budget is exactly 3: the 4th mutation blocks");
+});
+
+await test("PI_APP_LEAD_DIRECT_MUTATION_LIMIT overrides the gate; junk falls back to 3", async () => {
+  process.env.PI_APP_LEAD_DIRECT_MUTATION_LIMIT = "1";
+  try {
+    const { call } = await makeLeadHarness("lead-gate-env-1");
+    assert.equal(await call(editCall("apps/a/x.ts", "c1")), undefined);
+    const blocked = (await call(editCall("apps/a/y.ts", "c2"))) as
+      { block?: boolean; reason?: string } | undefined;
+    assert.equal(blocked?.block, true, "limit 1 must block the 2nd mutation");
+    assert.match(blocked?.reason ?? "", /1 direct edits/);
+  } finally {
+    delete process.env.PI_APP_LEAD_DIRECT_MUTATION_LIMIT;
+  }
+  for (const junk of ["abc", "0", "-3"]) {
+    process.env.PI_APP_LEAD_DIRECT_MUTATION_LIMIT = junk;
+    try {
+      const { call } = await makeLeadHarness(`lead-gate-env-junk-${junk}`);
+      assert.equal(await call(editCall("apps/a/x.ts", "c1")), undefined);
+      assert.equal(await call(editCall("apps/a/y.ts", "c2")), undefined);
+      assert.equal(await call(editCall("apps/a/z.ts", "c3")), undefined);
+      const blocked = (await call(editCall("apps/a/w.ts", "c4"))) as
+        { block?: boolean; reason?: string } | undefined;
+      assert.equal(blocked?.block, true, `junk ${junk} must fall back to 3`);
+      assert.match(blocked?.reason ?? "", /3 direct edits/);
+    } finally {
+      delete process.env.PI_APP_LEAD_DIRECT_MUTATION_LIMIT;
+    }
+  }
+});
+
+await test("solo mode never blocks direct mutations", async () => {
+  const { call } = await makeLeadHarness("lead-gate-solo", false);
+  for (let i = 1; i <= 5; i++) {
+    assert.equal(
+      await call(editCall(`apps/a/file-${i}.ts`, `c${i}`)),
+      undefined,
+      `solo edit ${i} must pass`,
+    );
+  }
+});
+
+await test("before_agent_start resets the mutation budget for a new run", async () => {
+  const { call, rerun } = await makeLeadHarness("lead-gate-reset");
+  assert.equal(await call(editCall("apps/a/x.ts", "c1")), undefined);
+  assert.equal(await call(editCall("apps/a/y.ts", "c2")), undefined);
+  assert.equal(await call(editCall("apps/a/z.ts", "c3")), undefined);
+  assert.equal(
+    ((await call(editCall("apps/a/w.ts", "c4"))) as { block?: boolean } | undefined)?.block,
+    true,
+  );
+  await rerun();
+  assert.equal(await call(editCall("apps/a/x.ts", "c5")), undefined);
+  assert.equal(await call(editCall("apps/a/y.ts", "c6")), undefined);
+  assert.equal(await call(editCall("apps/a/z.ts", "c7")), undefined, "new run allows 3 more");
+  assert.equal(
+    ((await call(editCall("apps/a/w.ts", "c8"))) as { block?: boolean } | undefined)?.block,
+    true,
+  );
 });

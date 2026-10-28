@@ -387,19 +387,32 @@ export const CHILD_REPORT_SUFFIX =
   "Report back with: 1) the result summary, 2) files changed or inspected, 3) the validation commands you ran and their outcomes, 4) risks, blockers, or open questions. Do not commit or push. Keep the final report under ~1200 characters: summarize rather than pasting files, diffs, or logs.";
 
 /**
+ * Host-supplied defaults so the cheapest possible delegation is a one-liner:
+ * `create_child_thread({prompt})` already carries everything the child needs
+ * to self-direct, so delegating competes with doing the work by hand instead
+ * of losing on briefing friction. Scope keeps its hint: it decides the
+ * single-writer rule, so it must come from the lead.
+ */
+export const DEFAULT_SUCCESS_CRITERIA =
+  "The change matches the objective, and the project's narrowest relevant check passes.";
+export const DEFAULT_VERIFY =
+  "Run the narrowest check that proves this changed behaviour, and report the command and outcome.";
+
+/**
  * Compose the single prompt string handed to the child-thread bridge.
- * The base prompt comes first, then each non-blank optional block as a
- * labeled section in fixed order (Scope, Constraints, Success criteria,
- * Verify), separated by blank lines. Blank blocks are omitted. The report
- * suffix is always appended last so even a bare prompt teaches the report contract.
+ * The base prompt comes first, then each optional block as a labeled section
+ * in fixed order (Scope, Constraints, Success criteria, Verify), separated
+ * by blank lines. Blank scope/constraints blocks are omitted; blank success
+ * criteria/verify fall back to the host defaults above. The report suffix is
+ * always appended last so even a bare prompt teaches the report contract.
  */
 export function composeChildBrief(parts: ChildBriefParts): string {
   const blocks = [parts.prompt.trim()];
   const labeled: ReadonlyArray<readonly [string, string | undefined]> = [
     ["Scope", parts.scope],
     ["Constraints", parts.constraints],
-    ["Success criteria", parts.success_criteria],
-    ["Verify", parts.verify],
+    ["Success criteria", parts.success_criteria?.trim() || DEFAULT_SUCCESS_CRITERIA],
+    ["Verify", parts.verify?.trim() || DEFAULT_VERIFY],
   ];
   for (const [label, value] of labeled) {
     const trimmed = value?.trim();
@@ -410,14 +423,14 @@ export function composeChildBrief(parts: ChildBriefParts): string {
 }
 
 /**
- * Feedback for the lead when a brief is missing the blocks a child needs to
- * self-direct. These warnings are never delivered to the child: they are
- * attached to the tool result so the lead writes better briefs next time.
- * A thin brief still spawns; this never rejects.
+ * Feedback for the lead when a brief is missing scope. Success criteria and
+ * verify now fall back to host defaults, so only scope still hints — it
+ * decides the single-writer rule and must come from the lead. Warnings are
+ * never delivered to the child: they are attached to the tool result so the
+ * lead writes better briefs next time. A thin brief still spawns; this never
+ * rejects.
  */
 export const SCOPE_BRIEF_WARNING = "Brief hint: add scope so the child knows where to work.";
-export const SUCCESS_CRITERIA_BRIEF_WARNING =
-  "Brief hint: add success_criteria so the child can self-check.";
 
 export function briefWarningsFromParams(params: unknown): readonly string[] {
   if (!isRecord(params)) {
@@ -426,9 +439,6 @@ export function briefWarningsFromParams(params: unknown): readonly string[] {
   const warnings: string[] = [];
   if (!optionalBriefParam(params, "scope")) {
     warnings.push(SCOPE_BRIEF_WARNING);
-  }
-  if (!optionalBriefParam(params, "success_criteria")) {
-    warnings.push(SUCCESS_CRITERIA_BRIEF_WARNING);
   }
   return warnings;
 }

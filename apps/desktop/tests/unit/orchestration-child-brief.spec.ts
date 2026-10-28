@@ -1,8 +1,9 @@
 import { expect, test } from "@playwright/test";
 import {
   CHILD_REPORT_SUFFIX,
+  DEFAULT_SUCCESS_CRITERIA,
+  DEFAULT_VERIFY,
   SCOPE_BRIEF_WARNING,
-  SUCCESS_CRITERIA_BRIEF_WARNING,
   briefWarningsFromParams,
   composeChildBrief,
   createChildThreadBriefFromParams,
@@ -29,9 +30,14 @@ test("composeChildBrief composes a full brief in fixed order", () => {
   );
 });
 
-test("composeChildBrief omits missing and blank blocks", () => {
+test("composeChildBrief omits blank scope/constraints and defaults success criteria/verify", () => {
   expect(composeChildBrief({ prompt: "Just do it." })).toBe(
-    ["Just do it.", CHILD_REPORT_SUFFIX].join("\n\n"),
+    [
+      "Just do it.",
+      `Success criteria: ${DEFAULT_SUCCESS_CRITERIA}`,
+      `Verify: ${DEFAULT_VERIFY}`,
+      CHILD_REPORT_SUFFIX,
+    ].join("\n\n"),
   );
   expect(
     composeChildBrief({
@@ -42,7 +48,12 @@ test("composeChildBrief omits missing and blank blocks", () => {
       verify: "  ",
     }),
   ).toBe(
-    ["Tidy the helper.", "Success criteria: No lint errors.", CHILD_REPORT_SUFFIX].join("\n\n"),
+    [
+      "Tidy the helper.",
+      "Success criteria: No lint errors.",
+      `Verify: ${DEFAULT_VERIFY}`,
+      CHILD_REPORT_SUFFIX,
+    ].join("\n\n"),
   );
 });
 
@@ -59,25 +70,21 @@ test("composeChildBrief always ends with the report contract", () => {
   ).toBe(true);
 });
 
-test("briefWarningsFromParams flags missing scope and success_criteria separately", () => {
+test("briefWarningsFromParams flags only missing scope", () => {
   expect(briefWarningsFromParams(undefined)).toEqual([]);
-  expect(briefWarningsFromParams({})).toEqual([
-    SCOPE_BRIEF_WARNING,
-    SUCCESS_CRITERIA_BRIEF_WARNING,
-  ]);
+  expect(briefWarningsFromParams({})).toEqual([SCOPE_BRIEF_WARNING]);
   expect(
     briefWarningsFromParams({ prompt: "x", scope: "apps/a", success_criteria: "done when green" }),
   ).toEqual([]);
-  expect(briefWarningsFromParams({ prompt: "x", scope: "apps/a" })).toEqual([
-    SUCCESS_CRITERIA_BRIEF_WARNING,
-  ]);
+  // Success criteria and verify fall back to host defaults, so they never warn.
+  expect(briefWarningsFromParams({ prompt: "x", scope: "apps/a" })).toEqual([]);
   expect(briefWarningsFromParams({ prompt: "x", success_criteria: "done when green" })).toEqual([
     SCOPE_BRIEF_WARNING,
   ]);
-  // Blank blocks count as missing; constraints/verify gaps never warn.
-  expect(
-    briefWarningsFromParams({ prompt: "x", scope: "  ", success_criteria: "", verify: "pnpm t" }),
-  ).toEqual([SCOPE_BRIEF_WARNING, SUCCESS_CRITERIA_BRIEF_WARNING]);
+  // Blank scope counts as missing; constraints/verify gaps never warn.
+  expect(briefWarningsFromParams({ prompt: "x", scope: "  ", verify: "pnpm t" })).toEqual([
+    SCOPE_BRIEF_WARNING,
+  ]);
 });
 
 test("createChildThreadBriefFromParams reads prompt plus optional blocks", () => {
@@ -85,7 +92,12 @@ test("createChildThreadBriefFromParams reads prompt plus optional blocks", () =>
   expect(createChildThreadBriefFromParams({})).toBeUndefined();
   expect(createChildThreadBriefFromParams({ prompt: "   " })).toBeUndefined();
   expect(createChildThreadBriefFromParams({ prompt: "Explore." })).toBe(
-    ["Explore.", CHILD_REPORT_SUFFIX].join("\n\n"),
+    [
+      "Explore.",
+      `Success criteria: ${DEFAULT_SUCCESS_CRITERIA}`,
+      `Verify: ${DEFAULT_VERIFY}`,
+      CHILD_REPORT_SUFFIX,
+    ].join("\n\n"),
   );
   expect(
     createChildThreadBriefFromParams({
@@ -98,6 +110,7 @@ test("createChildThreadBriefFromParams reads prompt plus optional blocks", () =>
       "Explore.",
       "Scope: packages/pi-sdk-driver/src",
       "Success criteria: List the owners.",
+      `Verify: ${DEFAULT_VERIFY}`,
       CHILD_REPORT_SUFFIX,
     ].join("\n\n"),
   );
@@ -108,5 +121,12 @@ test("createChildThreadBriefFromParams reads prompt plus optional blocks", () =>
       constraints: 42,
       verify: " pnpm test ",
     }),
-  ).toBe(["Explore.", "Verify: pnpm test", CHILD_REPORT_SUFFIX].join("\n\n"));
+  ).toBe(
+    [
+      "Explore.",
+      `Success criteria: ${DEFAULT_SUCCESS_CRITERIA}`,
+      "Verify: pnpm test",
+      CHILD_REPORT_SUFFIX,
+    ].join("\n\n"),
+  );
 });

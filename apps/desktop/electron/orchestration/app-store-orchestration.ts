@@ -1332,17 +1332,52 @@ function lastAssistantMessage(
   return undefined;
 }
 
+/**
+ * Evidence sources worth keeping across a restart. Everything else is
+ * re-derived from the parent and child transcripts when the record loads
+ * (`projectOrchestrationChild`), so persisting it wrote ~1.9MB of data that
+ * nothing ever read — 46 child records and 2068 evidence rows — and it grew with
+ * every child ever spawned. The creation record is the exception: it carries the
+ * git context captured at spawn time, which no transcript can reproduce.
+ */
+const PERSISTED_EVIDENCE_SOURCES: ReadonlySet<OrchestrationEvidenceRecord["source"]> = new Set([
+  "orchestrator-accepted",
+]);
+
+/** Keeps the saved child list bounded; older terminal records age out first. */
+const MAX_PERSISTED_CHILDREN = 40;
+
+function capPersistedChildren(
+  children: readonly OrchestrationChildThread[],
+): readonly OrchestrationChildThread[] {
+  if (children.length <= MAX_PERSISTED_CHILDREN) {
+    return children;
+  }
+  // Unfinished work always survives: dropping a running child would lose its
+  // record while its session keeps going. Then newest first.
+  const active = children.filter((child) => !isTerminalChildStatus(child.status));
+  const settled = children
+    .filter((child) => isTerminalChildStatus(child.status))
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  return [...active, ...settled].slice(0, MAX_PERSISTED_CHILDREN);
+}
+
 export function toPersistedOrchestrationChildren(
   children: readonly OrchestrationChildThread[],
 ): readonly OrchestrationChildThread[] | undefined {
   if (children.length === 0) {
     return undefined;
   }
-  return children.map((child) => ({
+  return capPersistedChildren(children).map((child) => ({
     ...child,
-    latestTranscript: child.childSessionId ? child.goal : child.latestTranscript,
+    // A child with a session re-derives both from its transcript on load
+    // (`projectOrchestrationChild`); persisting them stored the goal text twice
+    // per child — the largest remaining chunk of this file after evidence.
+    latestTranscript: child.childSessionId ? "" : child.latestTranscript,
     transcript: child.childSessionId ? [] : child.transcript,
-    evidence: capEvidenceRecords(child.evidence),
+    evidence: child.evidence
+      .filter((record) => PERSISTED_EVIDENCE_SOURCES.has(record.source))
+      .map((record) => ({ ...record, childThreadId: child.id })),
   }));
 }
 

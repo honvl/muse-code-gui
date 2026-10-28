@@ -41,9 +41,12 @@ export {
 } from "./child-isolation.js";
 export type { ChildIsolationInfo, ChildThreadMode, ChildToolDecision } from "./child-isolation.js";
 export {
+  DEFAULT_LEAD_DIRECT_MUTATION_LIMIT,
+  LEAD_DIRECT_MUTATION_LIMIT_ENV_VAR,
   ORCHESTRATOR_ALLOWED_TOOLS,
   ORCHESTRATOR_SYSTEM_PROMPT,
   createOrchestratorModeExtension,
+  resolveLeadDirectMutationLimit,
 } from "./orchestrator-mode.js";
 export {
   PACK_EXTENSION_RELATIVE_PATHS,
