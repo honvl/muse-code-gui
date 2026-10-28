@@ -27,7 +27,13 @@ await test("lead prompt covers the six lead rules in order", () => {
   assert.match(lines[2] ?? "", /one-line fixes/i);
   assert.match(lines[2] ?? "", /worker child with a one-line brief/i);
   assert.match(lines[2] ?? "", /writer rule/i);
-  assert.match(lines[3] ?? "", /stranger/i);
+  assert.match(lines[3] ?? "", /keep briefs short/i);
+  assert.match(lines[3] ?? "", /explores, verifies, and retries/i);
+  assert.doesNotMatch(
+    ORCHESTRATOR_SYSTEM_PROMPT,
+    /stranger/i,
+    "the old prescriptive brief rule is gone",
+  );
   assert.match(lines[3] ?? "", /what NOT to do/i);
   assert.match(lines[4] ?? "", /report back automatically/i);
   assert.match(lines[4] ?? "", /do not poll/i);
@@ -603,7 +609,7 @@ const LEAD_STRATEGY_PHRASES = [
   "Delegate by default",
   "expensive resource",
   "Spawn one child thread per independent part",
-  "stranger could execute",
+  "Keep briefs short",
   "report back automatically",
   "do not poll",
   "poll read_thread",

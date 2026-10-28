@@ -144,7 +144,7 @@ function createCreateChildThreadTool(
     name: createChildThreadToolName,
     label: "Create child thread",
     description:
-      "Delegate an independent investigation or implementation task to a separate pi-gui child thread that runs in parallel. Child threads run on the thread's configured sidekick model, falling back to the workspace default. Brief the child like a stranger: give it the objective, context, and verification it needs to finish without asking. Children report back automatically when a run ends. Use mode scout for read-only investigations and worker when file changes or mutating shell are required.",
+      "Delegate an independent investigation or implementation task to a separate pi-gui child thread that runs in parallel. Child threads run on the thread's configured sidekick model, falling back to the workspace default. A short brief (objective plus scope) is enough: the host adds default success criteria and verification. Children report back automatically when a run ends. Use mode scout for read-only investigations and worker when file changes or mutating shell are required.",
     promptSnippet:
       "create_child_thread: delegate independent work to a separate pi-gui child thread running in parallel.",
     promptGuidelines: [
