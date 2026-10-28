@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useBackgroundTasks } from "./hooks/use-background-tasks";
 import { SessionRail } from "./session-rail";
 import {
@@ -41,21 +42,28 @@ export function ThreadRailColumn({
     ? { workspaceId: workspace.id, sessionId: session.id }
     : null;
   const backgroundTasks = useBackgroundTasks(api, target);
-  const sessionRef = { workspaceId: workspace.id, sessionId: session.id };
-  const hasOrchestrationChildren = (state?.orchestrationChildren ?? []).some(
-    (child) => child.parentSessionId === session.id,
-  );
-  const laneUsage =
-    state && hasOrchestrationChildren
-      ? summarizeOrchestrationUsage(
-          sessionRef,
-          state.orchestrationChildren,
-          state.sessionUsageBySession,
-        )
-      : undefined;
-  const delegatedThreadCount = laneUsage
-    ? collectDelegatedSessionKeys(sessionRef, state?.orchestrationChildren ?? []).length
-    : 0;
+  const orchestrationChildren = state?.orchestrationChildren;
+  const sessionUsageBySession = state?.sessionUsageBySession;
+  const workspaceId = workspace.id;
+  const sessionId = session.id;
+  // Both walk every child record (the delegated keys are a BFS), so recompute
+  // only when the children, the usage map or the open thread change.
+  const { laneUsage, delegatedThreadCount } = useMemo(() => {
+    const sessionRef = { workspaceId, sessionId };
+    const hasOrchestrationChildren = (orchestrationChildren ?? []).some(
+      (child) => child.parentSessionId === sessionId,
+    );
+    const usage =
+      orchestrationChildren && sessionUsageBySession && hasOrchestrationChildren
+        ? summarizeOrchestrationUsage(sessionRef, orchestrationChildren, sessionUsageBySession)
+        : undefined;
+    return {
+      laneUsage: usage,
+      delegatedThreadCount: usage
+        ? collectDelegatedSessionKeys(sessionRef, orchestrationChildren ?? []).length
+        : 0,
+    };
+  }, [orchestrationChildren, sessionUsageBySession, workspaceId, sessionId]);
 
   return (
     <SessionRail
