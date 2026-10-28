@@ -1,6 +1,12 @@
 import { useState } from "react";
 import type { BackgroundTaskOutput, BackgroundTaskSnapshot } from "@pi-gui/pi-sdk-driver";
-import type { OrchestrationChildThread, SessionRecord } from "../../../contracts/desktop-state";
+import type {
+  OrchestrationChildThread,
+  SessionRecord,
+  SubagentTranscriptResult,
+} from "../../../contracts/desktop-state";
+import type { SubagentLane } from "../threads/subagent-lanes";
+import { SubagentLaneCard } from "./subagent-lane-card";
 import type { SessionUsageSnapshot } from "@pi-gui/session-driver";
 import type { TurnChangeSummary } from "../../../contracts/review";
 import type { LaneUsage } from "../threads/orchestration-usage";
@@ -26,6 +32,8 @@ interface SessionRailProps {
   readonly onOpenTurnChange: (turn: TurnChangeSummary, path: string) => void;
   readonly onStopRun: () => void;
   readonly orchestrationChildren?: readonly OrchestrationChildThread[];
+  readonly subagentLanes?: readonly SubagentLane[];
+  readonly getSubagentTranscript?: (lane: SubagentLane) => Promise<SubagentTranscriptResult>;
 }
 
 /**
@@ -53,6 +61,8 @@ export function SessionRail({
   onOpenTurnChange,
   onStopRun,
   orchestrationChildren = [],
+  subagentLanes = [],
+  getSubagentTranscript,
 }: SessionRailProps) {
   const runningTasks = tasks.filter((task) => task.status === "running");
   const showLongRunBanner = session.status === "running" && isLongRun(session.runningSince);
@@ -146,6 +156,14 @@ export function SessionRail({
           </div>
         ) : null}
       </section>
+
+      {subagentLanes.length > 0 && getSubagentTranscript ? (
+        <SubagentLaneCard
+          workspaceId={workspaceId}
+          lanes={subagentLanes}
+          getTranscript={getSubagentTranscript}
+        />
+      ) : null}
 
       {runningRailChildren.length > 0 ? (
         <section className="session-rail__card" data-testid="session-rail-running-children">

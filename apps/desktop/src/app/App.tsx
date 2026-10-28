@@ -1192,6 +1192,7 @@ export default function App() {
                 session={selectedSession}
                 workspace={selectedWorkspace}
                 state={snapshot}
+                transcript={activeTranscript}
                 sessionKey={selectedSessionKey}
                 turnChanges={turnChanges}
                 onStopRun={stopCurrentRun}

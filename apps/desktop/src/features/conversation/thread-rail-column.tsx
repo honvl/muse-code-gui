@@ -8,9 +8,12 @@ import {
 import type { PiDesktopApi } from "../../../contracts/ipc";
 import type {
   DesktopAppState,
+  SubagentTranscriptResult,
+  TranscriptMessage,
   WorkspaceRecord,
   WorkspaceSessionTarget,
 } from "../../../contracts/desktop-state";
+import { subagentLanesFromTranscript, type SubagentLane } from "../threads/subagent-lanes";
 import type { SessionRecord } from "../../../contracts/desktop-state";
 import type { useTurnChanges } from "./hooks/use-turn-changes";
 
@@ -19,6 +22,7 @@ interface ThreadRailColumnProps {
   readonly session: SessionRecord;
   readonly workspace: WorkspaceRecord;
   readonly state: DesktopAppState | null;
+  readonly transcript: readonly TranscriptMessage[];
   readonly sessionKey: string;
   readonly turnChanges: Pick<ReturnType<typeof useTurnChanges>, "turns" | "openTurnChange">;
   readonly onStopRun: () => void;
@@ -34,6 +38,7 @@ export function ThreadRailColumn({
   session,
   workspace,
   state,
+  transcript,
   sessionKey,
   turnChanges,
   onStopRun,
@@ -64,6 +69,19 @@ export function ThreadRailColumn({
         : 0,
     };
   }, [orchestrationChildren, sessionUsageBySession, workspaceId, sessionId]);
+  const subagentLanes = useMemo(() => subagentLanesFromTranscript(transcript), [transcript]);
+  const getSubagentTranscript = useMemo(() => {
+    if (!api) {
+      return undefined;
+    }
+    return (lane: SubagentLane): Promise<SubagentTranscriptResult> =>
+      api.getSubagentTranscript({
+        workspaceId,
+        sessionName: lane.sessionName,
+        ...(lane.worktreeDir ? { worktreeDir: lane.worktreeDir } : {}),
+        ...(lane.agentId ? { agentId: lane.agentId } : {}),
+      });
+  }, [api, workspaceId]);
 
   return (
     <SessionRail
@@ -85,6 +103,8 @@ export function ThreadRailColumn({
       onOpenTurnChange={turnChanges.openTurnChange}
       onStopRun={onStopRun}
       orchestrationChildren={state?.orchestrationChildren ?? []}
+      subagentLanes={subagentLanes}
+      getSubagentTranscript={getSubagentTranscript}
     />
   );
 }
