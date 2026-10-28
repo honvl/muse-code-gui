@@ -14,8 +14,8 @@ export const UPSTREAM_AUTHOR_URL = "https://github.com/minghinmatthewlam";
 // auto-updating; only the project identity is rebranded.
 export const BREW_INSTALL = "brew install --cask honvl/tap/pi-gui";
 
-export const SITE_TITLE = "Muse Code GUI: pi-gui with lead agents, sidekicks and background tasks";
+export const SITE_TITLE = "Muse Code GUI: coding agents that work as a team";
 export const SITE_DESCRIPTION =
-  "Muse Code GUI is a free, open source fork of pi-gui, the desktop app for the pi coding agent. It adds lead threads that delegate to cheaper sidekick models, background shell tasks, suggested next prompts, a more readable transcript and automatic recovery from broken sessions. macOS, Linux and Windows.";
+  "Muse Code GUI is a free, open source desktop app for the pi coding agent. A lead agent plans and delegates to cheaper sidekick threads, while you review every change, run the tests in a real terminal, and ship without leaving the window. macOS, Linux and Windows.";
 export const SITE_SOCIAL_DESCRIPTION =
-  "An open source fork of pi-gui: a lead agent that delegates to sidekick threads, background tasks, suggested prompts and self-healing sessions.";
+  "A desktop app for the pi coding agent: a lead agent that delegates to sidekick threads, background tasks, suggested prompts and self-healing sessions.";

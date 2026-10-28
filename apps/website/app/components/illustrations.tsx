@@ -1,4 +1,4 @@
-// Stylised HTML illustrations of the fork's additions. They are drawn, not captured, so each one
+// Stylised HTML illustrations of product concepts. They are drawn, not captured, so each one
 // is labelled "Illustration" in its caption on the page.
 
 function WindowChrome({ title, pill }: { readonly pill?: string; readonly title: string }) {

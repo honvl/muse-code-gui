@@ -35,69 +35,13 @@ const softwareApplicationJsonLd = {
   offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
 };
 
-const additions = [
+const showcase = [
   {
     eyebrow: "Lead and sidekicks",
     title: "A lead agent that hands out the work",
     body: "Switch a thread to Lead in the model picker and it plans, then delegates to child threads running a cheaper sidekick model (default lead, scout and sidekick models are in Settings). Scouts read and search but can't edit; workers edit inside their own write scope, so workers on different folders run in parallel. Each child reports back when it finishes, and the Session rail shows children live, with token usage split between the lead and delegated threads.",
     Illustration: LeadIllustration,
   },
-  {
-    eyebrow: "Background tasks",
-    title: "Dev servers and watchers that keep running",
-    body: "The agent can start a long command in the background, keep working, read its output later and stop it. Running tasks show in the Session rail, where you can open their output or stop them.",
-    Illustration: TasksIllustration,
-  },
-  {
-    eyebrow: "Suggested prompts",
-    title: "The next step, already typed",
-    body: "When a run ends, the cheapest available model drafts the prompt you'd likely send next; it shows in grey in the composer, press Tab to use it or just type.",
-    Illustration: SuggestIllustration,
-  },
-  {
-    eyebrow: "Transcript",
-    title: "See what the model did and how long it took",
-    body: "Collapsible provider thinking, time to first token and generation time on each message, durations on tool calls, consecutive tool calls folded into one expandable row, read receipts on your messages.",
-    Illustration: TranscriptIllustration,
-  },
-] as const;
-
-const fixes = [
-  {
-    title: "Sessions that heal themselves",
-    body: "When a provider rejects a request because of broken tool-call history, the bad turns are dropped and the session compacted before the prompt, instead of the thread failing for good.",
-  },
-  {
-    title: "Threads that talk to each other",
-    body: "Agents can list other threads, read their transcripts and send them follow-ups.",
-  },
-  {
-    title: "Delegation guardrails",
-    body: "A per-thread budget of 30 children, one writer per write scope, scouts can't spawn workers; children can't leave the workspace, write .env files, run destructive commands or nest more than three levels deep.",
-  },
-  {
-    title: "Children where you expect them",
-    body: "Child threads nest under their lead in the sidebar, and stuck or phantom “running” children after a restart are fixed.",
-  },
-  {
-    title: "Fork while it runs",
-    body: "Branch a thread without waiting for the current run to finish.",
-  },
-  {
-    title: "Honest thinking levels",
-    body: "The picker only offers levels the selected model supports.",
-  },
-  {
-    title: "Extension pack",
-    body: "One Settings switch installs the Muse Code GUI pack, with a Chrome browser-control skill and usage views.",
-  },
-  {
-    title: "Updates from this fork",
-    body: "The app updates itself from Muse Code GUI's own GitHub releases; long threads stay fast thanks to incremental transcript publishing and smaller saved state.",
-  },
-] as const;
-
-const showcase = [
   {
     eyebrow: "Threads",
     title: "Run agents side by side",
@@ -119,6 +63,12 @@ const showcase = [
     alt: "The Review tab showing the diff an agent made to src/price.js",
   },
   {
+    eyebrow: "Background tasks",
+    title: "Dev servers and watchers that keep running",
+    body: "The agent can start a long command in the background, keep working, read its output later and stop it. Running tasks show in the Session rail, where you can open their output or stop them.",
+    Illustration: TasksIllustration,
+  },
+  {
     eyebrow: "Workbench",
     title: "Terminal and files in the same window",
     body: "Open a real terminal, browse and edit files, or manage worktrees in tabs beside the conversation. Each task keeps its own layout.",
@@ -127,6 +77,18 @@ const showcase = [
     height: 992,
     dark: true,
     alt: "The integrated terminal running the test suite next to the thread",
+  },
+  {
+    eyebrow: "Suggested prompts",
+    title: "The next step, already typed",
+    body: "When a run ends, the cheapest available model drafts the prompt you'd likely send next; it shows in grey in the composer, press Tab to use it or just type.",
+    Illustration: SuggestIllustration,
+  },
+  {
+    eyebrow: "Transcript",
+    title: "See what the model did and how long it took",
+    body: "Collapsible provider thinking, time to first token and generation time on each message, durations on tool calls, consecutive tool calls folded into one expandable row, read receipts on your messages.",
+    Illustration: TranscriptIllustration,
   },
   {
     eyebrow: "Keyboard",
@@ -142,20 +104,32 @@ const showcase = [
 
 const features = [
   {
+    title: "Sessions that heal themselves",
+    body: "When a provider rejects a request because of broken tool-call history, the bad turns are dropped and the session compacted before the prompt, instead of the thread failing for good.",
+  },
+  {
     title: "Queue and steer",
     body: "Line up follow-ups while a run is going, or steer the current run without stopping it.",
+  },
+  {
+    title: "Threads that talk to each other",
+    body: "Agents can list other threads, read their transcripts and send them follow-ups. Child threads nest under their lead in the sidebar.",
   },
   {
     title: "Scheduled tasks",
     body: "Have pi rerun a prompt on a schedule, such as a weekly dependency check, while the app is open.",
   },
   {
+    title: "Delegation guardrails",
+    body: "A per-thread budget of 30 children, one writer per write scope, scouts can't spawn workers; children can't leave the workspace, write .env files, run destructive commands or nest more than three levels deep.",
+  },
+  {
     title: "Skills and extensions",
-    body: "Turn pi skills and extensions on and off, try them from the composer, and give extensions their own tabs.",
+    body: "Turn pi skills and extensions on and off, try them from the composer, and give extensions their own tabs. One Settings switch installs the Muse Code GUI pack, with a Chrome browser-control skill and usage views.",
   },
   {
     title: "Any provider",
-    body: "Sign in with OAuth, paste an API key, or point at a custom endpoint. Pick the model and thinking level per thread.",
+    body: "Sign in with OAuth, paste an API key, or point at a custom endpoint. Pick the model per thread; the thinking-level picker only offers levels the selected model supports.",
   },
   {
     title: "Your sessions, on disk",
@@ -163,7 +137,11 @@ const features = [
   },
   {
     title: "Fork and rewind",
-    body: "Fork a thread from any message into the same checkout or a new worktree, and move around the session tree.",
+    body: "Fork a thread from any message into the same checkout or a new worktree — even while the current run is still going — and move around the session tree.",
+  },
+  {
+    title: "Automatic updates",
+    body: "The app downloads updates from GitHub Releases and installs them on restart. Long threads stay fast thanks to incremental transcript publishing and smaller saved state.",
   },
   {
     title: "Notifications",
@@ -198,20 +176,6 @@ const installs = [
 
 const faqs = [
   {
-    q: "How is this related to pi-gui?",
-    a: (
-      <>
-        Muse Code GUI is an open source fork of <a href={UPSTREAM_URL}>pi-gui</a> by{" "}
-        <a href={UPSTREAM_AUTHOR_URL}>Matthew Lam</a>. Everything pi-gui does is still here, and
-        both projects are MIT licensed with the original copyright kept.
-      </>
-    ),
-  },
-  {
-    q: "Why does the installed app say pi-gui?",
-    a: "The project is renamed, but the app keeps pi-gui's binary, data folder and Homebrew cask names, so existing installs keep their sessions, settings and updates. Only the project name changed.",
-  },
-  {
     q: "What is pi?",
     a: (
       <>
@@ -235,7 +199,12 @@ const faqs = [
   },
   {
     q: "How do updates work?",
-    a: "The app downloads updates from this project's GitHub Releases and installs them on restart. Homebrew installs update with brew upgrade --cask pi-gui.",
+    a: (
+      <>
+        The app downloads updates from GitHub Releases and installs them on restart. Homebrew
+        installs can use <code>brew upgrade --cask</code>.
+      </>
+    ),
   },
 ] as const;
 
@@ -263,7 +232,6 @@ export default function Page() {
         <div className="nav__inner">
           <Logo />
           <nav className="nav__links" aria-label="Main">
-            <a href="#whats-new">What&apos;s new</a>
             <a href="#features">Features</a>
             <a href="#install">Install</a>
             <a href="#faq">FAQ</a>
@@ -284,15 +252,15 @@ export default function Page() {
 
         <section className="hero">
           <div className="container">
-            <a className="hero__badge" href={UPSTREAM_URL}>
-              An open source fork of pi-gui
+            <a className="hero__badge" href={RELEASES_URL}>
+              Free and open source for macOS, Linux and Windows
               <span aria-hidden="true">→</span>
             </a>
-            <h1>pi-gui, with a lead agent that delegates</h1>
+            <h1>Coding agents that work as a team</h1>
             <p className="hero__lede">
-              Muse Code GUI keeps everything the pi desktop app does and adds lead threads that
-              hand work to cheaper sidekick models, background tasks, suggested next prompts and
-              sessions that recover on their own.
+              Muse Code GUI is a desktop app for the pi coding agent. A lead agent plans and
+              hands work to cheaper sidekick threads, while you review every change, run the
+              tests in a real terminal, and ship without leaving the window.
             </p>
             <div className="hero__actions">
               <DownloadButton className="button button--primary" />
@@ -301,8 +269,7 @@ export default function Page() {
               </a>
             </div>
             <p className="hero__note">
-              Free and MIT licensed for macOS, Linux and Windows. Built on{" "}
-              <a href={UPSTREAM_URL}>pi-gui</a> and <a href={PI_URL}>pi</a>.
+              Free and MIT licensed. Powered by <a href={PI_URL}>pi</a>.
             </p>
           </div>
           <div className="container container--wide">
@@ -325,47 +292,9 @@ export default function Page() {
           </div>
         </section>
 
-        <section id="whats-new" className="showcase showcase--fork">
+        <section id="features" className="showcase">
           <div className="container">
-            <p className="section-kicker">What this fork adds</p>
-            <h2 className="section-title">Built for agents that work in teams</h2>
-            {additions.map((item, index) => (
-              <article
-                key={item.title}
-                className={`showcase__row${index % 2 === 1 ? " showcase__row--flip" : ""}`}
-              >
-                <div className="showcase__copy">
-                  <p className="eyebrow">{item.eyebrow}</p>
-                  <h2>{item.title}</h2>
-                  <p>{item.body}</p>
-                </div>
-                <figure className="frame" style={{ margin: 0 }}>
-                  <item.Illustration />
-                  <figcaption className="figure-note">Illustration</figcaption>
-                </figure>
-              </article>
-            ))}
-          </div>
-        </section>
-
-        <section className="grid-section">
-          <div className="container">
-            <h2 className="section-title">And a lot of smaller fixes</h2>
-            <div className="feature-grid">
-              {fixes.map((fix) => (
-                <div key={fix.title} className="feature-grid__item">
-                  <h3>{fix.title}</h3>
-                  <p>{fix.body}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-        </section>
-
-        <section id="features" className="showcase showcase--upstream">
-          <div className="container">
-            <p className="section-kicker">Everything from pi-gui</p>
-            <h2 className="section-title">The desktop app you already know</h2>
+            <h2 className="section-title">One window for the whole job</h2>
             {showcase.map((item, index) => (
               <article
                 key={item.title}
@@ -376,15 +305,22 @@ export default function Page() {
                   <h2>{item.title}</h2>
                   <p>{item.body}</p>
                 </div>
-                <div className="frame">
-                  <ThemedShot
-                    name={item.shot}
-                    alt={item.alt}
-                    width={item.width}
-                    height={item.height}
-                    dark={item.dark}
-                  />
-                </div>
+                {"Illustration" in item ? (
+                  <figure className="frame" style={{ margin: 0 }}>
+                    <item.Illustration />
+                    <figcaption className="figure-note">Illustration</figcaption>
+                  </figure>
+                ) : (
+                  <div className="frame">
+                    <ThemedShot
+                      name={item.shot}
+                      alt={item.alt}
+                      width={item.width}
+                      height={item.height}
+                      dark={item.dark}
+                    />
+                  </div>
+                )}
               </article>
             ))}
           </div>
@@ -392,7 +328,7 @@ export default function Page() {
 
         <section className="grid-section">
           <div className="container">
-            <h2 className="section-title">Plus the rest of the workflow</h2>
+            <h2 className="section-title">And the rest of the workflow</h2>
             <div className="feature-grid">
               {features.map((feature) => (
                 <div key={feature.title} className="feature-grid__item">
@@ -460,15 +396,14 @@ export default function Page() {
           <nav className="footer__links" aria-label="Footer">
             <a href={GITHUB_URL}>GitHub</a>
             <a href={RELEASES_URL}>Releases</a>
-            <a href={UPSTREAM_URL}>pi-gui (upstream)</a>
             <a href={PI_URL}>pi</a>
             <a href={`${GITHUB_URL}/blob/main/LICENSE`}>MIT License</a>
           </nav>
         </div>
         <div className="footer__inner" style={{ paddingTop: 0 }}>
           <p className="credit" style={{ marginTop: 0 }}>
-            Muse Code GUI is an independent fork. Not affiliated with the pi-gui maintainers or
-            Meta.
+            MIT licensed. Originally based on <a href={UPSTREAM_URL}>pi-gui</a> by{" "}
+            <a href={UPSTREAM_AUTHOR_URL}>Matthew Lam</a>.
           </p>
         </div>
       </footer>

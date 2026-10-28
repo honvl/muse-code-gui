@@ -640,7 +640,7 @@ video {
   }
 }
 
-/* ===== Fork: credit strip ===== */
+/* ===== Footer credit ===== */
 .credit {
   margin-top: 28px;
   color: var(--muted);
@@ -654,25 +654,7 @@ video {
   text-underline-offset: 3px;
 }
 
-.section-kicker {
-  margin-bottom: 14px;
-  color: var(--program);
-  font-family: var(--font-mono);
-  font-size: 13px;
-  letter-spacing: 0.02em;
-  text-align: center;
-  text-transform: uppercase;
-}
-
-.showcase--fork {
-  padding-top: 140px;
-}
-
-.showcase--fork .section-title {
-  margin-bottom: 100px;
-}
-
-.showcase--upstream .section-title {
+.showcase .section-title {
   margin-bottom: 100px;
 }
 
