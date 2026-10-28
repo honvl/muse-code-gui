@@ -16,48 +16,9 @@ import {
   runOrchestrationRuntimeTool,
   seedAgentDir,
 } from "../helpers/electron-app";
+import { startHangingOpenAiServer } from "../helpers/hanging-openai-server";
 
 const execFileAsync = promisify(execFile);
-
-async function startHangingOpenAiServer(): Promise<{
-  readonly baseUrl: string;
-  readonly pendingRequestCount: () => number;
-  readonly close: () => Promise<void>;
-}> {
-  const pending = new Set<import("node:http").ServerResponse>();
-  const sockets = new Set<import("node:net").Socket>();
-  const server = createServer((request, response) => {
-    pending.add(response);
-    response.on("close", () => pending.delete(response));
-    request.resume();
-    // Intentionally leave the response pending: create_child_thread must return
-    // after the running acknowledgement rather than await this model turn.
-  });
-  server.on("connection", (socket) => {
-    sockets.add(socket);
-    socket.on("close", () => sockets.delete(socket));
-  });
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      server.off("error", reject);
-      resolve();
-    });
-  });
-  const address = server.address() as AddressInfo;
-  return {
-    baseUrl: `http://127.0.0.1:${address.port}/v1`,
-    pendingRequestCount: () => pending.size,
-    close: async () => {
-      for (const socket of sockets) {
-        socket.destroy();
-      }
-      await new Promise<void>((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve())),
-      );
-    },
-  };
-}
 
 async function selectedSessionRef(
   window: Parameters<typeof getDesktopState>[0],

@@ -93,8 +93,10 @@ test("lead-mode sidekick picker drives config.sidekick from badge to reset", asy
     await expect.poll(() => selectedSessionSidekick(window, leadRef)).toBeUndefined();
 
     // Sidekick reasoning sits next to the sidekick model and is stored per thread.
+    // With no thread override children inherit the app default (xhigh), shown
+    // clamped to the model: the seeded catalog tops out at high.
     const reasoningBadge = window.getByRole("button", { name: /^Sidekick reasoning:/ });
-    await expect(reasoningBadge).toHaveText("Sidekick reasoning: default");
+    await expect(reasoningBadge).toHaveText("Sidekick reasoning: Default (high)");
     await reasoningBadge.click();
     await window.locator(".model-selector__dropdown").getByRole("button", { name: /^Low/ }).click();
     await expect.poll(() => selectedSessionSidekickThinking(window, leadRef)).toBe("low");
@@ -146,11 +148,11 @@ test("lead-mode sidekick picker drives config.sidekick from badge to reset", asy
     await window.getByRole("button", { name: /^Sidekick reasoning:/ }).click();
     await window
       .locator(".model-selector__dropdown")
-      .getByRole("button", { name: "Workspace default" })
+      .getByRole("button", { name: "Default (high)" })
       .click();
     await expect.poll(() => selectedSessionSidekickThinking(window, leadRef)).toBeUndefined();
     await expect(window.getByRole("button", { name: /^Sidekick reasoning:/ })).toHaveText(
-      "Sidekick reasoning: default",
+      "Sidekick reasoning: Default (high)",
     );
   } finally {
     await harness.close();
@@ -186,6 +188,64 @@ test("scout reasoning sits next to the scout model in Settings and clears to the
     await expect
       .poll(async () => (await getDesktopState(window)).defaultScoutThinkingLevel)
       .toBeUndefined();
+  } finally {
+    await harness.close();
+  }
+});
+
+test("lead and sidekick reasoning defaults sit in Settings and apply to threads", async () => {
+  test.setTimeout(120_000);
+  const userDataDir = await makeUserDataDir();
+  const agentDir = join(userDataDir, "agent");
+  const workspacePath = await makeWorkspace("effort-defaults");
+  await seedAgentDir(agentDir);
+  const harness = await launchDesktop(userDataDir, {
+    agentDir,
+    initialWorkspaces: [workspacePath],
+    testMode: "background",
+  });
+
+  try {
+    const window = await harness.firstWindow();
+    await window.keyboard.press(desktopShortcut(","));
+    await expect(window.getByTestId("settings-surface")).toBeVisible();
+    await window.getByRole("button", { name: "Models", exact: true }).click();
+
+    // Built-in defaults: high for leads, xhigh for sidekicks.
+    const leadReasoning = window.getByLabel("Default lead reasoning");
+    const sidekickReasoning = window.getByLabel("Default sidekick reasoning");
+    await expect(leadReasoning).toHaveValue("high");
+    await expect(sidekickReasoning).toHaveValue("xhigh");
+
+    await sidekickReasoning.selectOption("low");
+    await expect
+      .poll(async () => (await getDesktopState(window)).defaultSidekickThinkingLevel)
+      .toBe("low");
+    await leadReasoning.selectOption("minimal");
+    await expect
+      .poll(async () => (await getDesktopState(window)).defaultLeadThinkingLevel)
+      .toBe("minimal");
+    await window.keyboard.press("Escape");
+    await expect(window.getByTestId("settings-surface")).toHaveCount(0);
+
+    // A new thread starts solo at the workspace default; Solo -> Lead applies
+    // the default lead reasoning, and the sidekick badge inherits the default
+    // sidekick reasoning.
+    await createNamedThread(window, "Effort defaults thread");
+    const ref = await selectedSessionRef(window);
+    const sessionThinking = async () => {
+      const state = await getDesktopState(window);
+      return state.workspaces
+        .flatMap((workspace) => workspace.sessions)
+        .find((entry) => entry.id === ref.sessionId)?.config?.thinkingLevel;
+    };
+    await expect.poll(sessionThinking).toBe("medium");
+    await window.getByRole("button", { name: "Solo", exact: true }).click();
+    await expect(window.getByRole("button", { name: "Lead", exact: true })).toBeVisible();
+    await expect.poll(sessionThinking).toBe("minimal");
+    await expect(window.getByRole("button", { name: /^Sidekick reasoning:/ })).toHaveText(
+      "Sidekick reasoning: Default (low)",
+    );
   } finally {
     await harness.close();
   }

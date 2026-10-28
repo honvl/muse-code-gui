@@ -228,6 +228,8 @@ interface ReuseHostState {
   compactions?: number;
   /** The thread's sidekick reasoning setting. */
   sidekickThinking?: string;
+  /** The app-global default sidekick reasoning; the built-in xhigh when unset. */
+  sidekickThinkingDefault?: "low" | "xhigh";
   /** The reused child's current reasoning level. */
   childThinking?: string;
   failThinkingChange?: boolean;
@@ -315,6 +317,7 @@ function makeHost(state: ReuseHostState) {
     sidekickModelFor: () => SIDEKICK,
     defaultScoutModel: () => undefined,
     sidekickThinkingLevelFor: () => state.sidekickThinking,
+    defaultSidekickThinkingLevel: () => state.sidekickThinkingDefault ?? "xhigh",
     defaultScoutThinkingLevel: () => undefined,
     sessionModelFor: (ref: SessionRef) =>
       ref.sessionId === leadRef.sessionId ? undefined : SIDEKICK,
@@ -560,10 +563,25 @@ test("a reused sidekick takes the thread's reasoning effort before the brief", a
   expect(changed.thinkingChanges).toEqual([{ sessionId: "child-session-21", level: "high" }]);
   expect(changed.createSessionCalls).toHaveLength(0);
 
-  // Same level, or no setting: the child is left as it is.
+  // No thread setting: the reused child takes the default sidekick reasoning,
+  // the same resolution a fresh worker gets.
+  for (const [n, state, level] of [
+    [25, { childThinking: "low" }, "xhigh"],
+    [26, { childThinking: "high", sidekickThinkingDefault: "low" }, "low"],
+  ] as const) {
+    const defaulted = makeHost({ children: [idleSidekickN(n)], ...state });
+    await defaulted.owner.createChildThreadToolResult(leadRef, {
+      prompt: brief,
+      toolCallId: "call-thinking-default",
+    });
+    expect(defaulted.thinkingChanges).toEqual([{ sessionId: `child-session-${n}`, level }]);
+    expect(defaulted.createSessionCalls).toHaveLength(0);
+  }
+
+  // Already at the resolved level: the child is left as it is.
   for (const [n, state] of [
     [22, { sidekickThinking: "high", childThinking: "high" }],
-    [23, { childThinking: "low" }],
+    [23, { childThinking: "xhigh" }],
   ] as const) {
     const unchanged = makeHost({ children: [idleSidekickN(n)], ...state });
     await unchanged.owner.createChildThreadToolResult(leadRef, {

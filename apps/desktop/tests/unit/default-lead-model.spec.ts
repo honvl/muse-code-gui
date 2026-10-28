@@ -3,13 +3,18 @@ import type { SessionModelSelection, SessionRef } from "@pi-gui/session-driver";
 import type { TranscriptMessage } from "../../contracts/desktop-state";
 import {
   defaultLeadModelForLeadToggle,
+  defaultLeadThinkingForLeadToggle,
   preLeadModelForSoloToggle,
+  preLeadThinkingForSoloToggle,
   resolveInitialModelForLeadThread,
+  resolveInitialThinkingForLeadThread,
 } from "../../electron/application/default-lead-model";
 import { isDefaultScoutModelEqual } from "../../electron/application/default-scout-model";
 import { startThread } from "../../electron/workspace/app-store-worktree";
 import { createConversationOwner } from "../../electron/conversation/app-store-composer";
 import { expectDefaultLeadModelSelection } from "../../electron/ipc/request-validation";
+import { DEFAULT_LEAD_THINKING_LEVEL } from "../../contracts/desktop-state";
+import { effectiveThinkingLevel } from "../../contracts/thinking-levels";
 
 test("default lead validation clears on null and trims", () => {
   expect(expectDefaultLeadModelSelection(null)).toBeNull();
@@ -71,6 +76,7 @@ test("create-with-lead uses default", async () => {
     resolveExtensionFlags: async () => ({ applied: {}, chosen: {} }),
     buildCreateSessionOptions: async () => ({ initialModel: workspaceDefault }),
     defaultLeadModel: () => defaultLead,
+    defaultLeadThinkingLevel: () => "high",
     driver: {
       createSession: async (
         _workspace: unknown,
@@ -122,6 +128,7 @@ test("explicit model wins", async () => {
     resolveExtensionFlags: async () => ({ applied: {}, chosen: {} }),
     buildCreateSessionOptions: async () => ({ initialModel: workspaceDefault }),
     defaultLeadModel: () => defaultLead,
+    defaultLeadThinkingLevel: () => "high",
     driver: {
       createSession: async (
         _workspace: unknown,
@@ -179,6 +186,7 @@ const withHistory = [userMessage("u1", "hello"), assistantMessage("a1", "hi"), t
 
 type DriverCall =
   | { readonly type: "model"; readonly selection: SessionModelSelection }
+  | { readonly type: "thinking"; readonly level: string }
   | { readonly type: "mode"; readonly enabled: boolean };
 
 function toggleHost(options: {
@@ -186,19 +194,28 @@ function toggleHost(options: {
   current?: SessionModelSelection;
   def: SessionModelSelection | undefined;
   loaded?: boolean;
+  /** The thread's thinking level; defaults to the lead default, so no level switch. */
+  thinking?: string;
+  /** Default lead reasoning; the built-in high when unset. */
+  defThinking?: string;
+  /** Levels each model supports, by modelId, as the runtime reports them. */
+  modelLevels?: Record<string, readonly string[]>;
 }) {
   const key = "ws:sess";
   const transcriptCache = new Map<string, readonly TranscriptMessage[]>();
   const loadedTranscriptKeys = new Set<string>();
   const sessionConfigBySession = new Map<
     string,
-    { provider?: string; modelId?: string; orchestratorMode?: boolean }
+    { provider?: string; modelId?: string; orchestratorMode?: boolean; thinkingLevel?: string }
   >();
   const load = () => {
     transcriptCache.set(key, options.transcript);
     loadedTranscriptKeys.add(key);
     if (options.current) {
-      sessionConfigBySession.set(key, { ...options.current });
+      sessionConfigBySession.set(key, {
+        ...options.current,
+        thinkingLevel: options.thinking ?? DEFAULT_LEAD_THINKING_LEVEL,
+      });
     }
   };
   if (options.loaded !== false) {
@@ -219,6 +236,15 @@ function toggleHost(options: {
       sessionErrorsBySession: new Map(),
     },
     defaultLeadModel: () => options.def,
+    defaultLeadThinkingLevel: () => options.defThinking ?? DEFAULT_LEAD_THINKING_LEVEL,
+    runtimeForWorkspace: () => ({
+      models: [defaultLead, threadModel, otherModel].flatMap((model) => {
+        const thinkingLevels = options.modelLevels?.[model.modelId];
+        return thinkingLevels
+          ? [{ providerId: model.provider, modelId: model.modelId, thinkingLevels }]
+          : [];
+      }),
+    }),
     ensureSessionReady: async () => {
       ensureCalls += 1;
       load();
@@ -226,6 +252,16 @@ function toggleHost(options: {
     driver: {
       setSessionModel: async (_ref: SessionRef, selection: SessionModelSelection) => {
         calls.push({ type: "model", selection });
+      },
+      // Like the driver: clamp to the model, then report the effective level.
+      setSessionThinkingLevel: async (_ref: SessionRef, level: string) => {
+        calls.push({ type: "thinking", level });
+        const config = sessionConfigBySession.get(key) ?? {};
+        const levels = config.modelId ? options.modelLevels?.[config.modelId] : undefined;
+        sessionConfigBySession.set(key, {
+          ...config,
+          thinkingLevel: effectiveThinkingLevel(level, levels),
+        });
       },
       setSessionOrchestratorMode: async (_ref: SessionRef, enabled: boolean) => {
         calls.push({ type: "mode", enabled });
@@ -248,7 +284,18 @@ function toggleHost(options: {
     const config = sessionConfigBySession.get(key);
     return config?.provider ? { provider: config.provider, modelId: config.modelId } : undefined;
   };
-  return { owner, calls, modelCalls, currentModel, ensureCalls: () => ensureCalls };
+  const thinkingCalls = () =>
+    calls.flatMap((call) => (call.type === "thinking" ? [call.level] : []));
+  const currentThinking = () => sessionConfigBySession.get(key)?.thinkingLevel;
+  return {
+    owner,
+    calls,
+    modelCalls,
+    thinkingCalls,
+    currentModel,
+    currentThinking,
+    ensureCalls: () => ensureCalls,
+  };
 }
 
 test("lead toggle pure helpers", () => {
@@ -361,4 +408,141 @@ test("lead toggle leaves the model alone when no default is set or already on de
   await already.owner.setSessionOrchestratorMode(ref, true);
   await already.owner.setSessionOrchestratorMode(ref, false);
   expect(already.modelCalls()).toEqual([]);
+});
+
+test("lead thinking pure helpers", () => {
+  expect(DEFAULT_LEAD_THINKING_LEVEL).toBe("high");
+  expect(
+    resolveInitialThinkingForLeadThread({
+      orchestratorMode: true,
+      defaultLeadThinkingLevel: "high",
+      workspaceInitialThinkingLevel: "low",
+    }),
+  ).toBe("high");
+  expect(
+    resolveInitialThinkingForLeadThread({
+      explicit: "minimal",
+      orchestratorMode: true,
+      defaultLeadThinkingLevel: "high",
+    }),
+  ).toBe("minimal");
+  expect(
+    resolveInitialThinkingForLeadThread({
+      defaultLeadThinkingLevel: "high",
+      workspaceInitialThinkingLevel: "low",
+    }),
+  ).toBe("low");
+
+  expect(defaultLeadThinkingForLeadToggle({ defaultLeadThinkingLevel: "high" })).toBe("high");
+  expect(
+    defaultLeadThinkingForLeadToggle({ defaultLeadThinkingLevel: "high", current: "high" }),
+  ).toBeUndefined();
+  const preLead = { previous: "low", applied: "high" };
+  expect(preLeadThinkingForSoloToggle({ preLead, current: "high" })).toBe("low");
+  expect(preLeadThinkingForSoloToggle({ preLead, current: "medium" })).toBeUndefined();
+  expect(preLeadThinkingForSoloToggle({ preLead: undefined, current: "high" })).toBeUndefined();
+});
+
+test("a new Lead thread starts at the default lead reasoning; a solo one keeps the workspace's", async () => {
+  const levels: Array<string | undefined> = [];
+  const host = {
+    initialize: async () => {},
+    workspaceRefFromState: () => ({ workspaceId: "ws", path: "/tmp/ws" }),
+    resolveExtensionFlags: async () => ({ applied: {}, chosen: {} }),
+    buildCreateSessionOptions: async () => ({ initialThinkingLevel: "low" }),
+    defaultLeadModel: () => undefined,
+    defaultLeadThinkingLevel: () => "high",
+    driver: {
+      createSession: async (_workspace: unknown, options: { initialThinkingLevel?: string }) => {
+        levels.push(options.initialThinkingLevel);
+        return {
+          ref: { workspaceId: "ws", sessionId: "new" },
+          title: "New thread",
+          preview: "",
+          status: "idle",
+          updatedAt: createdAt,
+        };
+      },
+    },
+    seedSession: () => {},
+    recordExtensionFlags: () => {},
+    setPendingAutoTitle: () => {},
+    clearPendingAutoTitle: () => {},
+    setActiveSession: () => {},
+    refreshState: async () => ({}) as never,
+    withErrorHandling: async (fn: () => Promise<never>) => fn(),
+    withError: async () => ({}) as never,
+  };
+  await startThread(host as never, {
+    rootWorkspaceId: "ws",
+    environment: "local",
+    orchestratorMode: true,
+  });
+  await startThread(host as never, { rootWorkspaceId: "ws", environment: "local" });
+  await startThread(host as never, {
+    rootWorkspaceId: "ws",
+    environment: "local",
+    orchestratorMode: true,
+    thinkingLevel: "medium",
+  });
+  expect(levels).toEqual(["high", "low", "medium"]);
+});
+
+test("Solo -> Lead applies the default lead reasoning and Lead -> Solo restores it", async () => {
+  const host = toggleHost({
+    transcript: withHistory,
+    current: threadModel,
+    def: undefined,
+    thinking: "low",
+  });
+  await host.owner.setSessionOrchestratorMode(ref, true);
+  expect(host.calls).toEqual([
+    { type: "thinking", level: "high" },
+    { type: "mode", enabled: true },
+  ]);
+  expect(host.currentThinking()).toBe("high");
+  await host.owner.setSessionOrchestratorMode(ref, false);
+  expect(host.thinkingCalls()).toEqual(["high", "low"]);
+  expect(host.currentThinking()).toBe("low");
+});
+
+test("Lead -> Solo leaves a thinking level the user picked meanwhile alone", async () => {
+  const host = toggleHost({
+    transcript: withHistory,
+    current: threadModel,
+    def: undefined,
+    thinking: "low",
+    defThinking: "xhigh",
+  });
+  await host.owner.setSessionOrchestratorMode(ref, true);
+  await host.owner.setSessionThinkingLevel(ref, "medium");
+  await host.owner.setSessionOrchestratorMode(ref, false);
+  expect(host.thinkingCalls()).toEqual(["xhigh", "medium"]);
+  expect(host.currentThinking()).toBe("medium");
+});
+
+test("the toggle applies the lead reasoning on the lead model, clamped, and restores both", async () => {
+  // The default lead model tops out at high, so a requested xhigh lands on high.
+  const host = toggleHost({
+    transcript: withHistory,
+    current: threadModel,
+    def: defaultLead,
+    thinking: "low",
+    defThinking: "xhigh",
+    modelLevels: {
+      [defaultLead.modelId]: ["off", "low", "medium", "high"],
+      [threadModel.modelId]: ["off", "low", "medium", "high", "xhigh"],
+    },
+  });
+  await host.owner.setSessionOrchestratorMode(ref, true);
+  expect(host.calls).toEqual([
+    { type: "model", selection: defaultLead },
+    { type: "thinking", level: "xhigh" },
+    { type: "mode", enabled: true },
+  ]);
+  expect(host.currentThinking()).toBe("high");
+  await host.owner.setSessionOrchestratorMode(ref, false);
+  expect(host.modelCalls()).toEqual([defaultLead, threadModel]);
+  expect(host.thinkingCalls()).toEqual(["xhigh", "low"]);
+  expect(host.currentThinking()).toBe("low");
 });

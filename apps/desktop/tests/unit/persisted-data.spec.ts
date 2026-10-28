@@ -33,6 +33,10 @@ for (const invalid of [
   { version: 19, defaultScoutModel: { provider: "acme", modelId: "" } },
   { version: 19, defaultScoutModel: { provider: "acme" } },
   { version: 19, defaultScoutModel: "acme" },
+  { version: 21, defaultLeadThinkingLevel: "extreme" },
+  { version: 21, defaultLeadThinkingLevel: null },
+  { version: 21, defaultSidekickThinkingLevel: "extreme" },
+  { version: 21, defaultSidekickThinkingLevel: 5 },
   [],
 ]) {
   test(`preserves invalid UI state ${JSON.stringify(invalid)}`, async () => {
@@ -224,6 +228,33 @@ test("ui-state without default lead model loads as absent", async () => {
   const written = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
   expect("defaultLeadModel" in written).toBe(false);
   expect((await readPersistedUiState(path)).defaultLeadModel).toBeUndefined();
+});
+
+test("lead and sidekick reasoning defaults round-trip and stay absent until chosen", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ui-state-effort-defaults-"));
+  const path = join(dir, "ui-state.json");
+  // A v21 file written before these settings existed reads as absent: built-in defaults.
+  await writeFile(path, JSON.stringify({ version: 21, composerDraft: "kept" }));
+  const before = await readPersistedUiState(path);
+  expect(before.defaultLeadThinkingLevel).toBeUndefined();
+  expect(before.defaultSidekickThinkingLevel).toBeUndefined();
+  await writePersistedUiState(path, { composerDraft: "kept" });
+  const untouched = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+  expect("defaultLeadThinkingLevel" in untouched).toBe(false);
+  expect("defaultSidekickThinkingLevel" in untouched).toBe(false);
+
+  await writePersistedUiState(path, {
+    defaultLeadThinkingLevel: "minimal",
+    defaultSidekickThinkingLevel: "off",
+  });
+  const decoded = await readPersistedUiState(path);
+  expect(decoded.defaultLeadThinkingLevel).toBe("minimal");
+  expect(decoded.defaultSidekickThinkingLevel).toBe("off");
+  const written = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+  // Optional app-global fields like the scout reasoning: no format version bump.
+  expect(written.version).toBe(21);
+  expect(written.defaultLeadThinkingLevel).toBe("minimal");
+  expect(written.defaultSidekickThinkingLevel).toBe("off");
 });
 
 test("default scout model round-trips through ui-state", async () => {

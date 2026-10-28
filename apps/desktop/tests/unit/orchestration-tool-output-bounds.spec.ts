@@ -215,6 +215,7 @@ function makeHost(state: BoundsHostState) {
     updateSessionConfig: () => {},
     defaultScoutModel: () => undefined,
     sidekickThinkingLevelFor: () => undefined,
+    defaultSidekickThinkingLevel: () => "xhigh" as const,
     defaultScoutThinkingLevel: () => undefined,
     seedSession: () => {},
     refreshState: async () => ({}) as never,

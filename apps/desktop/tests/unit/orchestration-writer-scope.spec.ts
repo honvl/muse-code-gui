@@ -227,6 +227,7 @@ function makeHost(state: WriterHostState) {
     sidekickModelFor: () => undefined,
     defaultScoutModel: () => undefined,
     sidekickThinkingLevelFor: () => undefined,
+    defaultSidekickThinkingLevel: () => "xhigh" as const,
     defaultScoutThinkingLevel: () => undefined,
     sessionModelFor: () => undefined,
     buildCreateSessionOptions: async () => undefined,

@@ -112,7 +112,15 @@ test("scout reasoning row defaults to the sidekick's reasoning and maps levels t
     value: DEFAULT_SCOUT_THINKING_SIDEKICK_VALUE,
     label: "Sidekick's reasoning",
   });
-  expect(options.map((option) => option.value)).toContain("low");
+  expect(options.slice(1).map((option) => option.value)).toEqual([
+    "off",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+  ]);
   expect(scoutThinkingSelectValue(undefined)).toBe(DEFAULT_SCOUT_THINKING_SIDEKICK_VALUE);
   expect(scoutThinkingSelectValue("high")).toBe("high");
   expect(resolveScoutThinkingLevel(DEFAULT_SCOUT_THINKING_SIDEKICK_VALUE)).toBeNull();

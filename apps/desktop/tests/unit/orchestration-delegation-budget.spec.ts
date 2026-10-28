@@ -112,6 +112,7 @@ function makeHost(state: BudgetHostState) {
     isOrchestratorSession: (ref: SessionRef) => ref.sessionId === parentRef.sessionId,
     sidekickModelFor: () => undefined,
     sidekickThinkingLevelFor: () => undefined,
+    defaultSidekickThinkingLevel: () => "xhigh" as const,
     sessionModelFor: () => undefined,
     buildCreateSessionOptions: async () => undefined,
     getQueuedComposerMessages: () => [],

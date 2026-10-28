@@ -232,6 +232,7 @@ function makeHost(repo: string, children: OrchestrationChildThread[] = []) {
     sidekickModelFor: () => undefined,
     defaultScoutModel: () => undefined,
     sidekickThinkingLevelFor: () => undefined,
+    defaultSidekickThinkingLevel: () => "xhigh" as const,
     defaultScoutThinkingLevel: () => undefined,
     sessionModelFor: () => undefined,
     sessionThinkingLevelFor: () => undefined,

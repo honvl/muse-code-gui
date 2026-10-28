@@ -4,10 +4,11 @@ import type {
   SessionModelSelection,
   SessionRef,
 } from "@pi-gui/session-driver";
-import type {
-  OrchestrationChildThread,
-  ThinkingLevel,
-  TranscriptMessage,
+import {
+  DEFAULT_SIDEKICK_THINKING_LEVEL,
+  type OrchestrationChildThread,
+  type ThinkingLevel,
+  type TranscriptMessage,
 } from "../../contracts/desktop-state";
 import { createOrchestrationOwner } from "../../electron/orchestration/app-store-orchestration";
 import { sidekickMatchesLead } from "../../src/features/conversation/model-selector";
@@ -38,6 +39,7 @@ function makeHost(options: {
   scoutModel?: SessionModelSelection;
   sidekickThinkingMap?: Record<string, ThinkingLevel>;
   scoutThinkingLevel?: ThinkingLevel;
+  sidekickThinkingDefault?: ThinkingLevel;
 }) {
   const parentSessionId = options.parentSessionId ?? "parent";
   const createSessionCalls: CreateSessionCall[] = [];
@@ -112,6 +114,8 @@ function makeHost(options: {
     sidekickModelFor: (ref: SessionRef) => options.sidekickMap[ref.sessionId],
     defaultScoutModel: () => options.scoutModel,
     sidekickThinkingLevelFor: (ref: SessionRef) => options.sidekickThinkingMap?.[ref.sessionId],
+    defaultSidekickThinkingLevel: () =>
+      options.sidekickThinkingDefault ?? DEFAULT_SIDEKICK_THINKING_LEVEL,
     defaultScoutThinkingLevel: () => options.scoutThinkingLevel,
     sessionModelFor: (ref: SessionRef) => options.sessionModelMap?.[ref.sessionId],
     buildCreateSessionOptions: async () => options.createOptions,
@@ -302,18 +306,49 @@ test("a scout falls back to the sidekick reasoning effort when no scout effort i
   expect(createSessionCalls[0]?.options.initialThinkingLevel).toBe("xhigh");
 });
 
-test("no reasoning override keeps the workspace default thinking level", async () => {
+test("no thread override starts children at the default sidekick reasoning, not the workspace's", async () => {
   const { owner, createSessionCalls } = makeHost({
     sidekickMap: { parent: sidekick },
-    createOptions: { initialModel: workspaceDefault, initialThinkingLevel: "high" },
+    createOptions: { initialModel: workspaceDefault, initialThinkingLevel: "medium" },
   });
 
   await owner.createChildThreadToolResult(
     { workspaceId: "ws", sessionId: "parent" },
-    { prompt, toolCallId: "call-thinking-default", mode: "scout" },
+    { prompt, toolCallId: "call-thinking-default-worker", mode: "worker" },
+  );
+  await owner.createChildThreadToolResult(
+    { workspaceId: "ws", sessionId: "parent" },
+    { prompt, toolCallId: "call-thinking-default-scout", mode: "scout" },
   );
 
-  expect(createSessionCalls[0]?.options.initialThinkingLevel).toBe("high");
+  expect(DEFAULT_SIDEKICK_THINKING_LEVEL).toBe("xhigh");
+  expect(createSessionCalls[0]?.options.initialThinkingLevel).toBe("xhigh");
+  expect(createSessionCalls[1]?.options.initialThinkingLevel).toBe("xhigh");
+});
+
+test("a chosen default sidekick reasoning applies, and the thread badge still wins", async () => {
+  const chosen = makeHost({
+    sidekickMap: {},
+    sidekickThinkingDefault: "low",
+    createOptions: { initialThinkingLevel: "high" },
+  });
+  await chosen.owner.createChildThreadToolResult(
+    { workspaceId: "ws", sessionId: "parent" },
+    { prompt, toolCallId: "call-thinking-chosen", mode: "scout" },
+  );
+  expect(chosen.createSessionCalls[0]?.options.initialThinkingLevel).toBe("low");
+
+  const badge = makeHost({
+    sidekickMap: {},
+    sidekickThinkingMap: { parent: "medium" },
+    sidekickThinkingDefault: "low",
+    createOptions: undefined,
+  });
+  await badge.owner.createChildThreadToolResult(
+    { workspaceId: "ws", sessionId: "parent" },
+    { prompt, toolCallId: "call-thinking-badge", mode: "worker" },
+  );
+  expect(badge.createSessionCalls[0]?.options.initialThinkingLevel).toBe("medium");
 });
 
 test("the Lead badge warns only when the effective sidekick is the lead model", () => {
