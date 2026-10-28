@@ -10,6 +10,7 @@ import {
   makeUserDataDir,
   makeWorkspace,
   seedAgentDir,
+  seedNamedTextSessionFixture,
   selectSession,
 } from "../helpers/electron-app";
 
@@ -185,6 +186,68 @@ test("scout reasoning sits next to the scout model in Settings and clears to the
     await expect
       .poll(async () => (await getDesktopState(window)).defaultScoutThinkingLevel)
       .toBeUndefined();
+  } finally {
+    await harness.close();
+  }
+});
+
+test("lead toggle on a thread with history switches to the default lead model and back", async () => {
+  test.setTimeout(90_000);
+  const userDataDir = await makeUserDataDir();
+  const agentDir = join(userDataDir, "agent");
+  const workspacePath = await makeWorkspace("lead-toggle-model");
+  // Default seed: openai/gpt-5 is the thread model, openai/gpt-4o the spare.
+  await seedAgentDir(agentDir);
+  const thread = await seedNamedTextSessionFixture(agentDir, workspacePath, {
+    title: "Thread with history",
+    userText: "Summarize the parser",
+    assistantText: "The parser reads tokens.",
+    model: { provider: "openai", modelId: "gpt-5" },
+  });
+  const harness = await launchDesktop(userDataDir, {
+    agentDir,
+    initialWorkspaces: [workspacePath],
+    testMode: "background",
+  });
+
+  try {
+    const window = await harness.firstWindow();
+    await selectSession(window, thread.title);
+    const transcript = window.getByTestId("transcript");
+    await expect(transcript).toContainText("The parser reads tokens.");
+    const footer = window.locator(".composer__bar");
+    await expect(footer.getByRole("button", { name: "openai:gpt-5" })).toBeVisible();
+    // Setup only: the Settings › Models picker is covered by its own spec.
+    await window.evaluate(() =>
+      globalThis.window.piApp?.setDefaultLeadModel({ provider: "openai", modelId: "gpt-4o" }),
+    );
+    const sessionConfig = async () => {
+      const state = await getDesktopState(window);
+      const session = state.workspaces
+        .flatMap((workspace) => workspace.sessions)
+        .find((entry) => entry.id === thread.sessionId);
+      return {
+        model: `${session?.config?.provider}:${session?.config?.modelId}`,
+        lead: session?.config?.orchestratorMode === true,
+      };
+    };
+
+    await expect.poll(sessionConfig).toEqual({ model: "openai:gpt-5", lead: false });
+
+    // Solo -> Lead switches despite the history.
+    await footer.getByRole("button", { name: "Solo", exact: true }).click();
+    await expect(footer.getByRole("button", { name: "Lead", exact: true })).toBeVisible();
+    await expect(footer.getByRole("button", { name: "openai:gpt-4o" })).toBeVisible();
+    await expect.poll(sessionConfig).toEqual({ model: "openai:gpt-4o", lead: true });
+    await expect(transcript).toContainText("Lead: delegates bulky work");
+    await expect(transcript).toContainText("The parser reads tokens.");
+
+    // Lead -> Solo restores the model the thread had before.
+    await footer.getByRole("button", { name: "Lead", exact: true }).click();
+    await expect(footer.getByRole("button", { name: "Solo", exact: true })).toBeVisible();
+    await expect(footer.getByRole("button", { name: "openai:gpt-5" })).toBeVisible();
+    await expect.poll(sessionConfig).toEqual({ model: "openai:gpt-5", lead: false });
+    await expect(transcript).toContainText("Solo: works in this thread");
   } finally {
     await harness.close();
   }

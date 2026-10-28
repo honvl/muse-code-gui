@@ -837,6 +837,8 @@ export async function seedNamedTextSessionFixture(
     readonly title: string;
     readonly userText: string;
     readonly assistantText: string;
+    /** The model the assistant reply ran on, which pi reports as the thread's model. */
+    readonly model?: { readonly provider: string; readonly modelId: string };
   },
 ): Promise<{
   readonly sessionId: string;
@@ -849,6 +851,8 @@ export async function seedNamedTextSessionFixture(
           role: "user" | "assistant";
           content: string;
           timestamp: number;
+          provider?: string;
+          model?: string;
         }): string;
         appendSessionInfo(name: string): string;
         getSessionId(): string;
@@ -872,6 +876,7 @@ export async function seedNamedTextSessionFixture(
       role: "assistant",
       content: session.assistantText,
       timestamp: nextTimestamp(),
+      ...(session.model ? { provider: session.model.provider, model: session.model.modelId } : {}),
     });
     sessionManager.appendSessionInfo(session.title);
     return {

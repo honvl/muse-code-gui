@@ -1,24 +1,7 @@
 import type { SessionModelSelection } from "@pi-gui/session-driver";
-import type { TranscriptMessage } from "../../contracts/desktop-state";
 
 /** App-global default selection, absent when cleared. */
 export type DefaultLeadModel = SessionModelSelection | undefined;
-
-/**
- * True when the thread already has conversation history that a model switch
- * would invalidate. Only message/tool/custom/summary rows count: local
- * activity rows, pins and cards never ran through the model and must not
- * block a pre-run switch.
- */
-export function hasThreadHistory(transcript: readonly TranscriptMessage[]): boolean {
-  return transcript.some(
-    (item) =>
-      item.kind === "message" ||
-      item.kind === "tool" ||
-      item.kind === "custom" ||
-      item.kind === "summary",
-  );
-}
 
 /**
  * Which model a new thread should start on. Explicit per-thread input always
@@ -42,30 +25,52 @@ export function resolveInitialModelForLeadThread(options: {
 }
 
 /**
- * Which model a lead-mode toggle should switch to, if any. Only an empty
- * thread (no conversation history) moves: mid-conversation switches destroy
- * prompt cache and surprise the user. Already-on-default is a no-op so the
- * toggle never re-pushes the same model.
+ * The model a thread was on right before the Solo -> Lead toggle switched it,
+ * plus the lead model the toggle applied. Held in memory per session key so
+ * Lead -> Solo can undo the switch.
+ */
+export interface PreLeadModel {
+  readonly previous: SessionModelSelection;
+  readonly applied: SessionModelSelection;
+}
+
+function sameModel(
+  a: SessionModelSelection | undefined,
+  b: SessionModelSelection | undefined,
+): boolean {
+  return a !== undefined && b !== undefined && a.provider === b.provider && a.modelId === b.modelId;
+}
+
+/**
+ * Which model the Solo -> Lead toggle should switch to, if any. The toggle is
+ * explicit user intent, so history does not block it: the prompt-cache cost of
+ * a mid-conversation switch is the user's call. Already-on-default is a no-op
+ * so the toggle never re-pushes the same model; no default means no switch.
  */
 export function defaultLeadModelForLeadToggle(options: {
-  readonly enabled: boolean;
   readonly defaultLeadModel: DefaultLeadModel;
-  readonly transcript: readonly TranscriptMessage[];
-  readonly currentProvider?: string;
-  readonly currentModelId?: string;
+  readonly current?: SessionModelSelection;
 }): SessionModelSelection | undefined {
-  if (!options.enabled) {
-    return undefined;
-  }
   const def = options.defaultLeadModel;
-  if (!def) {
-    return undefined;
-  }
-  if (hasThreadHistory(options.transcript)) {
-    return undefined;
-  }
-  if (options.currentProvider === def.provider && options.currentModelId === def.modelId) {
+  if (!def || sameModel(def, options.current)) {
     return undefined;
   }
   return def;
+}
+
+/**
+ * Which model the Lead -> Solo toggle should restore, if any: the pre-lead
+ * model, but only while the thread is still on the lead model the toggle
+ * applied. A model the user picked meanwhile, or a lost record (restart),
+ * leaves the model alone.
+ */
+export function preLeadModelForSoloToggle(options: {
+  readonly preLead: PreLeadModel | undefined;
+  readonly current?: SessionModelSelection;
+}): SessionModelSelection | undefined {
+  const preLead = options.preLead;
+  if (!preLead || !sameModel(preLead.applied, options.current)) {
+    return undefined;
+  }
+  return preLead.previous;
 }

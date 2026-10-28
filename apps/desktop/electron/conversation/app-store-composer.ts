@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { sessionKey } from "@pi-gui/session-driver";
-import { defaultLeadModelForLeadToggle } from "../application/default-lead-model";
+import {
+  defaultLeadModelForLeadToggle,
+  preLeadModelForSoloToggle,
+  type PreLeadModel,
+} from "../application/default-lead-model";
 import type {
   SessionConfig,
   SessionModelSelection,
@@ -222,6 +226,9 @@ export interface ConversationOwner {
 }
 
 export function createConversationOwner(store: ConversationOwnerHost): ConversationOwner {
+  // Pre-lead models by session key. Memory only: after a restart Lead -> Solo
+  // leaves the model alone.
+  const preLeadModels = new Map<string, PreLeadModel>();
   return {
     updateComposerDraft: (sessionRef, draft) => updateComposerDraft(store, sessionRef, draft),
     addComposerAttachments: (sessionRef, attachments) =>
@@ -252,7 +259,7 @@ export function createConversationOwner(store: ConversationOwnerHost): Conversat
     setSessionThinkingLevel: (sessionRef, thinkingLevel) =>
       setSessionThinkingLevel(store, sessionRef, thinkingLevel),
     setSessionOrchestratorMode: (sessionRef, enabled) =>
-      setSessionOrchestratorMode(store, sessionRef, enabled),
+      setSessionOrchestratorMode(store, preLeadModels, sessionRef, enabled),
     setSessionSidekickModel: (sessionRef, selection) =>
       setSessionSidekickModel(store, sessionRef, selection),
     cancelCurrentRun: (sessionRef) => cancelCurrentRun(store, sessionRef),
@@ -763,42 +770,65 @@ async function setSessionSidekickModel(
 
 async function setSessionOrchestratorMode(
   store: ComposerStore,
+  preLeadModels: Map<string, PreLeadModel>,
   sessionRef: SessionRef,
   enabled: boolean,
 ): Promise<DesktopAppState> {
   await store.initialize();
   const key = sessionKey(sessionRef);
-  // Lead threads start on the app-global default, but only when no model would
-  // be lost: an empty thread (no conversation history) has no prompt cache to
-  // invalidate. History blocks the switch; the existing announcement below
-  // still reports the toggle itself.
-  let leadSwitch: SessionModelSelection | undefined;
-  if (enabled) {
-    const def = store.defaultLeadModel();
-    if (def && store.conversationState.loadedTranscriptKeys.has(key)) {
-      const transcript = store.conversationState.transcriptCache.get(key) ?? [];
-      const current = store.conversationState.sessionConfigBySession.get(key);
-      leadSwitch = defaultLeadModelForLeadToggle({
-        enabled: true,
-        defaultLeadModel: def,
-        transcript,
-        ...(current?.provider ? { currentProvider: current.provider } : {}),
-        ...(current?.modelId ? { currentModelId: current.modelId } : {}),
-      });
-    }
-  }
-  // Eager first: the driver's sessionUpdated is emitted inside setSessionOrchestratorMode,
-  // before it resolves. For off, the snapshot omits the mode; without the eager false
-  // already in place, updateSessionConfig would preserve the old true and push it back.
-  syncSessionConfig(store, key, {
-    orchestratorMode: enabled,
-    ...(leadSwitch ? { provider: leadSwitch.provider, modelId: leadSwitch.modelId } : {}),
-  });
   return store.withErrorHandling(async () => {
-    if (leadSwitch) {
-      await store.driver.setSessionModel(sessionRef, leadSwitch);
+    // The toggle is explicit intent, so history does not block the model switch.
+    // Open the session first so the current model is the thread's own.
+    if (!store.conversationState.loadedTranscriptKeys.has(key)) {
+      await store.ensureSessionReady(sessionRef);
     }
-    await store.driver.setSessionOrchestratorMode(sessionRef, enabled);
+    const config = store.conversationState.sessionConfigBySession.get(key);
+    const current =
+      config?.provider && config.modelId
+        ? { provider: config.provider, modelId: config.modelId }
+        : undefined;
+    // Solo -> Lead moves to the app-global default lead model. Lead -> Solo
+    // restores the pre-lead model while the thread is still on the lead model
+    // the toggle applied. Thinking level follows the model setter: the driver
+    // keeps the thread's level, clamped to what the model supports.
+    let modelSwitch: SessionModelSelection | undefined;
+    if (enabled) {
+      if (config?.orchestratorMode !== true) {
+        modelSwitch = defaultLeadModelForLeadToggle({
+          defaultLeadModel: store.defaultLeadModel(),
+          ...(current ? { current } : {}),
+        });
+      }
+    } else {
+      modelSwitch = preLeadModelForSoloToggle({
+        preLead: preLeadModels.get(key),
+        ...(current ? { current } : {}),
+      });
+      preLeadModels.delete(key);
+    }
+    // Eager first: the driver's sessionUpdated is emitted inside setSessionOrchestratorMode,
+    // before it resolves. For off, the snapshot omits the mode; without the eager false
+    // already in place, updateSessionConfig would preserve the old true and push it back.
+    syncSessionConfig(store, key, {
+      orchestratorMode: enabled,
+      ...(modelSwitch ? { provider: modelSwitch.provider, modelId: modelSwitch.modelId } : {}),
+    });
+    if (enabled) {
+      if (modelSwitch) {
+        await store.driver.setSessionModel(sessionRef, modelSwitch);
+      }
+      await store.driver.setSessionOrchestratorMode(sessionRef, true);
+      if (modelSwitch && current) {
+        preLeadModels.set(key, { previous: current, applied: modelSwitch });
+      }
+    } else {
+      // Mode off before the model: a model snapshot taken while the driver still
+      // reports lead would put orchestratorMode back to true.
+      await store.driver.setSessionOrchestratorMode(sessionRef, false);
+      if (modelSwitch) {
+        await store.driver.setSessionModel(sessionRef, modelSwitch);
+      }
+    }
     store.schedulePersistUiState();
     return finishSessionChange(
       store,

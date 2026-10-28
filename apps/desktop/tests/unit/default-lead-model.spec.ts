@@ -3,7 +3,7 @@ import type { SessionModelSelection, SessionRef } from "@pi-gui/session-driver";
 import type { TranscriptMessage } from "../../contracts/desktop-state";
 import {
   defaultLeadModelForLeadToggle,
-  hasThreadHistory,
+  preLeadModelForSoloToggle,
   resolveInitialModelForLeadThread,
 } from "../../electron/application/default-lead-model";
 import { isDefaultScoutModelEqual } from "../../electron/application/default-scout-model";
@@ -53,15 +53,6 @@ function toolRow(): TranscriptMessage {
     status: "success",
     label: "Read file",
     createdAt,
-  } as TranscriptMessage;
-}
-
-function activityRow(): TranscriptMessage {
-  return {
-    kind: "activity",
-    id: "activity-1",
-    createdAt,
-    label: "Lead mode on",
   } as TranscriptMessage;
 }
 
@@ -175,36 +166,46 @@ test("setting cleared is a no-op", async () => {
       workspaceInitialModel: workspaceDefault,
     }),
   ).toEqual(workspaceDefault);
-  expect(
-    defaultLeadModelForLeadToggle({
-      enabled: true,
-      defaultLeadModel: undefined,
-      transcript: [],
-    }),
-  ).toBeUndefined();
+  expect(defaultLeadModelForLeadToggle({ defaultLeadModel: undefined })).toBeUndefined();
   expect(isDefaultScoutModelEqual(undefined, null)).toBe(true);
   expect(isDefaultScoutModelEqual(defaultLead, null)).toBe(false);
   expect(isDefaultScoutModelEqual(defaultLead, defaultLead)).toBe(true);
 });
 
+const ref: SessionRef = { workspaceId: "ws", sessionId: "sess" };
+const threadModel: SessionModelSelection = { provider: "openai", modelId: "gpt-5" };
+const otherModel: SessionModelSelection = { provider: "openai", modelId: "gpt-4o" };
+const withHistory = [userMessage("u1", "hello"), assistantMessage("a1", "hi"), toolRow()];
+
+type DriverCall =
+  | { readonly type: "model"; readonly selection: SessionModelSelection }
+  | { readonly type: "mode"; readonly enabled: boolean };
+
 function toggleHost(options: {
   transcript: readonly TranscriptMessage[];
   current?: SessionModelSelection;
   def: SessionModelSelection | undefined;
+  loaded?: boolean;
 }) {
   const key = "ws:sess";
-  const transcriptCache = new Map<string, readonly TranscriptMessage[]>([
-    [key, options.transcript],
-  ]);
-  const loadedTranscriptKeys = new Set<string>([key]);
-  const sessionConfigBySession = new Map<string, { provider?: string; modelId?: string }>();
-  if (options.current) {
-    sessionConfigBySession.set(key, {
-      provider: options.current.provider,
-      modelId: options.current.modelId,
-    });
+  const transcriptCache = new Map<string, readonly TranscriptMessage[]>();
+  const loadedTranscriptKeys = new Set<string>();
+  const sessionConfigBySession = new Map<
+    string,
+    { provider?: string; modelId?: string; orchestratorMode?: boolean }
+  >();
+  const load = () => {
+    transcriptCache.set(key, options.transcript);
+    loadedTranscriptKeys.add(key);
+    if (options.current) {
+      sessionConfigBySession.set(key, { ...options.current });
+    }
+  };
+  if (options.loaded !== false) {
+    load();
   }
-  const setModelCalls: SessionModelSelection[] = [];
+  const calls: DriverCall[] = [];
+  let ensureCalls = 0;
   const host = {
     initialize: async () => {},
     conversationState: {
@@ -218,11 +219,17 @@ function toggleHost(options: {
       sessionErrorsBySession: new Map(),
     },
     defaultLeadModel: () => options.def,
+    ensureSessionReady: async () => {
+      ensureCalls += 1;
+      load();
+    },
     driver: {
       setSessionModel: async (_ref: SessionRef, selection: SessionModelSelection) => {
-        setModelCalls.push(selection);
+        calls.push({ type: "model", selection });
       },
-      setSessionOrchestratorMode: async () => {},
+      setSessionOrchestratorMode: async (_ref: SessionRef, enabled: boolean) => {
+        calls.push({ type: "mode", enabled });
+      },
     },
     withErrorHandling: async (fn: () => Promise<never>) => fn(),
     schedulePersistUiState: () => {},
@@ -236,81 +243,122 @@ function toggleHost(options: {
     }),
   };
   const owner = createConversationOwner(host as never);
-  return { owner, setModelCalls };
+  const modelCalls = () => calls.flatMap((call) => (call.type === "model" ? [call.selection] : []));
+  const currentModel = () => {
+    const config = sessionConfigBySession.get(key);
+    return config?.provider ? { provider: config.provider, modelId: config.modelId } : undefined;
+  };
+  return { owner, calls, modelCalls, currentModel, ensureCalls: () => ensureCalls };
 }
 
+test("lead toggle pure helpers", () => {
+  expect(defaultLeadModelForLeadToggle({ defaultLeadModel: defaultLead })).toEqual(defaultLead);
+  expect(
+    defaultLeadModelForLeadToggle({ defaultLeadModel: defaultLead, current: threadModel }),
+  ).toEqual(defaultLead);
+  expect(
+    defaultLeadModelForLeadToggle({ defaultLeadModel: defaultLead, current: defaultLead }),
+  ).toBeUndefined();
+  expect(
+    defaultLeadModelForLeadToggle({ defaultLeadModel: undefined, current: threadModel }),
+  ).toBeUndefined();
+
+  const preLead = { previous: threadModel, applied: defaultLead };
+  expect(preLeadModelForSoloToggle({ preLead, current: defaultLead })).toEqual(threadModel);
+  expect(preLeadModelForSoloToggle({ preLead, current: otherModel })).toBeUndefined();
+  expect(preLeadModelForSoloToggle({ preLead, current: undefined })).toBeUndefined();
+  expect(preLeadModelForSoloToggle({ preLead: undefined, current: defaultLead })).toBeUndefined();
+});
+
 test("toggle-on-empty-thread switches", async () => {
-  expect(
-    defaultLeadModelForLeadToggle({
-      enabled: true,
-      defaultLeadModel: defaultLead,
-      transcript: [],
-    }),
-  ).toEqual(defaultLead);
-  expect(
-    defaultLeadModelForLeadToggle({
-      enabled: true,
-      defaultLeadModel: defaultLead,
-      transcript: [activityRow()],
-    }),
-  ).toEqual(defaultLead);
-  expect(hasThreadHistory([])).toBe(false);
-  expect(hasThreadHistory([activityRow()])).toBe(false);
-
-  const { owner, setModelCalls } = toggleHost({ transcript: [], def: defaultLead });
-  await owner.setSessionOrchestratorMode({ workspaceId: "ws", sessionId: "sess" }, true);
-  expect(setModelCalls).toEqual([defaultLead]);
+  const { owner, calls } = toggleHost({ transcript: [], current: threadModel, def: defaultLead });
+  await owner.setSessionOrchestratorMode(ref, true);
+  expect(calls).toEqual([
+    { type: "model", selection: defaultLead },
+    { type: "mode", enabled: true },
+  ]);
 });
 
-test("toggle-on-thread-with-history does not switch", async () => {
-  const withUser = [userMessage("u1", "hello")];
-  const withAssistant = [userMessage("u1", "hello"), assistantMessage("a1", "hi")];
-  const withTool = [toolRow()];
-  expect(hasThreadHistory(withUser)).toBe(true);
-  expect(hasThreadHistory(withAssistant)).toBe(true);
-  expect(hasThreadHistory(withTool)).toBe(true);
-  for (const transcript of [withUser, withAssistant, withTool]) {
-    expect(
-      defaultLeadModelForLeadToggle({
-        enabled: true,
-        defaultLeadModel: defaultLead,
-        transcript,
-      }),
-    ).toBeUndefined();
-  }
-
-  const { owner, setModelCalls } = toggleHost({ transcript: withAssistant, def: defaultLead });
-  await owner.setSessionOrchestratorMode({ workspaceId: "ws", sessionId: "sess" }, true);
-  expect(setModelCalls).toEqual([]);
+test("toggle-on-thread-with-history switches", async () => {
+  const { owner, modelCalls, currentModel } = toggleHost({
+    transcript: withHistory,
+    current: threadModel,
+    def: defaultLead,
+  });
+  await owner.setSessionOrchestratorMode(ref, true);
+  expect(modelCalls()).toEqual([defaultLead]);
+  expect(currentModel()).toEqual(defaultLead);
 });
 
-test("lead toggle leaves the model alone when disabled, cleared, or already on default", async () => {
-  expect(
-    defaultLeadModelForLeadToggle({
-      enabled: false,
-      defaultLeadModel: defaultLead,
-      transcript: [],
-    }),
-  ).toBeUndefined();
-  expect(
-    defaultLeadModelForLeadToggle({
-      enabled: true,
-      defaultLeadModel: defaultLead,
-      transcript: [],
-      currentProvider: defaultLead.provider,
-      currentModelId: defaultLead.modelId,
-    }),
-  ).toBeUndefined();
+test("toggle-on with the transcript not loaded opens the session and switches", async () => {
+  const host = toggleHost({
+    transcript: withHistory,
+    current: threadModel,
+    def: defaultLead,
+    loaded: false,
+  });
+  await host.owner.setSessionOrchestratorMode(ref, true);
+  expect(host.ensureCalls()).toBe(1);
+  expect(host.modelCalls()).toEqual([defaultLead]);
+  // The pre-lead model was read from the opened session, so Solo restores it.
+  await host.owner.setSessionOrchestratorMode(ref, false);
+  expect(host.modelCalls()).toEqual([defaultLead, threadModel]);
+});
 
-  const disabled = toggleHost({ transcript: [], def: defaultLead });
-  await disabled.owner.setSessionOrchestratorMode({ workspaceId: "ws", sessionId: "sess" }, false);
-  expect(disabled.setModelCalls).toEqual([]);
+test("toggle-off restores the pre-lead model, mode first", async () => {
+  const { owner, calls, currentModel } = toggleHost({
+    transcript: withHistory,
+    current: threadModel,
+    def: defaultLead,
+  });
+  await owner.setSessionOrchestratorMode(ref, true);
+  await owner.setSessionOrchestratorMode(ref, false);
+  expect(calls).toEqual([
+    { type: "model", selection: defaultLead },
+    { type: "mode", enabled: true },
+    { type: "mode", enabled: false },
+    { type: "model", selection: threadModel },
+  ]);
+  expect(currentModel()).toEqual(threadModel);
 
-  const cleared = toggleHost({ transcript: [], def: undefined });
-  await cleared.owner.setSessionOrchestratorMode({ workspaceId: "ws", sessionId: "sess" }, true);
-  expect(cleared.setModelCalls).toEqual([]);
+  // The record is spent: another Lead -> Solo round trip starts fresh.
+  await owner.setSessionOrchestratorMode(ref, false);
+  expect(calls.filter((call) => call.type === "model")).toHaveLength(2);
+});
 
-  const already = toggleHost({ transcript: [], current: defaultLead, def: defaultLead });
-  await already.owner.setSessionOrchestratorMode({ workspaceId: "ws", sessionId: "sess" }, true);
-  expect(already.setModelCalls).toEqual([]);
+test("toggle-off leaves a user-picked model alone", async () => {
+  const { owner, modelCalls, currentModel } = toggleHost({
+    transcript: withHistory,
+    current: threadModel,
+    def: defaultLead,
+  });
+  await owner.setSessionOrchestratorMode(ref, true);
+  await owner.setSessionModel(ref, otherModel.provider, otherModel.modelId);
+  await owner.setSessionOrchestratorMode(ref, false);
+  expect(modelCalls()).toEqual([defaultLead, otherModel]);
+  expect(currentModel()).toEqual(otherModel);
+});
+
+test("toggle-off without a pre-lead record leaves the model alone", async () => {
+  // A thread already in lead (for example after a restart) has no record.
+  const { owner, modelCalls } = toggleHost({
+    transcript: withHistory,
+    current: defaultLead,
+    def: defaultLead,
+  });
+  await owner.setSessionOrchestratorMode(ref, false);
+  expect(modelCalls()).toEqual([]);
+});
+
+test("lead toggle leaves the model alone when no default is set or already on default", async () => {
+  const cleared = toggleHost({ transcript: withHistory, current: threadModel, def: undefined });
+  await cleared.owner.setSessionOrchestratorMode(ref, true);
+  await cleared.owner.setSessionOrchestratorMode(ref, false);
+  expect(cleared.modelCalls()).toEqual([]);
+  expect(cleared.currentModel()).toEqual(threadModel);
+
+  const already = toggleHost({ transcript: withHistory, current: defaultLead, def: defaultLead });
+  await already.owner.setSessionOrchestratorMode(ref, true);
+  await already.owner.setSessionOrchestratorMode(ref, false);
+  expect(already.modelCalls()).toEqual([]);
 });
