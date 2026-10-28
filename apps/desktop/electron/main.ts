@@ -1301,27 +1301,7 @@ app
     app.exit(1);
   });
 
-app.on("window-all-closed", () => {
-  // macOS normally keeps the app alive after its final window closes. The
-  // Electron harness closes windows to end each isolated run, so let explicit
-  // test-mode launches quit instead of leaving their process behind forever.
-  if (process.platform !== "darwin" || appTestMode !== undefined) {
-    stopNotifications?.();
-    stopNotifications = undefined;
-    notificationManager = undefined;
-    notificationPermissionService?.dispose();
-    notificationPermissionService = undefined;
-    stopUpdateChecker?.();
-    stopUpdateChecker = undefined;
-    stopPruningTerminals?.();
-    stopPruningTerminals = undefined;
-    terminalService?.dispose();
-    terminalService = undefined;
-    app.quit();
-  }
-});
-
-app.on("before-quit", (event) => {
+function shutdownServicesForQuit(): void {
   stopNotifications?.();
   stopNotifications = undefined;
   notificationManager = undefined;
@@ -1333,6 +1313,43 @@ app.on("before-quit", (event) => {
   stopPruningTerminals = undefined;
   terminalService?.dispose();
   terminalService = undefined;
+}
+
+app.on("window-all-closed", () => {
+  // The main process owns work a quit would destroy: a streaming turn, a
+  // background shell task, or a scheduled task that only fires while the app is
+  // open. Closing the last window therefore keeps the app alive only while that
+  // work exists. macOS also never quits on its own, so an idle app would
+  // otherwise sit in the dock doing nothing until the person quit it by hand.
+  // Test-mode launches always quit: the Electron harness closes windows to end
+  // each isolated run.
+  const quitWhenIdle = async () => {
+    if (process.platform !== "darwin" || appTestMode !== undefined) return true;
+    if (!store) return true;
+    try {
+      if (!(await store.hasActiveWork())) return true;
+      const summary = await store.activeWorkSummary();
+      console.log(`[main] keeping the app alive: ${summary ?? "active work"} in progress`);
+      return false;
+    } catch (error) {
+      // A failed check must not strand the app in the dock.
+      console.error("[main] active-work check failed", error);
+      return true;
+    }
+  };
+  void quitWhenIdle()
+    .then((quit) => {
+      if (!quit) return;
+      shutdownServicesForQuit();
+      app.quit();
+    })
+    .catch((error: unknown) => {
+      console.error("[main] window-all-closed quit decision failed", error);
+    });
+});
+
+app.on("before-quit", (event) => {
+  shutdownServicesForQuit();
   try {
     store?.shutdownBackgroundTasks();
   } catch (error) {

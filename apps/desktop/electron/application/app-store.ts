@@ -1,4 +1,5 @@
 import { JsonCatalogStore } from "@pi-gui/catalogs/node";
+import { describeActiveWork, hasActiveWork } from "./app-lifecycle";
 import { sessionKey } from "@pi-gui/session-driver";
 import type { ExtensionFlagValues, SessionSchemaInfo } from "@pi-gui/session-driver";
 import type { BrowserWindow } from "electron";
@@ -1157,6 +1158,47 @@ export class DesktopAppStore {
     } catch (error) {
       console.warn("[app-store] shutdownBackgroundTasks failed:", error);
     }
+  }
+
+  /**
+   * True while a quit would interrupt real work. Used by the last-window-close
+   * handler: an idle app should quit rather than linger in the dock.
+   */
+  async hasActiveWork(): Promise<boolean> {
+    const runningBackgroundTasks = await this.countRunningBackgroundTasks();
+    return hasActiveWork({
+      workspaces: this.state.workspaces,
+      scheduledTasks: this.state.scheduledTasks,
+      runningBackgroundTasks,
+    });
+  }
+
+  /** Reason for the log when the app stays alive; undefined when it is idle. */
+  async activeWorkSummary(): Promise<string | undefined> {
+    const runningBackgroundTasks = await this.countRunningBackgroundTasks();
+    return describeActiveWork({
+      workspaces: this.state.workspaces,
+      scheduledTasks: this.state.scheduledTasks,
+      runningBackgroundTasks,
+    });
+  }
+
+  private async countRunningBackgroundTasks(): Promise<number> {
+    let total = 0;
+    for (const workspace of this.state.workspaces) {
+      for (const session of workspace.sessions) {
+        try {
+          const tasks = await this.driver.listBackgroundTasks({
+            workspaceId: workspace.id,
+            sessionId: session.id,
+          });
+          total += tasks.filter((task) => task.status === "running").length;
+        } catch {
+          // A session that cannot answer cannot be waiting on a task.
+        }
+      }
+    }
+    return total;
   }
 
   async listBackgroundTasks(sessionRef: SessionRef): Promise<readonly BackgroundTaskSnapshot[]> {
