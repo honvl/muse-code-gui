@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import {
+  isSubagentSessionName,
   subagentLanesFromTranscript,
   subagentSessionName,
   SUBAGENT_TOOL_NAMES,
@@ -140,4 +141,14 @@ test("subagentSessionName mirrors the extension's 80-char truncation", () => {
 test("empty or missing transcripts produce no lanes", () => {
   expect(subagentLanesFromTranscript(undefined)).toEqual([]);
   expect(subagentLanesFromTranscript([])).toEqual([]);
+});
+
+test("isSubagentSessionName matches only extension-shaped names", () => {
+  expect(isSubagentSessionName("agent:explore: Probe session found")).toBe(true);
+  expect(isSubagentSessionName("agent:general-purpose: x")).toBe(true);
+  expect(isSubagentSessionName(undefined)).toBe(false);
+  expect(isSubagentSessionName("")).toBe(false);
+  expect(isSubagentSessionName("My agent: explore things")).toBe(false);
+  expect(isSubagentSessionName("agent:explore")).toBe(false);
+  expect(isSubagentSessionName("agent:ex plore: x")).toBe(false);
 });

@@ -227,18 +227,29 @@ test("agent tool rows surface as read-only subagent lanes", async () => {
     await expect(card).toContainText("Done");
     await expect(card).toContainText("grep: token flow");
 
+    // The subagent's own session stays out of the top-level sidebar list.
+    await expect(window.getByTestId("workspace-list")).not.toContainText(
+      `agent:explore: ${FOUND_DESCRIPTION}`,
+    );
+
     // The lane without a session file still shows its tool-row status, and
     // opening it explains the miss instead of failing.
     await card.getByRole("button", { name: new RegExp(MISSING_DESCRIPTION) }).click();
-    await expect(card).toContainText("Session file not found");
+    const dialog = window.getByTestId("subagent-transcript-dialog");
+    await expect(dialog).toContainText("Read-only subagent");
+    await expect(dialog).toContainText("Session file not found");
+    await dialog.getByRole("button", { name: "Close subagent transcript" }).click();
+    await expect(dialog).toHaveCount(0);
 
-    // The located lane opens the subagent's own transcript read-only: the
-    // secret text renders, but no composer or thread action reaches the lane.
+    // The located lane opens the subagent's own transcript in a dedicated
+    // read-only dialog: the secret text renders with normal transcript
+    // styling, but no composer or thread action reaches the dialog.
     await card.getByRole("button", { name: new RegExp(FOUND_DESCRIPTION) }).click();
-    await expect(card).toContainText(SUBAGENT_SECRET, { timeout: 15_000 });
-    await expect(card.getByTestId("composer")).toHaveCount(0);
+    const foundDialog = window.getByTestId("subagent-transcript-dialog");
+    await expect(foundDialog).toContainText(SUBAGENT_SECRET, { timeout: 15_000 });
+    await expect(foundDialog.getByTestId("composer")).toHaveCount(0);
 
-    await window.screenshot({ path: "/tmp/subagent-lane.png" });
+    await window.screenshot({ path: "/tmp/subagent-lane-2.png" });
   } finally {
     await run.close();
   }

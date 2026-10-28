@@ -261,3 +261,63 @@
   overflow: hidden;
   white-space: pre-wrap;
 }
+
+/* A subagent lane: one compact row like the running-child rows — status dot
+   inline before a left-aligned "type · description", status as a muted
+   trailing label — then one muted activity line and the branch, if any. */
+.session-rail__subagent-toggle {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.session-rail__subagent-toggle .session-rail__pip {
+  flex: none;
+  align-self: center;
+  margin-right: 0;
+}
+
+.session-rail__subagent-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.session-rail__subagent-status {
+  flex: none;
+  color: var(--muted-strong);
+  font-size: 12px;
+}
+
+/* Read-only subagent transcript dialog: normal timeline rows in a scrollable
+   body under a clear read-only header. */
+.subagent-dialog__body {
+  overflow-y: auto;
+  min-height: 120px;
+}
+
+.tree-modal__subtitle {
+  margin: 4px 0 0;
+  color: var(--muted-strong);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-modal__note {
+  color: var(--muted-strong);
+  font-size: 12px;
+  text-align: center;
+}

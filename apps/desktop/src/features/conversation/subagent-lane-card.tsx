@@ -1,22 +1,16 @@
 import { useState } from "react";
-import type {
-  SubagentTranscriptResult,
-  TranscriptMessage,
-} from "../../../contracts/desktop-state";
-import type { DisplayTimelineItem } from "../../../contracts/timeline-types";
 import type { SubagentLane } from "../threads/subagent-lanes";
-import { TimelineItem } from "./timeline-item";
+import {
+  SubagentTranscriptDialog,
+  type SubagentDialogTranscriptState,
+} from "./subagent-transcript-dialog";
+import type { SubagentTranscriptResult } from "../../../contracts/desktop-state";
 
 interface SubagentLaneCardProps {
   readonly workspaceId: string | undefined;
   readonly lanes: readonly SubagentLane[];
   readonly getTranscript: (lane: SubagentLane) => Promise<SubagentTranscriptResult>;
 }
-
-type LaneTranscriptState =
-  | { readonly status: "loading" }
-  | { readonly status: "ready"; readonly result: SubagentTranscriptResult }
-  | { readonly status: "error"; readonly message: string };
 
 function laneStatusLabel(lane: SubagentLane): string {
   switch (lane.status) {
@@ -30,30 +24,22 @@ function laneStatusLabel(lane: SubagentLane): string {
 }
 
 /**
- * Read-only subagent lanes under the parent thread: one row per third-party
- * `agent` tool call, derived from the transcript. Opening a row fetches the
- * subagent's own session transcript (when its file can be located) and draws
- * it with the shared read-only timeline rows — no composer, fork or resend
- * actions are reachable from here.
+ * Subagent lanes under the parent thread: one compact row per third-party
+ * `agent` tool call, matching the running-child rows (status dot inline before
+ * a left-aligned "type · description", status as a muted trailing label, then
+ * one muted activity line and the branch). Opening a row shows the subagent's
+ * own session transcript in a dedicated read-only dialog.
  */
 export function SubagentLaneCard({ workspaceId, lanes, getTranscript }: SubagentLaneCardProps) {
   const [openKey, setOpenKey] = useState<string | null>(null);
-  const [transcripts, setTranscripts] = useState<Readonly<Record<string, LaneTranscriptState>>>({});
+  const [transcripts, setTranscripts] = useState<Readonly<Record<string, SubagentDialogTranscriptState>>>({});
   const [expandedToolCallIds, setExpandedToolCallIds] = useState<ReadonlySet<string>>(new Set());
 
   if (lanes.length === 0 || !workspaceId) {
     return null;
   }
 
-  const toggleLane = (lane: SubagentLane) => {
-    if (openKey === lane.key) {
-      setOpenKey(null);
-      return;
-    }
-    setOpenKey(lane.key);
-    if (transcripts[lane.key]) {
-      return;
-    }
+  const fetchTranscript = (lane: SubagentLane) => {
     setTranscripts((current) => ({ ...current, [lane.key]: { status: "loading" } }));
     getTranscript(lane).then(
       (result) =>
@@ -69,6 +55,17 @@ export function SubagentLaneCard({ workspaceId, lanes, getTranscript }: Subagent
     );
   };
 
+  const toggleLane = (lane: SubagentLane) => {
+    if (openKey === lane.key) {
+      setOpenKey(null);
+      return;
+    }
+    setOpenKey(lane.key);
+    if (!transcripts[lane.key]) {
+      fetchTranscript(lane);
+    }
+  };
+
   const toggleToolCall = (callId: string) => {
     setExpandedToolCallIds((current) => {
       const next = new Set(current);
@@ -81,99 +78,66 @@ export function SubagentLaneCard({ workspaceId, lanes, getTranscript }: Subagent
     });
   };
 
+  const openLane = openKey ? (lanes.find((lane) => lane.key === openKey) ?? null) : null;
+
   return (
-    <section className="session-rail__card" data-testid="session-rail-subagents">
-      <h3 className="session-rail__card-title">Subagents</h3>
-      {lanes.map((lane) => {
-        const open = openKey === lane.key;
-        const state = transcripts[lane.key];
-        const latestActivity = lane.activity[lane.activity.length - 1];
-        return (
-          <div key={lane.key} data-testid={`session-rail-subagent-${lane.key}`}>
-            <button
-              className="session-rail__row session-rail__subagent-toggle"
-              data-testid={`session-rail-subagent-toggle-${lane.key}`}
-              type="button"
-              onClick={() => toggleLane(lane)}
-              aria-expanded={open}
-              title={lane.description}
-            >
-              <span
-                className={`session-rail__pip session-rail__pip--${laneStatusTone(lane.status)}`}
-                aria-hidden="true"
-              />
-              <span className="session-rail__child-head">
-                {lane.type} · {lane.description}
-              </span>
-              <span className="session-rail__row--muted">{laneStatusLabel(lane)}</span>
-            </button>
-            {lane.branch ? (
-              <div
-                className="session-rail__row session-rail__row--muted"
-                title={lane.worktreeDir ?? lane.branch}
+    <>
+      <section className="session-rail__card" data-testid="session-rail-subagents">
+        <h3 className="session-rail__card-title">Subagents</h3>
+        {lanes.map((lane) => {
+          const preview = lane.activity[lane.activity.length - 1] ?? lane.detailText;
+          return (
+            <div key={lane.key} data-testid={`session-rail-subagent-${lane.key}`}>
+              <button
+                className="session-rail__subagent-toggle"
+                data-testid={`session-rail-subagent-toggle-${lane.key}`}
+                type="button"
+                onClick={() => toggleLane(lane)}
+                aria-expanded={openKey === lane.key}
+                title={lane.description}
               >
-                {lane.branch}
-                {lane.worktreeKept === false ? " (removed)" : null}
-              </div>
-            ) : null}
-            {latestActivity && !open ? (
-              <div
-                className="session-rail__row session-rail__row--muted session-rail__child-output"
-                title={latestActivity}
-              >
-                {latestActivity}
-              </div>
-            ) : null}
-            {lane.detailText && !open ? (
-              <div
-                className="session-rail__row session-rail__row--muted session-rail__child-output"
-                title={lane.detailText}
-              >
-                {lane.detailText}
-              </div>
-            ) : null}
-            {open ? (
-              <div data-testid={`session-rail-subagent-transcript-${lane.key}`}>
-                {!state || state.status === "loading" ? (
-                  <div className="session-rail__row session-rail__row--muted">
-                    Loading subagent transcript…
-                  </div>
-                ) : state.status === "error" ? (
-                  <div className="session-rail__row session-rail__row--muted">{state.message}</div>
-                ) : state.result.found === false ? (
-                  <div className="session-rail__row session-rail__row--muted">
-                    Session file not found — showing tool status only.
-                  </div>
-                ) : (
-                  <>
-                    {state.result.omittedRows > 0 ? (
-                      <div className="session-rail__row session-rail__row--muted">
-                        +{state.result.omittedRows} earlier{" "}
-                        {state.result.omittedRows === 1 ? "row" : "rows"} omitted
-                      </div>
-                    ) : null}
-                    {state.result.transcript.length === 0 ? (
-                      <div className="session-rail__row session-rail__row--muted">
-                        No transcript rows yet.
-                      </div>
-                    ) : (
-                      state.result.transcript.map((row) => (
-                        <SubagentTranscriptRow
-                          key={rowId(row)}
-                          item={row as DisplayTimelineItem}
-                          expandedToolCallIds={expandedToolCallIds}
-                          onToggleToolCall={toggleToolCall}
-                        />
-                      ))
-                    )}
-                  </>
-                )}
-              </div>
-            ) : null}
-          </div>
-        );
-      })}
-    </section>
+                <span
+                  className={`session-rail__pip session-rail__pip--${laneStatusTone(lane.status)}`}
+                  aria-hidden="true"
+                />
+                <span className="session-rail__subagent-title">
+                  {lane.type} · {lane.description}
+                </span>
+                <span className="session-rail__subagent-status">{laneStatusLabel(lane)}</span>
+              </button>
+              {preview ? (
+                <div
+                  className="session-rail__row session-rail__row--muted session-rail__child-output"
+                  title={preview}
+                >
+                  {preview}
+                </div>
+              ) : null}
+              {lane.branch ? (
+                <div
+                  className="session-rail__row session-rail__row--muted"
+                  title={lane.worktreeDir ?? lane.branch}
+                >
+                  {lane.branch}
+                  {lane.worktreeKept === false ? " (removed)" : null}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </section>
+
+      {openLane ? (
+        <SubagentTranscriptDialog
+          lane={openLane}
+          transcript={transcripts[openLane.key]}
+          expandedToolCallIds={expandedToolCallIds}
+          onToggleToolCall={toggleToolCall}
+          onRetry={() => fetchTranscript(openLane)}
+          onClose={() => setOpenKey(null)}
+        />
+      ) : null}
+    </>
   );
 }
 
@@ -186,34 +150,4 @@ function laneStatusTone(status: SubagentLane["status"]): string {
     case "failed":
       return "failed";
   }
-}
-
-function rowId(row: TranscriptMessage): string {
-  if (row.kind === "tool") {
-    return row.callId;
-  }
-  if ("id" in row && typeof row.id === "string") {
-    return row.id;
-  }
-  return `${row.kind}-${row.createdAt}`;
-}
-
-function SubagentTranscriptRow({
-  item,
-  expandedToolCallIds,
-  onToggleToolCall,
-}: {
-  readonly item: DisplayTimelineItem;
-  readonly expandedToolCallIds: ReadonlySet<string>;
-  readonly onToggleToolCall: (callId: string) => void;
-}) {
-  return (
-    <div className="session-rail__subagent-row">
-      <TimelineItem
-        item={item}
-        expandedToolCallIds={expandedToolCallIds}
-        onToggleToolCall={onToggleToolCall}
-      />
-    </div>
-  );
 }
