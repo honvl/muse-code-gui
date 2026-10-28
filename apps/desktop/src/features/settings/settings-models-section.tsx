@@ -33,7 +33,7 @@ export const DEFAULT_LEAD_MODEL_THREAD_VALUE = "__thread-model";
 export const DEFAULT_LEAD_MODEL_TITLE = "Default lead model";
 
 export const DEFAULT_LEAD_MODEL_DESCRIPTION =
-  "New lead threads start on this model. Threads that already have messages keep their current model.";
+  "New lead threads start on this model, and switching a thread to Lead applies it. Switching back to Solo restores the thread's previous model.";
 
 export interface LeadModelOption {
   readonly value: string;
