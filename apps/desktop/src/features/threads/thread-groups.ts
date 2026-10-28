@@ -196,11 +196,48 @@ export interface ThreadSidebarModel {
   readonly usageSummary: SidebarUsageSummary;
 }
 
+/**
+ * Session names written by the third-party subagent extension (`agent` tool):
+ * `pi --name "agent:<type>: <desc>"`. These are subagent runs, not user
+ * threads; their entry point is the lane under their parent.
+ */
+const SUBAGENT_SESSION_NAME_PATTERN = /^agent:[\w-]+: /;
+
+export function isSubagentSessionName(name: string | undefined): boolean {
+  return typeof name === "string" && SUBAGENT_SESSION_NAME_PATTERN.test(name);
+}
+
+/**
+ * Subagent sessions never appear as top-level threads. Pinned, archived and
+ * currently selected sessions keep their rows: an explicit user action (or
+ * the live selection) beats the hiding, so the selection can never vanish.
+ * The sessions still exist in the catalog — the subagent lane lookup reads
+ * them straight from the session files, never through this model.
+ */
+function isHiddenSubagentSession(
+  entry: ThreadListEntry,
+  selectedWorkspaceId: string,
+  selectedSessionId: string,
+): boolean {
+  if (entry.session.pinnedAt || entry.session.archivedAt) {
+    return false;
+  }
+  if (
+    entry.workspaceId === selectedWorkspaceId &&
+    entry.session.id === selectedSessionId
+  ) {
+    return false;
+  }
+  return isSubagentSessionName(entry.session.title);
+}
+
 export function buildThreadSidebarModel(
   state: DesktopAppState,
   nowMs: number = Date.now(),
 ): ThreadSidebarModel {
-  const entries = collectThreadEntries(state);
+  const entries = collectThreadEntries(state).filter(
+    (entry) => !isHiddenSubagentSession(entry, state.selectedWorkspaceId, state.selectedSessionId),
+  );
   attachOrchestrationChildren(entries, state);
   const pinnedThreads = entries
     .filter((entry) => !entry.session.archivedAt && Boolean(entry.session.pinnedAt))

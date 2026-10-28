@@ -8,6 +8,7 @@ import {
 } from "../../contracts/desktop-state";
 import {
   buildThreadSidebarModel,
+  isSubagentSessionName,
   sessionThreadKey,
   summarizeChildGroup,
 } from "../../src/features/threads/thread-groups";
@@ -159,6 +160,47 @@ test("pinned and archived children keep their top-level rows", () => {
   expect(model.pinnedThreads.map((thread) => thread.session.id)).toContain("pinned-kid");
   expect(model.archivedThreads.map((thread) => thread.session.id)).toContain("archived-kid");
   expect(model.childrenByParentKey.get("ws:parent") ?? []).toEqual([]);
+});
+
+test("isSubagentSessionName matches only the extension's name shape", () => {
+  expect(isSubagentSessionName("agent:general-purpose: Migrate auth")).toBe(true);
+  expect(isSubagentSessionName("agent:explore: Probe session found")).toBe(true);
+  expect(isSubagentSessionName(undefined)).toBe(false);
+  expect(isSubagentSessionName("")).toBe(false);
+  expect(isSubagentSessionName("agent:explore")).toBe(false);
+  expect(isSubagentSessionName("My agent: explore things")).toBe(false);
+  expect(isSubagentSessionName("agent:ex plore: x")).toBe(false);
+});
+
+test("third-party subagent sessions hide from the top-level list", () => {
+  const model = buildThreadSidebarModel(
+    {
+      ...state([
+        workspace("ws", [
+          session("parent", "Parent", "2026-09-21T14:00:00.000Z"),
+          session("sub", "agent:explore: Probe session found", "2026-09-21T14:30:00.000Z"),
+          session("sub2", "agent:general-purpose: Background work", "2026-09-21T14:25:00.000Z"),
+          session("other", "Other", "2026-09-21T14:10:00.000Z"),
+          session("pinned-sub", "agent:plan: Pinned plan", "2026-09-21T14:20:00.000Z", {
+            pinnedAt: "2026-09-21T14:21:00.000Z",
+          }),
+        ]),
+      ]),
+      selectedWorkspaceId: "ws",
+      selectedSessionId: "sub",
+    },
+    NOW,
+  );
+
+  // The selected subagent session stays reachable; the unselected one hides.
+  const group = model.workspaceGroups.find((entry) => entry.workspace.id === "ws");
+  expect(group?.threads.map((thread) => thread.session.id)).toEqual([
+    "sub",
+    "other",
+    "parent",
+  ]);
+  expect(model.recencyOrder.map((thread) => thread.session.id)).not.toContain("sub2");
+  expect(model.pinnedThreads.map((thread) => thread.session.id)).toContain("pinned-sub");
 });
 
 test("grandchild chains group under their direct parent", () => {
