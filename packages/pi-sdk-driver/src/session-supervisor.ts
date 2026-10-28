@@ -1,5 +1,5 @@
 import { access, realpath, stat, unlink } from "node:fs/promises";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import {
   ModelRegistry,
   ModelRuntime,
@@ -226,6 +226,19 @@ export interface PiSdkDriverOptions {
 export interface SyncWorkspaceResult {
   readonly workspace: WorkspaceRef;
   readonly sessions: SessionCatalogSnapshot["sessions"];
+}
+
+export interface ExternalSessionTranscriptLookup {
+  readonly workspaceId: string;
+  readonly sessionName: string;
+  readonly agentId?: string;
+  readonly extraCwds?: readonly string[];
+}
+
+export interface ExternalSessionTranscript {
+  readonly sessionId: string;
+  readonly sessionName: string;
+  readonly transcript: readonly SessionTranscriptItem[];
 }
 
 interface ManagedSessionRecord {
@@ -812,6 +825,49 @@ export class SessionSupervisor {
     }
     const infos = await SessionManager.list(workspace.path);
     return infos.find((info) => info.id === sessionRef.sessionId)?.path;
+  }
+
+  /**
+   * Read-only lookup for a session pi-gui does not own — typically a
+   * third-party subagent session (`agent:<type>: <desc>`) written by a
+   * standalone `pi` run in another cwd. Searches the workspace cwd plus any
+   * extra cwds (e.g. an isolated worktree dir from the tool result), matching
+   * the pi session uuid first and the session name second. Returns undefined
+   * when no session file matches; callers fall back to the tool-row status.
+   */
+  async readExternalSessionTranscript(
+    lookup: ExternalSessionTranscriptLookup,
+  ): Promise<ExternalSessionTranscript | undefined> {
+    const workspace = await this.catalogs.workspaces.getWorkspace(lookup.workspaceId);
+    if (!workspace) {
+      return undefined;
+    }
+    const cwds = [workspace.path];
+    for (const extra of lookup.extraCwds ?? []) {
+      if (typeof extra === "string" && isAbsolute(extra) && !cwds.includes(extra)) {
+        cwds.push(extra);
+      }
+    }
+    const infos: SessionInfo[] = [];
+    for (const cwd of cwds) {
+      try {
+        infos.push(...(await SessionManager.list(cwd)));
+      } catch {
+        // Read-only lookup: an unreadable cwd just contributes no sessions.
+      }
+    }
+    const match =
+      (lookup.agentId ? infos.find((info) => info.id === lookup.agentId) : undefined) ??
+      infos.find((info) => info.name === lookup.sessionName);
+    if (!match) {
+      return undefined;
+    }
+    const sessionManager = SessionManager.open(match.path);
+    return {
+      sessionId: match.id,
+      sessionName: match.name ?? lookup.sessionName,
+      transcript: transcriptFromSession(sessionManager, match.modified.toISOString()),
+    };
   }
 
   async getSessionCommands(sessionRef: SessionRef): Promise<readonly RuntimeCommandRecord[]> {

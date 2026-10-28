@@ -28,6 +28,8 @@ import type {
 import type { ChildIsolationInfo } from "./child-isolation.js";
 import {
   SessionSupervisor,
+  type ExternalSessionTranscript,
+  type ExternalSessionTranscriptLookup,
   type PiSdkDriverOptions,
   type SyncWorkspaceResult,
 } from "./session-supervisor.js";
@@ -227,6 +229,12 @@ export class PiSdkDriver implements SessionDriver {
 
   getSessionSchemaInfo(sessionRef: SessionRef) {
     return this.supervisor.getSessionSchemaInfo(sessionRef);
+  }
+
+  readExternalSessionTranscript(
+    lookup: ExternalSessionTranscriptLookup,
+  ): Promise<ExternalSessionTranscript | undefined> {
+    return this.supervisor.readExternalSessionTranscript(lookup);
   }
 
   generateThreadTitle(

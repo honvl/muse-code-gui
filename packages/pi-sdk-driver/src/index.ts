@@ -17,7 +17,12 @@ export {
   OPENAI_COMPLETIONS_API,
   RuntimeSupervisor,
 } from "./runtime-supervisor.js";
-export type { PiSdkDriverOptions, SyncWorkspaceResult } from "./session-supervisor.js";
+export type {
+  ExternalSessionTranscript,
+  ExternalSessionTranscriptLookup,
+  PiSdkDriverOptions,
+  SyncWorkspaceResult,
+} from "./session-supervisor.js";
 export type {
   CompactionModelRoute,
   CompactionModelRouteRequest,
