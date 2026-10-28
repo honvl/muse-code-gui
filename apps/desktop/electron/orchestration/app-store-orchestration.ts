@@ -55,9 +55,21 @@ import type {
 
 const CHILD_TITLE_LIMIT = 56;
 const MAX_CHILD_TRANSCRIPT_MESSAGES = 40;
-const MAX_READ_THREAD_MESSAGES = 60;
 const READ_THREAD_GOAL_LIMIT = 400;
-const READ_THREAD_MESSAGE_LIMIT = 2000;
+/** Latest kept messages returned by a default read_thread call. */
+const READ_THREAD_DEFAULT_WINDOW = 8;
+/** Latest kept messages returned by read_thread with full:true. */
+const READ_THREAD_FULL_WINDOW = 32;
+/** Per-message cap for read_thread output. */
+const READ_THREAD_MESSAGE_LIMIT = 1500;
+/** Total message-text budget for a default read_thread result. */
+const READ_THREAD_DEFAULT_TOTAL_LIMIT = 8_000;
+/** Total message-text budget for a read_thread result with full:true. */
+const READ_THREAD_FULL_TOTAL_LIMIT = 24_000;
+/** Other workspace threads shown by list_threads past the current thread and children. */
+const LIST_THREADS_OTHER_LIMIT = 10;
+/** Preview cap for list_threads entries. */
+const LIST_THREADS_PREVIEW_LIMIT = 160;
 const MAX_EVIDENCE_RECORDS_PER_CHILD = 80;
 const CHILD_REPORT_CUSTOM_TYPE = "pi-gui.child-report";
 const CHILD_REPORT_MESSAGE_LIMIT = 4_000;
@@ -201,7 +213,10 @@ export interface OrchestrationOwner {
       readonly scope?: string;
     },
   ): Promise<AgentToolResult<CreateChildThreadToolDetails>>;
-  listThreadsToolResult(parentRef: SessionRef): AgentToolResult<ListThreadsToolDetails>;
+  listThreadsToolResult(
+    parentRef: SessionRef,
+    options?: { readonly query?: string },
+  ): AgentToolResult<ListThreadsToolDetails>;
   readThreadToolResult(
     parentRef: SessionRef,
     threadId: string,
@@ -243,7 +258,8 @@ export function createOrchestrationOwner(store: OrchestrationOwnerHost): Orchest
       hasOrchestrationParentSession(store.orchestrationState().orchestrationChildren, sessionRef),
     createChildThreadToolResult: (parentRef, input) =>
       createChildThreadToolResult(store, parentRef, input),
-    listThreadsToolResult: (parentRef) => listThreadsToolResult(store, parentRef),
+    listThreadsToolResult: (parentRef, options) =>
+      listThreadsToolResult(store, parentRef, options),
     readThreadToolResult: (parentRef, threadId, options) =>
       readThreadToolResult(store, parentRef, threadId, options, readThreadCursors),
     sendMessageToThreadToolResult: (parentRef, input) =>
@@ -831,14 +847,22 @@ async function updateSendMessageToThreadToolOutput(
 function listThreadsToolResult(
   store: OrchestrationOwnerHost,
   parentRef: SessionRef,
+  options: { readonly query?: string } = {},
 ): AgentToolResult<ListThreadsToolDetails> {
   store.replaceOrchestrationChildren(projectOrchestrationChildren(store));
-  const threads = listThreadsForContext(store, parentRef);
+  const query = options.query?.trim() || undefined;
+  const { threads, omitted } = listThreadsForContext(
+    store,
+    parentRef,
+    query ? { query } : undefined,
+  );
   return {
-    content: [{ type: "text", text: formatThreadList(threads) }],
+    content: [{ type: "text", text: formatThreadList(threads, omitted) }],
     details: {
       action: listThreadsAction,
-      threads,
+      threads: [...threads],
+      ...(omitted > 0 ? { omitted } : {}),
+      ...(query ? { query } : {}),
     },
   };
 }
@@ -943,16 +967,22 @@ async function readThreadToolResult(
   const fresh = resolveThreadTarget(store, parentRef, threadId) ?? target;
   const transcript = store.transcriptFor(fresh.sessionRef);
   const session = store.sessionFromState(fresh.sessionRef);
-  // Convert without a cap, then apply the delta cursor and the
-  // MAX_READ_THREAD_MESSAGES window so a single call stays bounded.
-  const allMessages = toChildTranscript(transcript, Number.MAX_SAFE_INTEGER);
-  const totalMessages = allMessages.length;
+  // Bound the window before converting: a cheap kind-only pass counts the
+  // kept rows and locates the tail slice, so only that slice is converted.
+  // full:true raises the window but keeps a hard total cap.
+  const full = options.full === true;
+  const window = full ? READ_THREAD_FULL_WINDOW : READ_THREAD_DEFAULT_WINDOW;
+  const totalBudget = full ? READ_THREAD_FULL_TOTAL_LIMIT : READ_THREAD_DEFAULT_TOTAL_LIMIT;
+  const totalMessages = countKeptReadThreadMessages(transcript);
   const cursorKey = `${parentRef.sessionId}:${fresh.sessionRef.sessionId}`;
-  const seen = options.full === true ? 0 : Math.min(cursors.get(cursorKey) ?? 0, totalMessages);
-  const freshMessages = allMessages.slice(seen).slice(-MAX_READ_THREAD_MESSAGES);
-  if (options.full !== true) {
+  const seen = full ? 0 : Math.min(cursors.get(cursorKey) ?? 0, totalMessages);
+  if (!full) {
     cursors.set(cursorKey, totalMessages);
   }
+  // The returned tail is the newest window past the delta cursor.
+  const firstIndex = Math.max(seen, totalMessages - window);
+  const rawStart = rawIndexOfKeptReadThreadMessage(transcript, firstIndex, totalMessages);
+  let messages = toReadThreadMessages(transcript.slice(rawStart));
   const title = session?.title ?? fresh.child?.title ?? fresh.sessionRef.sessionId;
   const status = fresh.child?.status ?? session?.status ?? "unknown";
   const stillRunning = status === "running" || status === "queued" || status === "waiting";
@@ -972,14 +1002,21 @@ async function readThreadToolResult(
   const goal =
     rawGoal === undefined ? undefined : truncateReadThreadText(rawGoal, READ_THREAD_GOAL_LIMIT);
   let truncated = rawGoal !== undefined && goal !== rawGoal;
-  const messages = freshMessages.map((message) => {
-    const text = truncateReadThreadText(message.text, READ_THREAD_MESSAGE_LIMIT);
-    if (text === message.text) {
+  messages = messages.map((message) => {
+    if (message.text.length <= READ_THREAD_MESSAGE_LIMIT) {
       return message;
     }
     truncated = true;
-    return { ...message, text };
+    return {
+      ...message,
+      text: `${message.text.slice(0, READ_THREAD_MESSAGE_LIMIT - 1)}…`,
+    };
   });
+  const budgeted = enforceReadThreadTotalBudget(messages, totalBudget);
+  if (budgeted.trimmed) {
+    truncated = true;
+  }
+  messages = budgeted.messages;
   const details: ReadThreadToolDetails = {
     action: readThreadAction,
     threadId,
@@ -996,7 +1033,7 @@ async function readThreadToolResult(
     messages,
     truncated,
     totalMessages,
-    omittedEarlier: seen,
+    omittedEarlier: totalMessages - messages.length,
     ...(waitedSeconds > 0 ? { waitedSeconds } : {}),
     ...(timedOut ? { timedOut: true } : {}),
   };
@@ -2022,7 +2059,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function listThreadsForContext(
   store: OrchestrationOwnerHost,
   parentRef: SessionRef,
-): readonly ThreadListEntry[] {
+  options: { readonly query?: string; readonly limitOthers?: number } = {},
+): { readonly threads: readonly ThreadListEntry[]; readonly omitted: number } {
   const entries = new Map<string, ThreadListEntry>();
   const state = store.orchestrationState();
   const parentChildren = state.orchestrationChildren.filter(
@@ -2059,7 +2097,7 @@ function listThreadsForContext(
             ? "current"
             : "workspace",
         updatedAt: child?.updatedAt ?? session.updatedAt,
-        preview: child?.latestTranscript ?? session.preview,
+        preview: truncateListThreadsPreview(child?.latestTranscript ?? session.preview),
         ...(child ? { childThreadId: child.id } : {}),
       });
     }
@@ -2078,12 +2116,18 @@ function listThreadsForContext(
       status: child.status,
       relationship: "child",
       updatedAt: child.updatedAt,
-      preview: child.latestTranscript,
+      preview: truncateListThreadsPreview(child.latestTranscript),
       childThreadId: child.id,
     });
   }
 
-  return [...entries.values()].sort((left, right) => {
+  const normalizedQuery = options.query?.trim().toLowerCase();
+  const scoped = normalizedQuery
+    ? [...entries.values()].filter((thread) =>
+        thread.title.toLowerCase().includes(normalizedQuery),
+      )
+    : [...entries.values()];
+  scoped.sort((left, right) => {
     const rank = relationshipRank(left.relationship) - relationshipRank(right.relationship);
     if (rank !== 0) {
       return rank;
@@ -2093,6 +2137,25 @@ function listThreadsForContext(
     }
     return left.title.localeCompare(right.title);
   });
+  // The current thread and its children come first; other workspace threads
+  // are capped so one call stays bounded. Resolution passes no limit so an
+  // older thread stays addressable even when it is not listed.
+  const current = scoped.filter((thread) => thread.relationship === "current");
+  const children = scoped.filter((thread) => thread.relationship === "child");
+  const others = scoped.filter((thread) => thread.relationship === "workspace");
+  const limit = options.limitOthers ?? LIST_THREADS_OTHER_LIMIT;
+  // Number.POSITIVE_INFINITY (used for resolution) keeps every other thread.
+  const shownOthers = others.slice(0, limit);
+  return {
+    threads: [...current, ...children, ...shownOthers],
+    omitted: others.length - shownOthers.length,
+  };
+}
+
+function truncateListThreadsPreview(preview: string): string {
+  return preview.length > LIST_THREADS_PREVIEW_LIMIT
+    ? `${preview.slice(0, LIST_THREADS_PREVIEW_LIMIT)}…`
+    : preview;
 }
 
 function relationshipRank(relationship: ThreadListEntry["relationship"]): number {
@@ -2115,8 +2178,9 @@ function resolveThreadTarget(
     return undefined;
   }
 
-  const visibleThread = listThreadsForContext(store, parentRef).find(
-    (thread) =>
+  const visibleThread = listThreadsForContext(store, parentRef, {
+    limitOthers: Number.POSITIVE_INFINITY,
+  }).threads.find((thread) =>
       thread.threadId === normalized ||
       thread.sessionId === normalized ||
       thread.childThreadId === normalized ||
@@ -2140,18 +2204,24 @@ function resolveThreadTarget(
   };
 }
 
-function formatThreadList(threads: readonly ThreadListEntry[]): string {
+function formatThreadList(threads: readonly ThreadListEntry[], omitted: number): string {
   if (threads.length === 0) {
     return "No visible threads.";
   }
-  return [
+  const lines = [
     "Visible threads:",
     ...threads.map(
       (thread) =>
         `- ${thread.threadId} (${thread.relationship}, ${thread.status}): ${thread.title}` +
         (thread.preview ? ` - ${thread.preview}` : ""),
     ),
-  ].join("\n");
+  ];
+  if (omitted > 0) {
+    lines.push(
+      `+${omitted} more thread(s) not shown. Pass query to list_threads to find an older thread by title.`,
+    );
+  }
+  return lines.join("\n");
 }
 
 function formatThreadReadResult(result: {
@@ -2160,18 +2230,24 @@ function formatThreadReadResult(result: {
   readonly status: string;
   readonly goal?: string;
   readonly messages: readonly OrchestrationChildTranscriptMessage[];
+  readonly omittedEarlier?: number;
+  readonly truncated?: boolean;
   readonly notice?: string;
 }): string {
+  const omitted = result.omittedEarlier ?? 0;
   const lines = [
     `Thread ${result.threadId}: ${result.title}`,
     `Status: ${result.status}`,
     ...(result.goal ? [`Goal: ${result.goal}`] : []),
-    "Transcript:",
+    `Transcript: showing ${result.messages.length} message(s), ${omitted} earlier omitted.`,
   ];
   if (result.messages.length === 0) {
     lines.push("- No transcript messages loaded.");
   } else {
     lines.push(...result.messages.map((message) => `- ${message.role}: ${message.text}`));
+  }
+  if (result.truncated) {
+    lines.push("Some messages were shortened to fit the output budget.");
   }
   if (result.notice) {
     lines.push(result.notice);
@@ -2603,6 +2679,131 @@ function liveChildStatus(
     return "running";
   }
   return undefined;
+}
+
+/**
+ * Whether a raw transcript row survives into read_thread output. Only the
+ * parent/child messages and one-line tool rows are kept: pins, cards,
+ * activity, summaries and other extension rows are dropped, and the
+ * branch/compaction summaries never spoke as the thread itself.
+ */
+function isKeptReadThreadMessage(message: TranscriptMessage): boolean {
+  if (message.kind === "tool") {
+    return true;
+  }
+  return (
+    message.kind === "message" &&
+    (message.role === "user" || message.role === "assistant") &&
+    message.text.length > 0
+  );
+}
+
+/** Kind-only count of the rows read_thread would return. No text is built. */
+function countKeptReadThreadMessages(transcript: readonly TranscriptMessage[]): number {
+  let count = 0;
+  for (const message of transcript) {
+    if (isKeptReadThreadMessage(message)) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+/**
+ * Raw transcript index of the `firstIndex`-th kept row (`total` kept rows in
+ * all), so the caller converts only the tail slice. Clamped to the ends.
+ */
+function rawIndexOfKeptReadThreadMessage(
+  transcript: readonly TranscriptMessage[],
+  firstIndex: number,
+  total: number,
+): number {
+  if (firstIndex <= 0) {
+    return 0;
+  }
+  if (firstIndex >= total) {
+    return transcript.length;
+  }
+  let kept = 0;
+  for (let index = 0; index < transcript.length; index += 1) {
+    const message = transcript[index];
+    if (message !== undefined && isKeptReadThreadMessage(message)) {
+      if (kept === firstIndex) {
+        return index;
+      }
+      kept += 1;
+    }
+  }
+  return transcript.length;
+}
+
+/**
+ * Convert a tail slice of raw transcript rows to read_thread messages.
+ * Tool calls collapse to one line each (`toolName: label [status]`).
+ */
+function toReadThreadMessages(
+  transcript: readonly TranscriptMessage[],
+): OrchestrationChildTranscriptMessage[] {
+  const messages: OrchestrationChildTranscriptMessage[] = [];
+  for (const message of transcript) {
+    if (message.kind === "tool") {
+      const label =
+        "label" in message && typeof message.label === "string" ? message.label : "";
+      messages.push({
+        id: message.id,
+        role: "system",
+        text: label
+          ? `${message.toolName}: ${label} [${message.status}]`
+          : `${message.toolName} [${message.status}]`,
+        createdAt: message.createdAt,
+      });
+    } else if (isKeptReadThreadMessage(message) && message.kind === "message") {
+      messages.push({
+        id: message.id,
+        role: message.role === "user" ? "parent" : "child",
+        text: message.text,
+        createdAt: message.createdAt,
+      });
+    }
+  }
+  return messages;
+}
+
+/**
+ * Enforce the total message-text budget, squeezing the earliest messages
+ * first so the newest evidence survives intact. Post-trim lengths account
+ * for the ellipsis so the returned sum never exceeds the budget.
+ */
+function enforceReadThreadTotalBudget(
+  messages: readonly OrchestrationChildTranscriptMessage[],
+  budget: number,
+): { readonly messages: OrchestrationChildTranscriptMessage[]; readonly trimmed: boolean } {
+  let total = 0;
+  for (const message of messages) {
+    total += message.text.length;
+  }
+  if (total <= budget) {
+    return { messages: [...messages], trimmed: false };
+  }
+  const out = [...messages];
+  let keptAfter = 0;
+  for (let index = out.length - 1; index >= 0; index -= 1) {
+    const current = out[index];
+    if (!current) {
+      continue;
+    }
+    const allow = Math.max(0, budget - keptAfter);
+    if (current.text.length > allow) {
+      out[index] = {
+        ...current,
+        text: allow > 0 ? `${current.text.slice(0, allow - 1)}…` : "",
+      };
+      keptAfter += allow;
+    } else {
+      keptAfter += current.text.length;
+    }
+  }
+  return { messages: out, trimmed: true };
 }
 
 function toChildTranscript(

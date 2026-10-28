@@ -58,6 +58,8 @@ export interface OrchestrationThreadTranscriptMessage {
 export interface ListThreadsToolDetails {
   readonly action: typeof listThreadsAction;
   readonly threads?: readonly OrchestrationThreadListEntry[];
+  readonly omitted?: number;
+  readonly query?: string;
   readonly error?: string;
 }
 
@@ -103,7 +105,10 @@ export interface OrchestrationRuntimeBridge {
       readonly scope?: string;
     },
   ) => Promise<AgentToolResult<CreateChildThreadToolDetails>>;
-  readonly listThreads: (ctx: ExtensionContext) => Promise<AgentToolResult<ListThreadsToolDetails>>;
+  readonly listThreads: (
+    ctx: ExtensionContext,
+    input?: { readonly query?: string },
+  ) => Promise<AgentToolResult<ListThreadsToolDetails>>;
   readonly readThread: (
     ctx: ExtensionContext,
     threadId: string,
@@ -210,13 +215,19 @@ function createListThreadsTool(
     promptGuidelines: [
       "Use list_threads before reading or messaging another pi-gui thread when you need the exact thread id.",
       "Use the returned thread id with read_thread or send_message_to_thread.",
+      "Pass query (a thread-title substring) to find an older thread without listing everything.",
     ],
     parameters: {
       type: "object",
-      properties: {},
+      properties: {
+        query: {
+          type: "string",
+          description: "Thread-title substring to filter by. Omit to list recent threads.",
+        },
+      },
     },
-    async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
-      return bridge.listThreads(ctx);
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      return bridge.listThreads(ctx, listThreadsQueryFromParams(params));
     },
   };
 }
@@ -539,6 +550,17 @@ export function createChildThreadPromptFromToolOutput(output: unknown): string |
 
 export function listThreadsRequestedFromToolOutput(output: unknown): boolean {
   return toolOutputDetails(output)?.action === listThreadsAction;
+}
+
+/** Trimmed `query` from list_threads params, or undefined when absent/blank. */
+export function listThreadsQueryFromParams(
+  params: unknown,
+): { readonly query: string } | undefined {
+  if (!isRecord(params)) return undefined;
+  const raw = params.query;
+  if (typeof raw !== "string") return undefined;
+  const query = raw.trim();
+  return query ? { query } : undefined;
 }
 
 export function readThreadIdFromToolOutput(output: unknown): string | undefined {

@@ -1372,8 +1372,8 @@ export class DesktopAppStore {
     return this.orchestrationOwner.createChildThreadToolResult(parentRef, input);
   }
 
-  listThreadsToolResult(parentRef: SessionRef) {
-    return this.orchestrationOwner.listThreadsToolResult(parentRef);
+  listThreadsToolResult(parentRef: SessionRef, options?: { readonly query?: string }) {
+    return this.orchestrationOwner.listThreadsToolResult(parentRef, options);
   }
 
   async readThreadToolResult(
