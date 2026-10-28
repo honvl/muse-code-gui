@@ -154,6 +154,10 @@ import {
   type ConversationOwner,
 } from "../conversation/app-store-composer";
 import * as orchestration from "../orchestration/app-store-orchestration";
+import {
+  compactionModelRoutingEnabled,
+  sidekickEscalationRoute,
+} from "../orchestration/compaction-model-route";
 import { noteSlowOperation } from "../platform/slow-operation-log";
 import {
   createOrchestrationOwner,
@@ -317,6 +321,27 @@ export class DesktopAppStore {
       isBuiltinExtensionEnabled: (name) => !this.disabledBuiltinExtensions.has(name),
       extensionFlagValuesForSession: (sessionRef) =>
         this.sessionState.extensionFlagsBySession.get(sessionKey(sessionRef)),
+      ...(compactionModelRoutingEnabled()
+        ? {
+            compactionModelRouter: ({ sessionRef, model }) => {
+              const child = this.state.orchestrationChildren.find(
+                (entry) =>
+                  entry.childWorkspaceId === sessionRef.workspaceId &&
+                  entry.childSessionId === sessionRef.sessionId,
+              );
+              return sidekickEscalationRoute({
+                child,
+                leadModel: child
+                  ? this.sessionModelFor({
+                      workspaceId: child.parentWorkspaceId,
+                      sessionId: child.parentSessionId,
+                    })
+                  : undefined,
+                currentModel: model,
+              });
+            },
+          }
+        : {}),
       ...(options.generateThreadTitleOverride
         ? { generateThreadTitleOverride: options.generateThreadTitleOverride }
         : {}),

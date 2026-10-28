@@ -18,6 +18,11 @@ export {
   RuntimeSupervisor,
 } from "./runtime-supervisor.js";
 export type { PiSdkDriverOptions, SyncWorkspaceResult } from "./session-supervisor.js";
+export type {
+  CompactionModelRoute,
+  CompactionModelRouteRequest,
+  CompactionModelRouter,
+} from "./compaction-model-route.js";
 export { buildSuggestionExcerpt, SUGGESTION_SYSTEM_PROMPT } from "./suggestion-prompt.js";
 export type { SuggestionSourceMessage } from "./suggestion-prompt.js";
 export { SessionSupervisor } from "./session-supervisor.js";

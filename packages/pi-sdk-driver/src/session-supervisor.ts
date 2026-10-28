@@ -135,6 +135,10 @@ import { createChildIsolationExtension, type ChildIsolationInfo } from "./child-
 import { createOrchestratorModeExtension } from "./orchestrator-mode.js";
 import { createInvalidToolCallGuardExtension } from "./invalid-tool-call-guard.js";
 import { createTurnCaptureExtension } from "./turn-capture.js";
+import {
+  createCompactionModelRouteExtension,
+  type CompactionModelRouter,
+} from "./compaction-model-route.js";
 import { createTranscriptIdentityExtension } from "./transcript-identity.js";
 import { createPlanLimitsExtension, readSessionUsage } from "./session-usage.js";
 import { currentSessionQuota, refreshSessionQuotaSoon } from "./session-quota.js";
@@ -208,6 +212,11 @@ export interface PiSdkDriverOptions {
   readonly desktopExtensions?: PiDesktopExtensionObserver;
   readonly onTurnCaptureBoundary?: import("@pi-gui/session-driver").TurnCaptureObserver;
   readonly turnCaptureTimeoutMs?: number;
+  /**
+   * Exploratory: when set, a hidden extension asks this router at every
+   * compaction whether the session should switch model/thinking level.
+   */
+  readonly compactionModelRouter?: CompactionModelRouter;
   readonly generateThreadTitleOverride?: (
     workspace: WorkspaceRef,
     options: import("./thread-title-generator.js").GenerateThreadTitleOptions,
@@ -331,6 +340,7 @@ export class SessionSupervisor {
   private readonly extensionFlagValuesForSession: PiSdkDriverOptions["extensionFlagValuesForSession"];
   private readonly onTurnCaptureBoundary: PiSdkDriverOptions["onTurnCaptureBoundary"];
   private readonly turnCaptureTimeoutMs: number | undefined;
+  private readonly compactionModelRouter: CompactionModelRouter | undefined;
   private readonly records = new Map<string, ManagedSessionRecord>();
   /** Detached shell processes started by the bash_background tool (app lifetime). */
   private readonly backgroundTasks: BackgroundTaskStore;
@@ -375,6 +385,7 @@ export class SessionSupervisor {
     this.extensionFlagValuesForSession = options.extensionFlagValuesForSession;
     this.onTurnCaptureBoundary = options.onTurnCaptureBoundary;
     this.turnCaptureTimeoutMs = options.turnCaptureTimeoutMs;
+    this.compactionModelRouter = options.compactionModelRouter;
     this.agentDir = options.agentDir;
   }
 
@@ -514,6 +525,19 @@ export class SessionSupervisor {
                       this.records.get(
                         sessionKey({ workspaceId: workspace.workspaceId, sessionId }),
                       )?.closed ?? true,
+                  }),
+                },
+              ]
+            : []),
+          ...(this.compactionModelRouter
+            ? [
+                {
+                  name: "pi-gui-compaction-model-route",
+                  hidden: true,
+                  factory: createCompactionModelRouteExtension({
+                    workspaceId: workspace.workspaceId,
+                    router: this.compactionModelRouter,
+                    onRouted: (sessionRef) => this.refreshRoutedSessionConfig(sessionRef),
                   }),
                 },
               ]
@@ -1921,6 +1945,18 @@ export class SessionSupervisor {
     this.refreshUsage(record);
     await this.persistSnapshot(record);
     await this.emit(record, sessionUpdatedEvent(record));
+  }
+
+  /** A compaction route switched pi's model or thinking level; publish the new config. */
+  private refreshRoutedSessionConfig(sessionRef: SessionRef): void {
+    const record = this.records.get(sessionKey(sessionRef));
+    const session = record?.session;
+    if (!record || !session) return;
+    record.config = this.configWithSessionFlags(
+      deriveSessionConfig(session.sessionManager),
+      session.sessionManager.getSessionId(),
+    );
+    this.queueDriverEvents(record, [sessionUpdatedEvent(record)]);
   }
 
   async setSessionThinkingLevel(sessionRef: SessionRef, thinkingLevel: string): Promise<void> {
