@@ -1114,8 +1114,77 @@ function projectOrchestrationChildrenForSession(
   );
 }
 
+let backgroundChildHydrationInFlight = false;
+const HYDRATE_REMAINING_CONCURRENCY = 4;
+
 async function hydrateOrchestrationChildren(store: OrchestrationOwnerHost): Promise<void> {
   await hydrateVisibleOrchestrationChildren(store);
+  // Heal background children: without their transcripts every idle-but-finished
+  // child projects to `queued` and reads as running after a restart. Load the
+  // rest in the background and re-project once settled so the sidebar counts
+  // and the persisted file converge on the true terminal statuses.
+  if (!backgroundChildHydrationInFlight) {
+    backgroundChildHydrationInFlight = true;
+    void hydrateRemainingOrchestrationChildren(store)
+      .catch((error) => {
+        console.warn("[orchestration] background child hydration failed", error);
+      })
+      .finally(() => {
+        backgroundChildHydrationInFlight = false;
+      });
+  }
+}
+
+async function hydrateRemainingOrchestrationChildren(
+  store: OrchestrationOwnerHost,
+): Promise<void> {
+  const state = store.orchestrationState();
+  const visibleKeys = new Set(
+    state.orchestrationChildren
+      .filter(
+        (child) =>
+          child.parentWorkspaceId === state.selectedWorkspaceId &&
+          child.parentSessionId === state.selectedSessionId,
+      )
+      .map((child) => sessionKey(childSessionRef(child))),
+  );
+  const seen = new Set<string>();
+  const pending: SessionRef[] = [];
+  for (const child of state.orchestrationChildren) {
+    if (!child.childSessionId) {
+      continue;
+    }
+    const childRef = childSessionRef(child);
+    const key = sessionKey(childRef);
+    if (visibleKeys.has(key) || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    // Skip orphans (no session in the catalog) and already-loaded children:
+    // orphans keep their stored status, loaded ones already project correctly.
+    if (!store.sessionFromState(childRef) || store.isTranscriptLoaded(childRef)) {
+      continue;
+    }
+    pending.push(childRef);
+  }
+  if (pending.length === 0) {
+    return;
+  }
+  // Bounded concurrency: each hydration opens a session and reads its
+  // transcript, so avoid an I/O storm when dozens of children piled up.
+  for (let index = 0; index < pending.length; index += HYDRATE_REMAINING_CONCURRENCY) {
+    const batch = pending.slice(index, index + HYDRATE_REMAINING_CONCURRENCY);
+    await Promise.all(
+      batch.map((childRef) =>
+        store.ensureSessionReady(childRef).catch((error) => {
+          store.setSessionError(childRef, errorMessage(error));
+        }),
+      ),
+    );
+  }
+  store.replaceOrchestrationChildren(projectOrchestrationChildren(store));
+  store.emit();
+  await store.persistUiState();
 }
 
 function parentChildRecord(
@@ -1579,11 +1648,21 @@ function projectOrchestrationChild(
   const childRef = childSessionRef(child);
   const key = sessionKey(childRef);
   const session = store.sessionFromState(childRef);
+  const transcriptLoaded = store.isTranscriptLoaded(childRef);
   const rawTranscript = recentTranscriptItems(store.transcriptFor(childRef));
   const transcript = toChildTranscript(rawTranscript, MAX_CHILD_TRANSCRIPT_MESSAGES);
   const latestTranscript = session?.preview || previewFromTranscript(rawTranscript) || child.goal;
   const updatedAt = latestSessionActivityAt(session?.updatedAt ?? child.updatedAt, rawTranscript);
-  const status = session ? toOrchestrationStatus(session.status, childRef, store) : child.status;
+  // An unloaded transcript reads as empty, which is indistinguishable from
+  // "never started" — deriving a status from it flips every finished
+  // background child to `queued` (counted as running) after a restart.
+  // Only derive when the transcript is actually cached; otherwise preserve
+  // the stored status and let definitive live signals override it. The
+  // background hydration pass loads the rest shortly after startup.
+  const status =
+    session && transcriptLoaded
+      ? toOrchestrationStatus(session.status, childRef, store)
+      : (liveChildStatus(session?.status, childRef, store) ?? child.status);
 
   return {
     ...child,
@@ -2492,6 +2571,30 @@ function toOrchestrationStatus(
 function hasStartedRun(store: OrchestrationOwnerHost, sessionRef: SessionRef): boolean {
   const transcript = store.transcriptFor(sessionRef);
   return transcript.some(isWorkerResponse);
+}
+
+/**
+ * Status overrides that hold without a cached transcript. Applied when
+ * `projectOrchestrationChild` cannot derive from the transcript (not loaded
+ * yet, e.g. a background child right after a restart): a live run, a dead
+ * session, or queued follow-ups are facts the empty cache cannot hide, while
+ * anything else keeps the stored status instead of inventing `queued`.
+ */
+function liveChildStatus(
+  sessionStatus: string | undefined,
+  sessionRef: SessionRef,
+  store: OrchestrationOwnerHost,
+): OrchestrationChildThreadStatus | undefined {
+  if (store.getQueuedComposerMessages(sessionRef).length > 0) {
+    return "waiting";
+  }
+  if (sessionStatus === "failed") {
+    return "failed";
+  }
+  if (sessionStatus === "running") {
+    return "running";
+  }
+  return undefined;
 }
 
 function toChildTranscript(
