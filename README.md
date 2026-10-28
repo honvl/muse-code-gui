@@ -1,10 +1,16 @@
-# pi-gui
+# Muse Code GUI
 
-The desktop app for the [pi](https://github.com/earendil-works/pi) coding agent.
+Muse Code GUI is an open source fork of [pi-gui](https://github.com/minghinmatthewlam/pi-gui)
+by [Matthew Lam](https://github.com/minghinmatthewlam) — the desktop app for the
+[pi](https://github.com/earendil-works/pi) coding agent, with a lead agent that delegates.
+Website: https://muse-code-gui.vercel.app
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
-[![Latest release](https://img.shields.io/github/v/release/minghinmatthewlam/pi-gui?include_prereleases&label=release)](https://github.com/minghinmatthewlam/pi-gui/releases)
+[![Latest release](https://img.shields.io/github/v/release/honvl/muse-code-gui?include_prereleases&label=release)](https://github.com/honvl/muse-code-gui/releases)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](#install)
+
+> The installed app is still named **pi-gui** (binary, data folder and Homebrew cask), so
+existing installs keep their sessions, settings and updates. Only the project name changed.
 
 Run agents in parallel threads, each in its own git worktree if you want one. Review every
 change, run the tests in a real terminal, and ship without leaving the window. pi-gui is a
@@ -15,6 +21,25 @@ you set up with the pi CLI carries over.
 [![An agent in pi-gui fixing a bug, running the tests, then the change open in the review tab](./apps/website/public/media/hero.gif)](./apps/website/public/media/hero.mp4)
 
 <sub>A real run: the agent fixes a bug, adds a test and runs it, then the change opens for review. ([Watch in full quality](./apps/website/public/media/hero.mp4))</sub>
+
+## What this fork adds
+
+- **Lead threads that delegate.** Switch a thread to Lead in the model picker and it plans,
+  then hands work to child threads running a cheaper sidekick model. Scouts read and search
+  but can't edit; workers edit inside their own write scope, so workers on different folders
+  run in parallel. Each child reports back when it finishes.
+- **Background tasks.** The agent can start a long command in the background, keep working,
+  read its output later and stop it — all from the Session rail.
+- **Suggested next prompts.** When a run ends, the cheapest available model drafts the prompt
+  you'd likely send next. It shows in grey in the composer; press Tab to use it.
+- **A transcript that shows its work.** Collapsible provider thinking, time to first token
+  and generation time per message, durations on tool calls, grouped tool rows, read receipts.
+- **Sessions that heal themselves.** Broken tool-call history is dropped and compacted
+  instead of failing the thread for good.
+- **Threads that talk to each other**, delegation guardrails (30 children per thread, one
+  writer per scope, no `.env` writes, max three levels deep), child threads nested under
+  their lead, fork-while-running, honest thinking levels, a one-switch extension pack, and
+  self-updates from this fork's own GitHub Releases.
 
 ## Features
 
@@ -87,7 +112,7 @@ the review tab, your worktrees, and tabs from desktop extensions. Each task keep
 pi-gui runs on macOS (Apple Silicon), Linux (x64) and Windows (x64).
 
 Download the latest `.dmg` (macOS), `.AppImage` or `.deb` (Linux), or `.exe` (Windows) from the
-[Releases page](https://github.com/minghinmatthewlam/pi-gui/releases).
+[Releases page](https://github.com/honvl/muse-code-gui/releases).
 
 - **macOS:** drag `pi-gui.app` into Applications. Releases are signed and notarized.
 - **Linux:** make the AppImage executable and run it, or install the `.deb`.
@@ -97,8 +122,7 @@ Download the latest `.dmg` (macOS), `.AppImage` or `.deb` (Linux), or `.exe` (Wi
 On macOS you can also use Homebrew:
 
 ```bash
-brew tap minghinmatthewlam/tap
-brew install --cask pi-gui
+brew install --cask honvl/tap/pi-gui
 ```
 
 Update with `brew upgrade --cask pi-gui`. A Homebrew upgrade may ask you to
@@ -174,7 +198,7 @@ platform, and how the product media is recorded.
 ## Repository layout
 
 - `apps/desktop`: the Electron app (renderer, main and preload).
-- `apps/website`: [pi-gui.com](https://www.pi-gui.com).
+- `apps/website`: [muse-code-gui.vercel.app](https://muse-code-gui.vercel.app).
 - `packages/pi-sdk-driver`: the adapter over `@earendil-works/pi-coding-agent`.
 - `packages/session-driver`: shared session driver types.
 - `packages/catalogs`: workspace and session catalog state.
