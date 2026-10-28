@@ -949,7 +949,12 @@ export class DesktopAppStore {
   }
 
   async archiveSession(target: WorkspaceSessionTarget): Promise<DesktopAppState> {
-    return this.workspaceOwner.archiveSession(target);
+    const state = await this.workspaceOwner.archiveSession(target);
+    const sessionRef = { workspaceId: target.workspaceId, sessionId: target.sessionId };
+    if (this.sessionFromState(sessionRef)?.archivedAt) {
+      this.orchestrationOwner.forgetArchivedSession(sessionRef);
+    }
+    return state;
   }
 
   async unarchiveSession(target: WorkspaceSessionTarget): Promise<DesktopAppState> {

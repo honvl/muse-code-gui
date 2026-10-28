@@ -188,6 +188,8 @@ interface OrchestrationOwnerHost {
 
 export interface OrchestrationOwner {
   reportChildCompletion(sessionRef: SessionRef): Promise<void>;
+  /** Drop in-memory bookkeeping (cursors, run dedupe, generations, evidence cache) for an archived session. */
+  forgetArchivedSession(sessionRef: SessionRef): void;
   cancelChildRunsForParent(parentRef: SessionRef): Promise<void>;
   sendChildThreadFollowUp(input: SendChildThreadFollowUpInput): Promise<DesktopAppState>;
   hydrateOrchestrationChildren(): Promise<void>;
@@ -232,7 +234,23 @@ export interface OrchestrationOwner {
   ): Promise<AgentToolResult<SendMessageToThreadToolDetails>>;
 }
 
-export function createOrchestrationOwner(store: OrchestrationOwnerHost): OrchestrationOwner {
+export interface OrchestrationOwnerOptions {
+  /** Test seam: parent transcript rows whose evidence was (re)extracted, per index refresh. */
+  readonly onParentEvidenceRowsScanned?: (rows: number) => void;
+}
+
+export function createOrchestrationOwner(
+  store: OrchestrationOwnerHost,
+  options: OrchestrationOwnerOptions = {},
+): OrchestrationOwner {
+  const evidenceIndex: ParentEvidenceIndex = {
+    buckets: new Map(),
+    candidatesByRow: new WeakMap(),
+    ...(options.onParentEvidenceRowsScanned
+      ? { onRowsScanned: options.onParentEvidenceRowsScanned }
+      : {}),
+  };
+  parentEvidenceIndexByHost.set(store, evidenceIndex);
   // Delta-read cursors: how many child messages have already been returned to
   // each parent, keyed by `${parentSessionId}:${childSessionId}`. Private to
   // this owner so incremental reads never leak across parents.
@@ -243,6 +261,26 @@ export function createOrchestrationOwner(store: OrchestrationOwnerHost): Orchest
   return {
     reportChildCompletion: (sessionRef) =>
       reportChildCompletion(store, sessionRef, reportedChildRuns),
+    forgetArchivedSession: (sessionRef) => {
+      evidenceIndex.buckets.delete(sessionKey(sessionRef));
+      for (const child of store.orchestrationState().orchestrationChildren) {
+        if (
+          child.childWorkspaceId === sessionRef.workspaceId &&
+          child.childSessionId === sessionRef.sessionId
+        ) {
+          childGenerationByThreadId.delete(child.id);
+          reportedChildRuns.delete(child.id);
+        }
+      }
+      for (const key of [...readThreadCursors.keys()]) {
+        if (
+          key.startsWith(`${sessionRef.sessionId}:`) ||
+          key.endsWith(`:${sessionRef.sessionId}`)
+        ) {
+          readThreadCursors.delete(key);
+        }
+      }
+    },
     cancelChildRunsForParent: (parentRef) => cancelChildRunsForParent(store, parentRef),
     sendChildThreadFollowUp: (input) => sendChildThreadFollowUp(store, input),
     hydrateOrchestrationChildren: () => hydrateOrchestrationChildren(store),
@@ -853,7 +891,7 @@ function listThreadsToolResult(
   parentRef: SessionRef,
   options: { readonly query?: string } = {},
 ): AgentToolResult<ListThreadsToolDetails> {
-  store.replaceOrchestrationChildren(projectOrchestrationChildren(store));
+  store.replaceOrchestrationChildren(projectOrchestrationChildrenOfParent(store, parentRef));
   const query = options.query?.trim() || undefined;
   const { threads, omitted } = shownListThreads(listThreadsForContext(store, parentRef), query);
   return {
@@ -1148,11 +1186,39 @@ function projectOrchestrationChildrenForSession(
   store: OrchestrationOwnerHost,
   sessionRef: SessionRef,
 ): readonly OrchestrationChildThread[] {
+  return projectMatchingOrchestrationChildren(
+    store,
+    (child) =>
+      child.childWorkspaceId === sessionRef.workspaceId &&
+      child.childSessionId === sessionRef.sessionId,
+  );
+}
+
+/** Re-project only the children a parent owns; other records pass through unchanged. */
+function projectOrchestrationChildrenOfParent(
+  store: OrchestrationOwnerHost,
+  parentRef: SessionRef,
+): readonly OrchestrationChildThread[] {
+  return projectMatchingOrchestrationChildren(
+    store,
+    (child) =>
+      child.parentWorkspaceId === parentRef.workspaceId &&
+      child.parentSessionId === parentRef.sessionId,
+  );
+}
+
+function projectMatchingOrchestrationChildren(
+  store: OrchestrationOwnerHost,
+  matches: (child: OrchestrationChildThread) => boolean,
+): readonly OrchestrationChildThread[] {
   const children = store.orchestrationState().orchestrationChildren;
-  const parentEvidenceByChild = parentEvidenceIndex(store, children);
+  const targets = children.filter(matches);
+  if (targets.length === 0) {
+    return children;
+  }
+  const parentEvidenceByChild = parentEvidenceIndex(store, children, targets);
   return children.map((child) =>
-    child.childWorkspaceId === sessionRef.workspaceId &&
-    child.childSessionId === sessionRef.sessionId
+    matches(child)
       ? projectOrchestrationChild(store, child, parentEvidenceByChild.get(child.id) ?? [])
       : child,
   );
@@ -1889,7 +1955,7 @@ function refreshParentOrchestrationEvidence(
   ) {
     return;
   }
-  store.replaceOrchestrationChildren(projectOrchestrationChildren(store));
+  store.replaceOrchestrationChildren(projectOrchestrationChildrenOfParent(store, parentRef));
 }
 
 function toolCallForFinishedEvent(
@@ -2347,10 +2413,105 @@ function capEvidenceRecords(
   return [...priority, ...remaining].slice(0, MAX_EVIDENCE_RECORDS_PER_CHILD);
 }
 
+/**
+ * Evidence a parent transcript row holds about one child, resolved against the
+ * child record only at projection time so a cached row never goes stale when
+ * children are added.
+ */
+interface ParentEvidenceCandidate {
+  readonly childThreadId: string;
+  build(child: OrchestrationChildThread): OrchestrationEvidenceRecord;
+}
+
+interface ParentEvidenceBucket {
+  readonly transcript: readonly TranscriptMessage[];
+  readonly length: number;
+  readonly lastRow: TranscriptMessage | undefined;
+  readonly candidatesByChild: ReadonlyMap<string, readonly ParentEvidenceCandidate[]>;
+}
+
+/**
+ * Owner-scoped incremental index of parent-transcript evidence. A bucket is
+ * reused while its parent transcript is unchanged, so a child event scans no
+ * parent rows. Transcripts are copy-on-write, so a parent change replaces only
+ * the rows it touched (appends, finished tool rows, rewritten tool output) and
+ * only those rows are re-extracted; everything else hits the per-row memo.
+ */
+interface ParentEvidenceIndex {
+  readonly buckets: Map<string, ParentEvidenceBucket>;
+  readonly candidatesByRow: WeakMap<TranscriptMessage, readonly ParentEvidenceCandidate[]>;
+  readonly onRowsScanned?: (rows: number) => void;
+}
+
+// Keyed by the host each owner was created for, so module-level projection
+// helpers reach their owner's index without threading it through every tool path.
+const parentEvidenceIndexByHost = new WeakMap<OrchestrationOwnerHost, ParentEvidenceIndex>();
+
+function parentEvidenceIndexFor(store: OrchestrationOwnerHost): ParentEvidenceIndex {
+  let index = parentEvidenceIndexByHost.get(store);
+  if (!index) {
+    index = { buckets: new Map(), candidatesByRow: new WeakMap() };
+    parentEvidenceIndexByHost.set(store, index);
+  }
+  return index;
+}
+
+const NO_PARENT_EVIDENCE: readonly ParentEvidenceCandidate[] = [];
+
+function parentEvidenceBucket(
+  index: ParentEvidenceIndex,
+  key: string,
+  transcript: readonly TranscriptMessage[],
+): ParentEvidenceBucket {
+  const cached = index.buckets.get(key);
+  if (
+    cached &&
+    cached.transcript === transcript &&
+    cached.length === transcript.length &&
+    cached.lastRow === transcript[transcript.length - 1]
+  ) {
+    return cached;
+  }
+  let scanned = 0;
+  const candidatesByChild = new Map<string, ParentEvidenceCandidate[]>();
+  for (const row of transcript) {
+    let candidates = index.candidatesByRow.get(row);
+    if (!candidates) {
+      candidates = parentEvidenceCandidates(row);
+      index.candidatesByRow.set(row, candidates);
+      scanned += 1;
+    }
+    for (const candidate of candidates) {
+      const bucket = candidatesByChild.get(candidate.childThreadId);
+      if (bucket) {
+        bucket.push(candidate);
+      } else {
+        candidatesByChild.set(candidate.childThreadId, [candidate]);
+      }
+    }
+  }
+  index.onRowsScanned?.(scanned);
+  const bucket: ParentEvidenceBucket = {
+    transcript,
+    length: transcript.length,
+    lastRow: transcript[transcript.length - 1],
+    candidatesByChild,
+  };
+  index.buckets.set(key, bucket);
+  return bucket;
+}
+
+/**
+ * Parent-transcript evidence for `targets` (default: every child). `children`
+ * is the full record list: it decides which parent transcripts count and
+ * resolves the child each record refers to.
+ */
 function parentEvidenceIndex(
   store: OrchestrationOwnerHost,
   children: readonly OrchestrationChildThread[],
+  targets: readonly OrchestrationChildThread[] = children,
 ): ReadonlyMap<string, readonly OrchestrationEvidenceRecord[]> {
+  const index = parentEvidenceIndexFor(store);
   const childById = new Map(children.map((child) => [child.id, child] as const));
   const parentKeys = new Set(
     children.map((child) =>
@@ -2360,16 +2521,26 @@ function parentEvidenceIndex(
       }),
     ),
   );
-  const index = new Map<string, OrchestrationEvidenceRecord[]>();
-  for (const key of parentKeys) {
-    const transcript = store.transcriptForKey(key);
-    for (const record of evidenceFromParentTranscript(childById, transcript)) {
-      const bucket = index.get(record.childThreadId) ?? [];
-      bucket.push(record);
-      index.set(record.childThreadId, bucket);
+  const buckets = [...parentKeys].map((key) =>
+    parentEvidenceBucket(index, key, store.transcriptForKey(key)),
+  );
+  const evidence = new Map<string, OrchestrationEvidenceRecord[]>();
+  for (const target of targets) {
+    if (evidence.has(target.id)) {
+      continue;
     }
+    const records: OrchestrationEvidenceRecord[] = [];
+    for (const bucket of buckets) {
+      for (const candidate of bucket.candidatesByChild.get(target.id) ?? NO_PARENT_EVIDENCE) {
+        const child = childById.get(candidate.childThreadId);
+        if (child) {
+          records.push(candidate.build(child));
+        }
+      }
+    }
+    evidence.set(target.id, records);
   }
-  return index;
+  return evidence;
 }
 
 function evidenceFromChildTranscript(
@@ -2432,97 +2603,98 @@ function commandEvidenceFromTool(
   };
 }
 
-function evidenceFromParentTranscript(
-  childById: ReadonlyMap<string, OrchestrationChildThread>,
-  transcript: readonly TranscriptMessage[],
-): readonly OrchestrationEvidenceRecord[] {
-  return transcript.flatMap((message): readonly OrchestrationEvidenceRecord[] => {
-    if (message.kind === "message" && message.role === "assistant") {
-      return explicitAcceptanceEvidenceFromParentMessage(childById, message);
-    }
-    if (message.kind !== "tool" || message.status !== "success" || !isRecord(message.output)) {
-      return [];
-    }
-    const details = isRecord(message.output.details) ? message.output.details : undefined;
-    if (!details) {
-      return [];
-    }
-    const childId =
-      typeof details.childThreadId === "string"
-        ? details.childThreadId
-        : typeof details.threadId === "string"
-          ? details.threadId
-          : undefined;
-    const child = childId ? childById.get(childId) : undefined;
-    if (!child) {
-      return [];
-    }
-    if (details.action === readThreadAction && details.childThreadId === child.id) {
-      return [
-        {
+/** Evidence candidates in one parent transcript row. Pure in the row; memoized by the index. */
+function parentEvidenceCandidates(message: TranscriptMessage): readonly ParentEvidenceCandidate[] {
+  if (message.kind === "message" && message.role === "assistant") {
+    return explicitAcceptanceEvidenceFromParentMessage(message);
+  }
+  if (message.kind !== "tool" || message.status !== "success" || !isRecord(message.output)) {
+    return NO_PARENT_EVIDENCE;
+  }
+  const output = message.output;
+  const details = isRecord(output.details) ? output.details : undefined;
+  if (!details) {
+    return NO_PARENT_EVIDENCE;
+  }
+  const childId =
+    typeof details.childThreadId === "string"
+      ? details.childThreadId
+      : typeof details.threadId === "string"
+        ? details.threadId
+        : undefined;
+  if (!childId) {
+    return NO_PARENT_EVIDENCE;
+  }
+  if (details.action === readThreadAction && details.childThreadId === childId) {
+    const detail = truncateEvidenceDetail(textFromToolOutput(output));
+    return [
+      {
+        childThreadId: childId,
+        build: (child) => ({
           id: evidenceId("observed-read", message.callId),
           childThreadId: child.id,
           kind: "orchestrator_observation",
           source: "orchestrator-observed",
           status: "reported",
           title: "Lead read child output",
-          detail: truncateEvidenceDetail(textFromToolOutput(message.output)),
+          detail,
           parentSessionId: child.parentSessionId,
           childSessionId: child.childSessionId,
           createdAt: message.createdAt,
-        },
-      ];
-    }
-    if (details.action === sendMessageToThreadAction && details.threadId === child.id) {
-      return [
-        {
+        }),
+      },
+    ];
+  }
+  if (details.action === sendMessageToThreadAction && details.threadId === childId) {
+    const followUp = details.message;
+    return [
+      {
+        childThreadId: childId,
+        build: (child) => ({
           id: evidenceId("follow-up", message.callId),
           childThreadId: child.id,
           kind: "orchestrator_action",
           source: "orchestrator-action",
           status: "reported",
           title: "Lead sent follow-up",
-          ...(typeof details.message === "string"
-            ? { detail: truncateEvidenceDetail(details.message) }
-            : {}),
+          ...(typeof followUp === "string" ? { detail: truncateEvidenceDetail(followUp) } : {}),
           parentSessionId: child.parentSessionId,
           childSessionId: child.childSessionId,
           createdAt: message.createdAt,
-        },
-      ];
-    }
-    return [];
-  });
+        }),
+      },
+    ];
+  }
+  return NO_PARENT_EVIDENCE;
 }
 
 function explicitAcceptanceEvidenceFromParentMessage(
-  childById: ReadonlyMap<string, OrchestrationChildThread>,
   message: Extract<TranscriptMessage, { kind: "message" }>,
-): readonly OrchestrationEvidenceRecord[] {
-  const records: OrchestrationEvidenceRecord[] = [];
+): readonly ParentEvidenceCandidate[] {
+  const candidates: ParentEvidenceCandidate[] = [];
   for (const line of message.text.split("\n")) {
     const match = /^orchestrator-accepted:\s*(\S+)\s*(.*)$/i.exec(line.trim());
     if (!match) {
       continue;
     }
-    const child = childById.get(match[1] ?? "");
-    if (!child) {
-      continue;
-    }
-    records.push({
-      id: evidenceId("accepted", `${message.id}:${child.id}`),
-      childThreadId: child.id,
-      kind: "orchestrator_acceptance",
-      source: "orchestrator-accepted",
-      status: "accepted",
-      title: "Orchestrator accepted child evidence",
-      detail: truncateEvidenceDetail(match[2] || message.text),
-      parentSessionId: child.parentSessionId,
-      childSessionId: child.childSessionId,
-      createdAt: message.createdAt,
+    const detail = truncateEvidenceDetail(match[2] || message.text);
+    candidates.push({
+      childThreadId: match[1] ?? "",
+      build: (child) => ({
+        id: evidenceId("accepted", `${message.id}:${child.id}`),
+        childThreadId: child.id,
+        kind: "orchestrator_acceptance",
+        source: "orchestrator-accepted",
+        status: "accepted",
+        title: "Orchestrator accepted child evidence",
+        detail,
+        parentSessionId: child.parentSessionId,
+        childSessionId: child.childSessionId,
+        createdAt: message.createdAt,
+      }),
     });
   }
-  return records;
+  return candidates.length > 0 ? candidates : NO_PARENT_EVIDENCE;
 }
 
 function blockerEvidenceFromChildStatus(
