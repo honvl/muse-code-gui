@@ -94,8 +94,7 @@ test("the lead picker reuses the default-model option list plus the thread entry
   });
 });
 
-test("the helper text mentions that threads with messages keep their model", () => {
-  expect(DEFAULT_LEAD_MODEL_DESCRIPTION).toContain(
-    "Threads that already have messages keep their current model",
-  );
+test("the helper text says the Lead toggle applies the model and Solo restores it", () => {
+  expect(DEFAULT_LEAD_MODEL_DESCRIPTION).toContain("switching a thread to Lead applies it");
+  expect(DEFAULT_LEAD_MODEL_DESCRIPTION).toContain("restores the thread's previous model");
 });
