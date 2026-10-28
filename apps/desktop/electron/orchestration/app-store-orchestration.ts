@@ -52,6 +52,18 @@ import {
   sendMessageToThreadFromToolOutput,
   sendMessageToThreadToolName,
 } from "./orchestration-runtime";
+import {
+  SCOUT_PRE_REVIEW_CALL_PREFIX,
+  changedFilesFromLatestRun,
+  combinedPreReviewReportText,
+  isScoutPreReviewCallId,
+  isScoutPreReviewEnabled,
+  resolveScoutPreReviewTimeoutMs,
+  scoutPreReviewBrief,
+  shouldPreReviewWorkerRun,
+  workerBriefFromTranscript,
+  type PreReviewOutcome,
+} from "./scout-pre-review";
 import type {
   CreateChildThreadToolDetails,
   ListThreadsToolDetails,
@@ -281,9 +293,13 @@ export function createOrchestrationOwner(
   const reportedChildRuns = new Map<string, string>();
   const sidekickReuse: SidekickReuseState = { claimed: new Set(), inFlightByParent: new Map() };
   sidekickClaimsByHost.set(store, sidekickReuse.claimed);
+  // Worker reports held for a scout pre-review, keyed by the review scout's
+  // synthetic source call id. In memory only: a restart mid-review loses the
+  // held report (see scout-pre-review.ts).
+  const preReviews: PreReviews = new Map();
   return {
     reportChildCompletion: (sessionRef) =>
-      reportChildCompletion(store, sessionRef, reportedChildRuns),
+      reportChildCompletion(store, sessionRef, reportedChildRuns, preReviews),
     forgetArchivedSession: (sessionRef) => {
       evidenceIndex.buckets.delete(sessionKey(sessionRef));
       for (const child of store.orchestrationState().orchestrationChildren) {
@@ -304,7 +320,10 @@ export function createOrchestrationOwner(
         }
       }
     },
-    cancelChildRunsForParent: (parentRef) => cancelChildRunsForParent(store, parentRef),
+    cancelChildRunsForParent: async (parentRef) => {
+      await cancelPreReviewsForParent(store, preReviews, parentRef);
+      await cancelChildRunsForParent(store, parentRef);
+    },
     sendChildThreadFollowUp: (input) => sendChildThreadFollowUp(store, input),
     hydrateOrchestrationChildren: () => hydrateOrchestrationChildren(store),
     hydrateVisibleOrchestrationChildren: () => hydrateVisibleOrchestrationChildren(store),
@@ -335,6 +354,8 @@ interface SpawnChildThreadInput {
   readonly mode?: OrchestrationChildMode;
   readonly scope?: string;
   readonly sourceToolCallId?: string;
+  /** Host-started background child: leave the user's selection and view alone. */
+  readonly keepSelection?: boolean;
 }
 
 class WriterScopeConflictError extends Error {}
@@ -560,10 +581,14 @@ async function createChildThreadRecord(
       ]),
     );
     await store.refreshState({
-      selectedWorkspaceId: input.parentWorkspaceId,
-      selectedSessionId: input.parentSessionId,
-      clearLastError: true,
-      activeView: "threads",
+      ...(input.keepSelection
+        ? {}
+        : {
+            selectedWorkspaceId: input.parentWorkspaceId,
+            selectedSessionId: input.parentSessionId,
+            clearLastError: true,
+            activeView: "threads" as const,
+          }),
       emitState: false,
       persistState: false,
       publishSelectedTranscript: false,
@@ -1732,6 +1757,7 @@ async function reportChildCompletion(
   store: OrchestrationOwnerHost,
   sessionRef: SessionRef,
   reportedRuns: Map<string, string>,
+  preReviews: PreReviews,
 ): Promise<void> {
   const child = store
     .orchestrationState()
@@ -1756,6 +1782,13 @@ async function reportChildCompletion(
   // event-driven path now that the timer is gone.
   finalizeChildThreadToolRow(store, { ...child, status });
 
+  // A review scout never reports to its parent worker; its verdict releases
+  // the held worker report instead (or nothing, after a timeout).
+  if (isScoutPreReviewCallId(child.sourceToolCallId)) {
+    await settlePreReviewFromScout(store, preReviews, child, status);
+    return;
+  }
+
   const parentRef: SessionRef = {
     workspaceId: child.parentWorkspaceId,
     sessionId: child.parentSessionId,
@@ -1777,28 +1810,207 @@ async function reportChildCompletion(
   }
   reportedRuns.set(child.id, signature);
 
+  const reportText = childCompletionReportText(
+    child,
+    status,
+    finalText,
+    error,
+    generationForChildThread(child.id),
+    store.isOrchestratorSession(parentRef),
+  );
+
+  // A newer run of this worker (a lead follow-up or sidekick reuse) ends any
+  // review still held for an older run; that run's report goes out first.
+  await supersedePreReviewsForWorker(store, preReviews, child.id);
+  const workspacePath = store.workspaceRefFromState(child.childWorkspaceId)?.path;
+  const changedFiles = changedFilesFromLatestRun(store.transcriptFor(sessionRef), workspacePath);
+  if (
+    shouldPreReviewWorkerRun({
+      enabled: isScoutPreReviewEnabled(),
+      parentIsLead: true,
+      mode: child.mode,
+      status,
+      ...(error ? { error } : {}),
+      depth: child.depth,
+      changedFiles,
+    })
+  ) {
+    startScoutPreReview(store, preReviews, { worker: child, parentRef, reportText, changedFiles });
+    return;
+  }
+
+  if (!(await deliverChildReport(store, parentRef, reportText, child.id))) {
+    // Leave the run unreported so the next session event can retry it.
+    reportedRuns.delete(child.id);
+  }
+}
+
+async function deliverChildReport(
+  store: OrchestrationOwnerHost,
+  parentRef: SessionRef,
+  text: string,
+  childThreadId: string,
+  triggerTurn = true,
+): Promise<boolean> {
   try {
     await store.driver.sendCustomMessage(
       parentRef,
-      {
-        customType: CHILD_REPORT_CUSTOM_TYPE,
-        text: childCompletionReportText(
-          child,
-          status,
-          finalText,
-          error,
-          generationForChildThread(child.id),
-          store.isOrchestratorSession(parentRef),
-        ),
-        display: true,
-      },
-      { triggerTurn: true, deliverAs: "followUp" },
+      { customType: CHILD_REPORT_CUSTOM_TYPE, text, display: true },
+      { triggerTurn, deliverAs: "followUp" },
     );
+    return true;
   } catch (cause) {
-    // Leave the run unreported so the next session event can retry it.
-    reportedRuns.delete(child.id);
-    console.warn(`[orchestration] could not report child ${child.id} to its parent:`, cause);
+    console.warn(`[orchestration] could not report child ${childThreadId} to its parent:`, cause);
+    return false;
   }
+}
+
+interface PendingPreReview {
+  readonly workerChildId: string;
+  readonly parentRef: SessionRef;
+  readonly reportText: string;
+  timer?: ReturnType<typeof setTimeout>;
+}
+
+type PreReviews = Map<string, PendingPreReview>;
+
+/**
+ * Hold the worker report and start a read-only review scout as the worker's
+ * child. Parenting it under the worker keeps it off the lead's delegation
+ * budget and out of the lead's report path; mode scout means it is never
+ * reviewed itself. Spawning runs in the background because this is called
+ * from the session-event path. A failed spawn or a timeout delivers the
+ * worker report alone, so the lead is always woken exactly once.
+ */
+function startScoutPreReview(
+  store: OrchestrationOwnerHost,
+  preReviews: PreReviews,
+  input: {
+    readonly worker: OrchestrationChildThread;
+    readonly parentRef: SessionRef;
+    readonly reportText: string;
+    readonly changedFiles: readonly string[];
+  },
+): void {
+  const callId = `${SCOUT_PRE_REVIEW_CALL_PREFIX}${randomUUID()}`;
+  const pending: PendingPreReview = {
+    workerChildId: input.worker.id,
+    parentRef: input.parentRef,
+    reportText: input.reportText,
+  };
+  preReviews.set(callId, pending);
+  pending.timer = setTimeout(() => {
+    void releasePreReview(store, preReviews, callId, { kind: "unavailable", reason: "timeout" });
+  }, resolveScoutPreReviewTimeoutMs());
+  pending.timer.unref?.();
+
+  const workerRef = childSessionRef(input.worker);
+  const prompt = scoutPreReviewBrief({
+    workerTitle: input.worker.title,
+    brief: workerBriefFromTranscript(store.transcriptFor(workerRef), input.worker.goal),
+    changedFiles: input.changedFiles,
+  });
+  void createChildThreadRecord(store, {
+    parentWorkspaceId: workerRef.workspaceId,
+    parentSessionId: workerRef.sessionId,
+    prompt,
+    mode: "scout",
+    sourceToolCallId: callId,
+    keepSelection: true,
+  }).then(
+    () => store.schedulePersistUiState(),
+    (cause: unknown) => {
+      console.warn(`[orchestration] scout pre-review did not start:`, cause);
+      void releasePreReview(store, preReviews, callId, { kind: "unavailable", reason: "failed" });
+    },
+  );
+}
+
+/** Deliver a held worker report once, with the review outcome; later calls are no-ops. */
+async function releasePreReview(
+  store: OrchestrationOwnerHost,
+  preReviews: PreReviews,
+  callId: string,
+  outcome: PreReviewOutcome,
+): Promise<void> {
+  const pending = preReviews.get(callId);
+  if (!pending) return;
+  preReviews.delete(callId);
+  clearTimeout(pending.timer);
+  if (outcome.kind === "unavailable") {
+    // Stop a review nobody will read; a cancelled run never reports.
+    const scout = preReviewScout(store, callId);
+    if (scout) await cancelChildRun(store, scout);
+  }
+  await deliverChildReport(
+    store,
+    pending.parentRef,
+    combinedPreReviewReportText(pending.reportText, outcome),
+    pending.workerChildId,
+    // The user stopped the lead: record the report without restarting it.
+    !(outcome.kind === "unavailable" && outcome.reason === "cancelled"),
+  );
+}
+
+async function cancelPreReviewsForParent(
+  store: OrchestrationOwnerHost,
+  preReviews: PreReviews,
+  parentRef: SessionRef,
+): Promise<void> {
+  const callIds = [...preReviews]
+    .filter(([, pending]) => sessionKey(pending.parentRef) === sessionKey(parentRef))
+    .map(([callId]) => callId);
+  for (const callId of callIds) {
+    await releasePreReview(store, preReviews, callId, { kind: "unavailable", reason: "cancelled" });
+  }
+}
+
+async function settlePreReviewFromScout(
+  store: OrchestrationOwnerHost,
+  preReviews: PreReviews,
+  scout: OrchestrationChildThread,
+  status: OrchestrationChildThreadStatus,
+): Promise<void> {
+  const callId = scout.sourceToolCallId;
+  if (!callId || !preReviews.has(callId)) return;
+  const scoutRef = childSessionRef(scout);
+  const verdict =
+    lastAssistantMessage(store.transcriptFor(scoutRef))?.text ??
+    store.sessionFromState(scoutRef)?.preview;
+  const ok = status === "complete" && !store.getSessionError(scoutRef) && verdict?.trim();
+  await releasePreReview(
+    store,
+    preReviews,
+    callId,
+    ok
+      ? { kind: "verdict", scoutThreadId: scout.id, verdict: verdict ?? "" }
+      : { kind: "unavailable", reason: "failed" },
+  );
+}
+
+async function supersedePreReviewsForWorker(
+  store: OrchestrationOwnerHost,
+  preReviews: PreReviews,
+  workerChildId: string,
+): Promise<void> {
+  const callIds = [...preReviews]
+    .filter(([, pending]) => pending.workerChildId === workerChildId)
+    .map(([callId]) => callId);
+  for (const callId of callIds) {
+    await releasePreReview(store, preReviews, callId, {
+      kind: "unavailable",
+      reason: "superseded",
+    });
+  }
+}
+
+function preReviewScout(
+  store: OrchestrationOwnerHost,
+  callId: string,
+): OrchestrationChildThread | undefined {
+  return store
+    .orchestrationState()
+    .orchestrationChildren.find((child) => child.sourceToolCallId === callId);
 }
 
 /** Report text injected into the orchestrator when a child run ends. Pure; unit-tested. */
