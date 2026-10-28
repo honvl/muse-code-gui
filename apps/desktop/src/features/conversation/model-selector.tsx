@@ -12,6 +12,9 @@ interface ModelSelectorProps {
   readonly provider: string | undefined;
   readonly modelId: string | undefined;
   readonly thinkingLevel: string | undefined;
+  readonly orchestratorMode?: boolean;
+  readonly sidekickProvider?: string | undefined;
+  readonly sidekickModelId?: string | undefined;
   readonly disabled?: boolean;
   readonly dropdownPlacement?: "above" | "below";
   readonly showEmptyModelControl?: boolean;
@@ -20,15 +23,21 @@ interface ModelSelectorProps {
   readonly emptyModelTitle?: string;
   readonly onSetModel: (provider: string, modelId: string) => void;
   readonly onSetThinking: (level: string) => void;
+  readonly onToggleOrchestrator?: (enabled: boolean) => void;
+  readonly onSetSidekickModel?: (provider: string, modelId: string) => void;
+  readonly onClearSidekickModel?: () => void;
 }
 
-type OpenDropdown = "none" | "model" | "thinking";
+type OpenDropdown = "none" | "model" | "thinking" | "sidekick";
 
 export function ModelSelector({
   runtime,
   provider,
   modelId,
   thinkingLevel,
+  orchestratorMode,
+  sidekickProvider,
+  sidekickModelId,
   disabled,
   dropdownPlacement = "above",
   showEmptyModelControl = false,
@@ -37,6 +46,9 @@ export function ModelSelector({
   emptyModelTitle = MODEL_OPTIONS_EMPTY_TITLE,
   onSetModel,
   onSetThinking,
+  onToggleOrchestrator,
+  onSetSidekickModel,
+  onClearSidekickModel,
 }: ModelSelectorProps) {
   const [open, setOpen] = useState<OpenDropdown>("none");
   const [modelFilter, setModelFilter] = useState("");
@@ -102,7 +114,31 @@ export function ModelSelector({
     };
   }, [open]);
 
-  if (!shouldRenderModelControl && !thinkingLevel) {
+  const showOrchestratorToggle = onToggleOrchestrator !== undefined;
+  // The sidekick picker only exists for a selected lead-mode thread: it needs
+  // both handlers (set + clear) and orchestrator mode on. New-thread surfaces
+  // never supply the handlers, so the control stays absent there.
+  const showSidekickSelector =
+    orchestratorMode === true &&
+    onSetSidekickModel !== undefined &&
+    onClearSidekickModel !== undefined;
+  const hasSidekickSelection = Boolean(sidekickProvider && sidekickModelId);
+  const sidekickOption =
+    hasSidekickSelection && sidekickProvider && sidekickModelId
+      ? modelOptions.find(
+          (option) => option.providerId === sidekickProvider && option.modelId === sidekickModelId,
+        )
+      : undefined;
+  const sidekickBadgeLabel =
+    sidekickProvider && sidekickModelId
+      ? `Sidekick: ${sidekickOption ? sidekickOption.label : `${sidekickProvider}:${sidekickModelId}`}`
+      : "Sidekick: workspace default";
+  if (
+    !shouldRenderModelControl &&
+    !thinkingLevel &&
+    !showOrchestratorToggle &&
+    !showSidekickSelector
+  ) {
     return null;
   }
 
@@ -145,6 +181,104 @@ export function ModelSelector({
                         onClick={() => {
                           if (!isActive) {
                             onSetModel(option.providerId, option.modelId);
+                          }
+                          setOpen("none");
+                        }}
+                      >
+                        <span className="model-selector__item-label">{option.label}</span>
+                        {isActive ? (
+                          <span className="model-selector__item-meta">active</span>
+                        ) : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              ))}
+              {groupedModels.length === 0 ? (
+                <>
+                  <div className="model-selector__group-title">
+                    {noMatchingModels ? "No matching models" : emptyModelTitle}
+                  </div>
+                  {noMatchingModels ? (
+                    <div className="model-selector__empty">Try a different filter.</div>
+                  ) : null}
+                </>
+              ) : null}
+            </div>
+          ) : null}
+        </span>
+      ) : null}
+      {showOrchestratorToggle ? (
+        <span className="model-selector__anchor">
+          <button
+            className={`model-selector__badge${orchestratorMode ? " model-selector__item--active" : ""}`}
+            type="button"
+            disabled={disabled}
+            title={
+              orchestratorMode
+                ? "Lead mode on: delegates bulky work, keeps all tools"
+                : "Turn on orchestrator mode"
+            }
+            onClick={() => onToggleOrchestrator?.(!orchestratorMode)}
+          >
+            {orchestratorMode ? "Orchestrator" : "Orchestrate"}
+          </button>
+        </span>
+      ) : null}
+      {showSidekickSelector ? (
+        <span className="model-selector__anchor">
+          <button
+            className="model-selector__badge"
+            type="button"
+            disabled={disabled}
+            title="Model used for child threads"
+            onClick={() => setOpen(open === "sidekick" ? "none" : "sidekick")}
+          >
+            {sidekickBadgeLabel}
+          </button>
+          {open === "sidekick" ? (
+            <div
+              className={`model-selector__dropdown ${dropdownPlacement === "below" ? "model-selector__dropdown--below" : ""}`}
+              onWheel={(event) => event.stopPropagation()}
+            >
+              <div className="model-selector__filter">
+                <input
+                  className="model-selector__filter-input"
+                  placeholder="Filter models..."
+                  value={modelFilter}
+                  onChange={(e) => setModelFilter(e.target.value)}
+                  autoFocus
+                />
+              </div>
+              <button
+                className={`model-selector__item${hasSidekickSelection ? "" : " model-selector__item--active"}`}
+                type="button"
+                onClick={() => {
+                  if (hasSidekickSelection) {
+                    onClearSidekickModel?.();
+                  }
+                  setOpen("none");
+                }}
+              >
+                <span className="model-selector__item-label">Workspace default</span>
+                {hasSidekickSelection ? null : (
+                  <span className="model-selector__item-meta">active</span>
+                )}
+              </button>
+              {groupedModels.map((group) => (
+                <div key={group.provider}>
+                  <div className="model-selector__group-title">{group.provider}</div>
+                  {group.items.map((option) => {
+                    const isActive =
+                      option.providerId === sidekickProvider && option.modelId === sidekickModelId;
+                    return (
+                      <button
+                        className={`model-selector__item${isActive ? " model-selector__item--active" : ""}`}
+                        key={`${option.providerId}:${option.modelId}`}
+                        type="button"
+                        onClick={() => {
+                          if (!isActive) {
+                            onSetSidekickModel?.(option.providerId, option.modelId);
                           }
                           setOpen("none");
                         }}

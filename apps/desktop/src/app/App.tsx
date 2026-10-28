@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { RuntimeSnapshot } from "@pi-gui/session-driver/runtime-types";
 import {
   getSelectedSession,
   getSelectedWorkspace,
@@ -91,6 +90,10 @@ import { getEffectiveModelRuntime } from "../features/settings/model-settings";
 import { applyTheme, getActiveTheme, useActiveTheme } from "../ui/active-theme";
 import { deriveWorkspaceContext } from "./workspace-context";
 import { useTreeForkModals } from "../features/conversation/hooks/use-tree-fork-modals";
+import {
+  useSidekickSelection,
+  useSessionConfigControls,
+} from "../features/conversation/hooks/use-sidekick-selection";
 import { useComposerDraftSync } from "../features/conversation/hooks/use-composer-draft-sync";
 import { useSessionComposer } from "../features/conversation/hooks/use-session-composer";
 import { useTranscriptAnnotations } from "../features/conversation/annotations/use-transcript-annotations";
@@ -226,6 +229,19 @@ export default function App() {
     flushComposerDraft,
     flushComposerDraftAsync,
   } = useComposerDraftSync({ api, snapshot, selectedSession: workbenchTarget });
+  const { sidekick, setSidekick } = useSidekickSelection({
+    api,
+    setSnapshot,
+    target: workbenchTarget,
+    sidekick: selectedSession?.config?.sidekick,
+  });
+  const { orchestratorMode, setOrchestratorMode, setSessionModel, setSessionThinking } =
+    useSessionConfigControls({
+      api,
+      setSnapshot,
+      target: workbenchTarget,
+      orchestratorMode: selectedSession?.config?.orchestratorMode,
+    });
   const extensionViews = useExtensionViews({ api, target: workbenchTarget });
   const workbench = useWorkbench({ api, target: workbenchTarget });
   // Tracked while the panel is closed too, so a chord that opens it shows the hints.
@@ -772,32 +788,6 @@ export default function App() {
   ]
     .filter(Boolean)
     .join(" ");
-  const handleSetSessionModel = (provider: string, modelId: string) => {
-    if (!selectedWorkspace || !selectedSession) {
-      return;
-    }
-    void updateSnapshot(setSnapshot, () =>
-      api.setSessionModel(selectedWorkspace.id, selectedSession.id, provider, modelId),
-    ).catch((error: unknown) => {
-      console.error("[renderer] updateSnapshot failed", error);
-    });
-  };
-
-  const handleSetSessionThinking = (level: string) => {
-    if (!selectedWorkspace || !selectedSession) {
-      return;
-    }
-    void updateSnapshot(setSnapshot, () =>
-      api.setSessionThinkingLevel(
-        selectedWorkspace.id,
-        selectedSession.id,
-        level as NonNullable<RuntimeSnapshot["settings"]["defaultThinkingLevel"]>,
-      ),
-    ).catch((error: unknown) => {
-      console.error("[renderer] updateSnapshot failed", error);
-    });
-  };
-
   const handleTrySkill = (command: string) => {
     void updateSnapshot(setSnapshot, () => api.setActiveView("threads")).catch((error: unknown) => {
       console.error("[renderer] setActiveView failed", error);
@@ -925,7 +915,7 @@ export default function App() {
               console.error("[renderer] open file from palette failed", error);
             });
         }}
-        onSelectModel={handleSetSessionModel}
+        onSelectModel={setSessionModel}
       />
     ) : null;
 
@@ -1115,6 +1105,8 @@ export default function App() {
                   newThread.setModelId(modelId);
                 }}
                 onSetThinking={newThread.setThinkingLevel}
+                orchestratorMode={newThread.orchestratorMode}
+                onToggleOrchestrator={newThread.setOrchestratorMode}
                 extensionFlags={newThread.extensionFlags}
                 onSetExtensionFlag={newThread.setExtensionFlag}
                 onOpenModelSettings={(section) => openSettings(newThread.workspace?.id, section)}
@@ -1240,8 +1232,14 @@ export default function App() {
                 onSelectSlashOption={(option) => {
                   slashMenu.applySlashOptionSelection(option);
                 }}
-                onSetModel={handleSetSessionModel}
-                onSetThinking={handleSetSessionThinking}
+                onSetModel={setSessionModel}
+                onSetThinking={setSessionThinking}
+                orchestratorMode={orchestratorMode}
+                onToggleOrchestrator={setOrchestratorMode}
+                sidekickProvider={sidekick?.provider}
+                sidekickModelId={sidekick?.modelId}
+                onSetSidekickModel={(provider, modelId) => setSidekick({ provider, modelId })}
+                onClearSidekickModel={() => setSidekick(null)}
                 modelOnboarding={selectedSessionModelOnboarding}
                 onOpenModelSettings={(section) =>
                   openSettings(selectedWorkspace?.rootWorkspaceId ?? selectedWorkspace?.id, section)

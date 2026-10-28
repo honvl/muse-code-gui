@@ -7,6 +7,7 @@ import type {
   CreateSessionOptions,
   SessionConfig,
   SessionDriverEvent,
+  SessionModelSelection,
   SessionRef,
   SessionSnapshot,
   WorkspaceRef,
@@ -28,7 +29,9 @@ import type {
 import { latestSessionActivityAt, previewFromTranscript } from "../application/app-store-utils";
 import type { RefreshStateOptions } from "../application/refresh-state-options";
 import {
+  CHILD_REPORT_SUFFIX,
   ORCHESTRATION_MAX_CHILD_DEPTH,
+  composeChildBrief,
   createChildThreadAction,
   createChildThreadModeFromToolOutput,
   createChildThreadPromptFromToolOutput,
@@ -55,7 +58,11 @@ import type {
 const CHILD_TITLE_LIMIT = 56;
 const MAX_CHILD_TRANSCRIPT_MESSAGES = 40;
 const MAX_READ_THREAD_MESSAGES = 60;
+const READ_THREAD_GOAL_LIMIT = 400;
+const READ_THREAD_MESSAGE_LIMIT = 2000;
 const MAX_EVIDENCE_RECORDS_PER_CHILD = 80;
+const CHILD_REPORT_CUSTOM_TYPE = "pi-gui.child-report";
+const CHILD_REPORT_MESSAGE_LIMIT = 4_000;
 const DEFAULT_SUPERVISION_INTERVAL_MS = 60_000;
 const MIN_SUPERVISION_INTERVAL_MS = 250;
 const CHILD_START_TIMEOUT_MS = 10_000;
@@ -72,7 +79,7 @@ interface OrchestrationStateView {
 
 type OrchestrationDriver = Pick<
   PiSdkDriver,
-  "cancelCurrentRun" | "createSession" | "setChildIsolation"
+  "cancelCurrentRun" | "createSession" | "sendCustomMessage" | "setChildIsolation"
 >;
 
 interface OrchestrationOwnerHost {
@@ -96,6 +103,9 @@ interface OrchestrationOwnerHost {
     listener: (event: SessionDriverEvent, state: DesktopAppState) => void | Promise<void>,
   ): () => void;
   updateSessionConfig(sessionRef: SessionRef, config: SessionConfig | undefined): void;
+  isOrchestratorSession(sessionRef: SessionRef): boolean;
+  sidekickModelFor(sessionRef: SessionRef): SessionModelSelection | undefined;
+  sessionModelFor(sessionRef: SessionRef): SessionModelSelection | undefined;
   buildCreateSessionOptions(workspaceId: string): Promise<CreateSessionOptions | undefined>;
   getQueuedComposerMessages(
     sessionRef: SessionRef,
@@ -117,6 +127,7 @@ interface OrchestrationOwnerHost {
 
 export interface OrchestrationOwner {
   reconcileDueSupervisionLoops(): { readonly changed: boolean };
+  reportChildCompletion(sessionRef: SessionRef): Promise<void>;
   cancelChildRunsForParent(parentRef: SessionRef): Promise<void>;
   sendChildThreadFollowUp(input: SendChildThreadFollowUpInput): Promise<DesktopAppState>;
   setChildSupervisionLoopGate(input: SetChildSupervisionLoopInput): Promise<DesktopAppState>;
@@ -135,22 +146,41 @@ export interface OrchestrationOwner {
   hasOrchestrationParentSession(sessionRef: SessionRef): boolean;
   createChildThreadToolResult(
     parentRef: SessionRef,
-    input: { readonly prompt: string; readonly toolCallId: string },
+    input: {
+      readonly prompt: string;
+      readonly sourcePrompt?: string;
+      readonly toolCallId: string;
+      readonly mode?: OrchestrationChildMode;
+    },
   ): Promise<AgentToolResult<CreateChildThreadToolDetails>>;
   listThreadsToolResult(parentRef: SessionRef): AgentToolResult<ListThreadsToolDetails>;
   readThreadToolResult(
     parentRef: SessionRef,
     threadId: string,
+    options?: {
+      readonly waitSeconds?: number;
+      readonly signal?: AbortSignal;
+      readonly full?: boolean;
+    },
   ): Promise<AgentToolResult<ReadThreadToolDetails>>;
   sendMessageToThreadToolResult(
     parentRef: SessionRef,
-    input: { readonly threadId: string; readonly message: string },
+    input: { readonly threadId: string; readonly message: string; readonly interrupt?: boolean },
   ): Promise<AgentToolResult<SendMessageToThreadToolDetails>>;
 }
 
 export function createOrchestrationOwner(store: OrchestrationOwnerHost): OrchestrationOwner {
+  // Delta-read cursors: how many child messages have already been returned to
+  // each parent, keyed by `${parentSessionId}:${childSessionId}`. Private to
+  // this owner so incremental reads never leak across parents.
+  const readThreadCursors = new Map<string, number>();
+  // Completed runs already reported to a parent, keyed by child thread id.
+  // Cleared when the child starts running again so a follow-up run reports too.
+  const reportedChildRuns = new Map<string, string>();
   return {
     reconcileDueSupervisionLoops: () => reconcileDueSupervisionLoops(store),
+    reportChildCompletion: (sessionRef) =>
+      reportChildCompletion(store, sessionRef, reportedChildRuns),
     cancelChildRunsForParent: (parentRef) => cancelChildRunsForParent(store, parentRef),
     sendChildThreadFollowUp: (input) => sendChildThreadFollowUp(store, input),
     setChildSupervisionLoopGate: (input) => setChildSupervisionLoopGate(store, input),
@@ -160,7 +190,7 @@ export function createOrchestrationOwner(store: OrchestrationOwnerHost): Orchest
     projectOrchestrationChildrenForSession: (sessionRef) =>
       projectOrchestrationChildrenForSession(store, sessionRef),
     handleOrchestrationThreadToolResult: (event) =>
-      handleOrchestrationThreadToolResult(store, event),
+      handleOrchestrationThreadToolResult(store, event, readThreadCursors),
     hasOrchestrationChildSession: (sessionRef) =>
       hasOrchestrationChildSession(store.orchestrationState().orchestrationChildren, sessionRef),
     hasOrchestrationParentSession: (sessionRef) =>
@@ -168,7 +198,8 @@ export function createOrchestrationOwner(store: OrchestrationOwnerHost): Orchest
     createChildThreadToolResult: (parentRef, input) =>
       createChildThreadToolResult(store, parentRef, input),
     listThreadsToolResult: (parentRef) => listThreadsToolResult(store, parentRef),
-    readThreadToolResult: (parentRef, threadId) => readThreadToolResult(store, parentRef, threadId),
+    readThreadToolResult: (parentRef, threadId, options) =>
+      readThreadToolResult(store, parentRef, threadId, options, readThreadCursors),
     sendMessageToThreadToolResult: (parentRef, input) =>
       sendMessageToThreadToolResult(store, parentRef, input),
   };
@@ -178,6 +209,7 @@ interface SpawnChildThreadInput {
   readonly parentWorkspaceId: string;
   readonly parentSessionId: string;
   readonly prompt: string;
+  readonly sourcePrompt?: string;
   readonly mode?: OrchestrationChildMode;
   readonly sourceToolCallId?: string;
 }
@@ -196,6 +228,9 @@ async function createChildThreadRecord(
   if (!prompt) {
     throw new Error("Child thread prompt cannot be empty.");
   }
+  // Display text shown to the lead: the caller's raw prompt. Delivery and
+  // transcript matching always use the composed brief (`prompt`).
+  const displayPrompt = (input.sourcePrompt ?? prompt).trim() || prompt;
 
   const parent = store.sessionFromState({
     workspaceId: input.parentWorkspaceId,
@@ -248,12 +283,22 @@ async function createChildThreadRecord(
     pendingCreateChildThreadToolCalls.add(pendingKey);
   }
   try {
-    // Child threads intentionally inherit the workspace default model (never the
-    // parent's per-thread override) so agent-spawned delegation stays cheap.
+    // Children run on the spawning thread's configured sidekick model so the
+    // lead stays on the frontier/expensive model. A child session without its
+    // own sidekick passes its own model down, keeping a delegation subtree on
+    // one model; otherwise the workspace default applies.
+    const parentRef: SessionRef = {
+      workspaceId: input.parentWorkspaceId,
+      sessionId: input.parentSessionId,
+    };
+    const sidekick =
+      store.sidekickModelFor(parentRef) ??
+      (parentChild ? store.sessionModelFor(parentRef) : undefined);
     const createOptions = await store.buildCreateSessionOptions(input.parentWorkspaceId);
     const session = await store.driver.createSession(workspace, {
       ...createOptions,
-      title: titleFromPrompt(prompt),
+      ...(sidekick ? { initialModel: sidekick } : {}),
+      title: titleFromPrompt(displayPrompt),
     });
     const childRef = session.ref;
     store.seedSession(session);
@@ -270,12 +315,12 @@ async function createChildThreadRecord(
       parentSessionId: input.parentSessionId,
       childWorkspaceId: childRef.workspaceId,
       childSessionId: childRef.sessionId,
-      title: session.title || titleFromPrompt(prompt),
-      goal: prompt,
+      title: session.title || titleFromPrompt(displayPrompt),
+      goal: displayPrompt,
       mode,
       depth,
       status,
-      latestTranscript: session.preview || prompt,
+      latestTranscript: session.preview || displayPrompt,
       transcript: [],
       evidence: [
         {
@@ -285,7 +330,7 @@ async function createChildThreadRecord(
           source: "orchestrator-accepted",
           status: "accepted",
           title: "Child thread created",
-          detail: prompt,
+          detail: displayPrompt,
           parentSessionId: input.parentSessionId,
           childSessionId: childRef.sessionId,
           ...(git ? { git } : {}),
@@ -364,12 +409,23 @@ async function handleCreateChildThreadToolResult(
   }
   const mode = createChildThreadModeFromToolOutput(event.output);
 
+  // Tool outputs now carry the caller's raw prompt in details.prompt, while
+  // the child was launched with the composed brief. Delivery matching is
+  // transcript-anchored (see initialPromptDeliveryStatus), so pass the raw
+  // text through as the display prompt and re-ensure the report suffix for
+  // the edge case where no child record exists yet and we must (re)deliver.
+  // Legacy outputs already end with the suffix and pass through unchanged.
+  const deliveryPrompt = prompt.endsWith(CHILD_REPORT_SUFFIX)
+    ? prompt
+    : composeChildBrief({ prompt });
+
   let deliveryStatus: CreatedChildThreadResult["deliveryStatus"];
   try {
     const result = await createChildThreadRecord(store, {
       parentWorkspaceId: event.sessionRef.workspaceId,
       parentSessionId: event.sessionRef.sessionId,
-      prompt,
+      prompt: deliveryPrompt,
+      sourcePrompt: prompt,
       ...(mode ? { mode } : {}),
       sourceToolCallId: event.callId,
     });
@@ -401,6 +457,7 @@ async function handleCreateChildThreadToolResult(
 async function handleOrchestrationThreadToolResult(
   store: OrchestrationOwnerHost,
   event: Extract<SessionDriverEvent, { type: "toolFinished" }>,
+  cursors: Map<string, number>,
 ): Promise<boolean> {
   if (!event.success) {
     return false;
@@ -422,7 +479,7 @@ async function handleOrchestrationThreadToolResult(
   }
 
   if (tool.toolName === readThreadToolName) {
-    await updateReadThreadToolOutput(store, event);
+    await updateReadThreadToolOutput(store, event, cursors);
     refreshParentOrchestrationEvidence(store, event.sessionRef);
     return true;
   }
@@ -539,6 +596,7 @@ async function createChildThreadToolResult(
   parentRef: SessionRef,
   input: {
     readonly prompt: string;
+    readonly sourcePrompt?: string;
     readonly toolCallId: string;
     readonly mode?: OrchestrationChildMode;
   },
@@ -547,12 +605,13 @@ async function createChildThreadToolResult(
     parentWorkspaceId: parentRef.workspaceId,
     parentSessionId: parentRef.sessionId,
     prompt: input.prompt,
+    ...(input.sourcePrompt ? { sourcePrompt: input.sourcePrompt } : {}),
     ...(input.mode ? { mode: input.mode } : {}),
     sourceToolCallId: input.toolCallId,
   });
   const details: CreateChildThreadToolDetails = {
     action: createChildThreadAction,
-    prompt: input.prompt.trim(),
+    prompt: (input.sourcePrompt ?? input.prompt).trim(),
     ...(child.mode ? { mode: child.mode } : {}),
     ...(typeof child.depth === "number" ? { depth: child.depth } : {}),
     childThreadId: child.id,
@@ -583,6 +642,7 @@ function updateListThreadsToolOutput(
 async function updateReadThreadToolOutput(
   store: OrchestrationOwnerHost,
   event: Extract<SessionDriverEvent, { type: "toolFinished" }>,
+  cursors: Map<string, number>,
 ): Promise<void> {
   const finalOutput = finalThreadToolProjectionFromOutput(event.output);
   if (finalOutput) {
@@ -600,10 +660,14 @@ async function updateReadThreadToolOutput(
     return;
   }
 
+  // Refresh path for legacy/non-final rows: re-read the full window without
+  // consuming the delta cursor (the live tool result already advanced it).
   updateThreadToolOutput(
     store,
     event,
-    projectionFromToolResult(await readThreadToolResult(store, event.sessionRef, threadId)),
+    projectionFromToolResult(
+      await readThreadToolResult(store, event.sessionRef, threadId, { full: true }, cursors),
+    ),
   );
 }
 
@@ -655,10 +719,66 @@ function listThreadsToolResult(
   };
 }
 
+/**
+ * Wait for a child session to leave the running state, watching live driver
+ * events. Always unsubscribes; resolves on completion, failure, close, an
+ * idle status update, the timeout, or abort — whichever comes first.
+ */
+export async function waitForChildSettled(options: {
+  readonly subscribe: OrchestrationOwnerHost["subscribeToSessionEvents"];
+  readonly isRunning: () => boolean;
+  readonly sessionRef: SessionRef;
+  readonly timeoutMs: number;
+  readonly signal?: AbortSignal;
+}): Promise<"settled" | "timeout" | "aborted"> {
+  if (options.signal?.aborted) return "aborted";
+  if (!options.isRunning()) return "settled";
+  if (!(options.timeoutMs > 0)) return "timeout";
+  const key = sessionKey(options.sessionRef);
+  return new Promise((resolve) => {
+    let done = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (outcome: "settled" | "timeout" | "aborted") => {
+      if (done) return;
+      done = true;
+      if (timer !== undefined) clearTimeout(timer);
+      options.signal?.removeEventListener("abort", onAbort);
+      unsubscribe();
+      resolve(outcome);
+    };
+    const onAbort = () => finish("aborted");
+    const unsubscribe = options.subscribe((event) => {
+      if (sessionKey(event.sessionRef) !== key) return;
+      if (
+        event.type === "runCompleted" ||
+        event.type === "runFailed" ||
+        event.type === "sessionClosed"
+      ) {
+        finish("settled");
+      } else if (event.type === "sessionUpdated" && event.snapshot.status !== "running") {
+        finish("settled");
+      }
+    });
+    // The child may have settled between the caller's check and this subscribe.
+    if (!options.isRunning() || options.signal?.aborted) {
+      finish(options.signal?.aborted ? "aborted" : "settled");
+      return;
+    }
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+    timer = setTimeout(() => finish("timeout"), options.timeoutMs);
+  });
+}
+
 async function readThreadToolResult(
   store: OrchestrationOwnerHost,
   parentRef: SessionRef,
   threadId: string,
+  options: {
+    readonly waitSeconds?: number;
+    readonly signal?: AbortSignal;
+    readonly full?: boolean;
+  } = {},
+  cursors: Map<string, number>,
 ): Promise<AgentToolResult<ReadThreadToolDetails>> {
   const target = resolveThreadTarget(store, parentRef, threadId);
   if (!target) {
@@ -666,30 +786,103 @@ async function readThreadToolResult(
   }
 
   await store.ensureSessionReady(target.sessionRef);
-  const transcript = store.transcriptFor(target.sessionRef);
-  const session = store.sessionFromState(target.sessionRef);
-  const messages = toThreadReadMessages(transcript);
-  const title = session?.title ?? target.child?.title ?? target.sessionRef.sessionId;
-  const status = target.child?.status ?? session?.status ?? "unknown";
+  // Read status fresh on every check: the child record captured in `target`
+  // goes stale across the async ready above, and a stale "running" would miss
+  // an already-fired runCompleted and block for the full timeout.
+  const liveChildStatus = () => resolveThreadTarget(store, parentRef, threadId)?.child?.status;
+  const isRunning = () => {
+    if (store.sessionFromState(target.sessionRef)?.status === "running") return true;
+    const status = liveChildStatus();
+    return status === "queued" || status === "running" || status === "waiting";
+  };
+
+  let waitedSeconds = 0;
+  let timedOut = false;
+  const waitSeconds = options.waitSeconds ?? 0;
+  if (waitSeconds > 0 && isRunning()) {
+    const startedAt = Date.now();
+    const outcome = await waitForChildSettled({
+      subscribe: (listener) => store.subscribeToSessionEvents(listener),
+      isRunning,
+      sessionRef: target.sessionRef,
+      timeoutMs: waitSeconds * 1000,
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+    if (outcome === "aborted") {
+      return readThreadErrorResult(threadId, `read_thread wait aborted for ${threadId}.`);
+    }
+    waitedSeconds = Math.round((Date.now() - startedAt) / 1000);
+    timedOut = outcome === "timeout";
+  }
+
+  // Re-resolve after a wait so the transcript and status reflect the settle.
+  const fresh = resolveThreadTarget(store, parentRef, threadId) ?? target;
+  const transcript = store.transcriptFor(fresh.sessionRef);
+  const session = store.sessionFromState(fresh.sessionRef);
+  // Convert without a cap, then apply the delta cursor and the
+  // MAX_READ_THREAD_MESSAGES window so a single call stays bounded.
+  const allMessages = toChildTranscript(transcript, Number.MAX_SAFE_INTEGER);
+  const totalMessages = allMessages.length;
+  const cursorKey = `${parentRef.sessionId}:${fresh.sessionRef.sessionId}`;
+  const seen = options.full === true ? 0 : Math.min(cursors.get(cursorKey) ?? 0, totalMessages);
+  const freshMessages = allMessages.slice(seen).slice(-MAX_READ_THREAD_MESSAGES);
+  if (options.full !== true) {
+    cursors.set(cursorKey, totalMessages);
+  }
+  const title = session?.title ?? fresh.child?.title ?? fresh.sessionRef.sessionId;
+  const status = fresh.child?.status ?? session?.status ?? "unknown";
+  const stillRunning = status === "running" || status === "queued" || status === "waiting";
+  // A timeout that missed its settle event must not report "still running"
+  // once the fresh state shows idle.
+  if (timedOut && !stillRunning) {
+    timedOut = false;
+  }
+  const notice = timedOut
+    ? `Still running after a ${waitSeconds}s wait. Call read_thread again with wait_seconds (up to 120) to keep waiting — do not poll rapidly.`
+    : stillRunning
+      ? "The thread is still running. Call read_thread again with wait_seconds (up to 120) to wait for completion instead of polling."
+      : waitedSeconds > 0
+        ? `Waited ${waitedSeconds}s for completion.`
+        : undefined;
+  const rawGoal = fresh.child?.goal;
+  const goal =
+    rawGoal === undefined ? undefined : truncateReadThreadText(rawGoal, READ_THREAD_GOAL_LIMIT);
+  let truncated = rawGoal !== undefined && goal !== rawGoal;
+  const messages = freshMessages.map((message) => {
+    const text = truncateReadThreadText(message.text, READ_THREAD_MESSAGE_LIMIT);
+    if (text === message.text) {
+      return message;
+    }
+    truncated = true;
+    return { ...message, text };
+  });
   const details: ReadThreadToolDetails = {
     action: readThreadAction,
     threadId,
-    workspaceId: target.sessionRef.workspaceId,
-    sessionId: target.sessionRef.sessionId,
+    workspaceId: fresh.sessionRef.workspaceId,
+    sessionId: fresh.sessionRef.sessionId,
     title,
     status,
-    ...(target.child
+    ...(fresh.child
       ? {
-          childThreadId: target.child.id,
-          goal: target.child.goal,
+          childThreadId: fresh.child.id,
+          goal,
         }
       : {}),
     messages,
+    truncated,
+    totalMessages,
+    omittedEarlier: seen,
+    ...(waitedSeconds > 0 ? { waitedSeconds } : {}),
+    ...(timedOut ? { timedOut: true } : {}),
   };
 
   return {
     content: [
-      { type: "text", text: formatThreadReadResult({ ...details, title, status, messages }) },
+      {
+        type: "text",
+        text: formatThreadReadResult({ ...details, title, status, messages, notice }),
+      },
     ],
     details,
   };
@@ -698,7 +891,7 @@ async function readThreadToolResult(
 async function sendMessageToThreadToolResult(
   store: OrchestrationOwnerHost,
   parentRef: SessionRef,
-  input: { readonly threadId: string; readonly message: string },
+  input: { readonly threadId: string; readonly message: string; readonly interrupt?: boolean },
 ): Promise<AgentToolResult<SendMessageToThreadToolDetails>> {
   const target = resolveThreadTarget(store, parentRef, input.threadId);
   if (!target) {
@@ -709,8 +902,36 @@ async function sendMessageToThreadToolResult(
     );
   }
 
+  // A running target steered without interrupt keeps its turn (deliverAs
+  // "steer"); interrupt:true cancels first so the message starts a NEW
+  // turn. An idle target submits normally either way. A rejected cancel never
+  // loses the message: it still delivers, reported as not interrupted.
+  const running = store.sessionFromState(target.sessionRef)?.status === "running";
+  let interrupted = false;
+  let deliverAs: "steer" | "followUp" = "followUp";
+  if (running && input.interrupt === true) {
+    try {
+      await store.driver.cancelCurrentRun(target.sessionRef);
+      interrupted = true;
+    } catch {
+      interrupted = false;
+    }
+    // The cancel races the submit below: without a settle wait the message
+    // can queue into the dying run instead of starting a new turn. Wait for
+    // the target to leave the running state (bounded), then submit
+    // regardless so the message is never lost.
+    await waitForChildSettled({
+      subscribe: (listener) => store.subscribeToSessionEvents(listener),
+      isRunning: () => store.sessionFromState(target.sessionRef)?.status === "running",
+      sessionRef: target.sessionRef,
+      timeoutMs: 5000,
+    });
+  } else if (running) {
+    deliverAs = "steer";
+  }
+
   await store.submitComposerToSession(target.sessionRef, input.message, [], {
-    deliverAs: "followUp",
+    deliverAs,
     allowCommands: false,
   });
   if (target.child) {
@@ -732,6 +953,7 @@ async function sendMessageToThreadToolResult(
     sessionId: target.sessionRef.sessionId,
     status,
     queuedMessageCount: queuedMessages.length,
+    ...(interrupted ? { interrupted: true as const } : {}),
     message: input.message,
   };
 
@@ -915,6 +1137,114 @@ function hasOrchestrationParentSession(
   );
 }
 
+/**
+ * Wake a child's orchestrator with the child's result. The report is a
+ * host-authored custom message (never a fake user bubble): an idle orchestrator
+ * starts a review turn from it, a busy one gets it as a follow-up. Only
+ * orchestrator-mode parents receive unsolicited reports; a normal thread already
+ * owns its children through the tool results it is waiting on.
+ *
+ * De-duplicated per finished run, so repeated session updates cannot wake the
+ * parent twice; a follow-up that re-runs the child reports again.
+ */
+async function reportChildCompletion(
+  store: OrchestrationOwnerHost,
+  sessionRef: SessionRef,
+  reportedRuns: Map<string, string>,
+): Promise<void> {
+  const child = store
+    .orchestrationState()
+    .orchestrationChildren.find(
+      (entry) =>
+        entry.childWorkspaceId === sessionRef.workspaceId &&
+        entry.childSessionId === sessionRef.sessionId,
+    );
+  if (!child) {
+    return;
+  }
+
+  const session = store.sessionFromState(sessionRef);
+  const status = toOrchestrationStatus(session?.status ?? "idle", sessionRef, store);
+  if (!isTerminalChildStatus(status) || !hasStartedRun(store, sessionRef)) {
+    reportedRuns.delete(child.id);
+    return;
+  }
+
+  const parentRef: SessionRef = {
+    workspaceId: child.parentWorkspaceId,
+    sessionId: child.parentSessionId,
+  };
+  if (!store.isOrchestratorSession(parentRef)) {
+    return;
+  }
+
+  const error = store.getSessionError(sessionRef);
+  const finalMessage = lastAssistantMessage(store.transcriptFor(sessionRef));
+  // The preview is the same final text when the transcript cache has not caught
+  // up yet (the child ran in the background).
+  const finalText = finalMessage?.text ?? session?.preview;
+  const signature = [status, finalMessage?.id ?? "", finalText?.length ?? 0, error ?? ""].join(
+    "\0",
+  );
+  if (reportedRuns.get(child.id) === signature) {
+    return;
+  }
+  reportedRuns.set(child.id, signature);
+
+  try {
+    await store.driver.sendCustomMessage(
+      parentRef,
+      {
+        customType: CHILD_REPORT_CUSTOM_TYPE,
+        text: childCompletionReportText(child, status, finalText, error),
+        display: true,
+      },
+      { triggerTurn: true, deliverAs: "followUp" },
+    );
+  } catch (cause) {
+    // Leave the run unreported so the next session event can retry it.
+    reportedRuns.delete(child.id);
+    console.warn(`[orchestration] could not report child ${child.id} to its parent:`, cause);
+  }
+}
+
+/** Report text injected into the orchestrator when a child run ends. Pure; unit-tested. */
+export function childCompletionReportText(
+  child: Pick<OrchestrationChildThread, "id" | "title" | "goal" | "status">,
+  status: OrchestrationChildThreadStatus,
+  finalText: string | undefined,
+  error?: string,
+): string {
+  const body = finalText?.trim()
+    ? truncateReadThreadText(finalText.trim(), CHILD_REPORT_MESSAGE_LIMIT)
+    : status === "failed"
+      ? "No final answer: the child run failed."
+      : `Child finished without a final report. Nothing was summarized, so this work is unverified: call read_thread("${child.id}") to inspect what it actually did before trusting this task.`;
+  return [
+    `Child thread "${child.title}" ${status === "failed" ? "failed" : "finished"}.`,
+    `thread_id: ${child.id}`,
+    `status: ${status}`,
+    `goal: ${truncateReadThreadText(child.goal, READ_THREAD_GOAL_LIMIT)}`,
+    ...(error ? [`error: ${truncateReadThreadText(error, READ_THREAD_GOAL_LIMIT)}`] : []),
+    "",
+    body,
+    "",
+    `Continue the orchestrator plan. Call read_thread("${child.id}") only if you need detail this report omits.`,
+  ].join("\n");
+}
+
+function lastAssistantMessage(
+  transcript: readonly TranscriptMessage[],
+): Extract<TranscriptMessage, { kind: "message" }> | undefined {
+  for (let index = transcript.length - 1; index >= 0; index -= 1) {
+    const item = transcript[index];
+    if (item?.kind === "message" && item.role === "assistant" && item.text.trim()) {
+      return item;
+    }
+  }
+  return undefined;
+}
+
 export function toPersistedOrchestrationChildren(
   children: readonly OrchestrationChildThread[],
 ): readonly OrchestrationChildThread[] | undefined {
@@ -1073,9 +1403,15 @@ function initialPromptDeliveryStatus(
   }
 
   const transcript = store.transcriptFor(childRef);
-  const promptIndex = transcript.findIndex(
+  let promptIndex = transcript.findIndex(
     (item) => item.kind === "message" && item.role === "user" && item.text === prompt,
   );
+  if (promptIndex < 0) {
+    // Tool outputs carry the caller's raw prompt while the child received the
+    // composed brief (raw prompt plus Scope blocks and the report suffix), so
+    // anchor on the first delivered user message instead: the initial prompt.
+    promptIndex = transcript.findIndex((item) => item.kind === "message" && item.role === "user");
+  }
   if (promptIndex < 0) {
     return undefined;
   }
@@ -1792,6 +2128,7 @@ function formatThreadReadResult(result: {
   readonly status: string;
   readonly goal?: string;
   readonly messages: readonly OrchestrationChildTranscriptMessage[];
+  readonly notice?: string;
 }): string {
   const lines = [
     `Thread ${result.threadId}: ${result.title}`,
@@ -1804,6 +2141,9 @@ function formatThreadReadResult(result: {
   } else {
     lines.push(...result.messages.map((message) => `- ${message.role}: ${message.text}`));
   }
+  if (result.notice) {
+    lines.push(result.notice);
+  }
   return lines.join("\n");
 }
 
@@ -1814,24 +2154,22 @@ function formatCreateChildThreadResult(result: CreateChildThreadToolDetails): st
     `childWorkspaceId: ${result.childWorkspaceId ?? ""}\n` +
     `childSessionId: ${result.childSessionId ?? ""}` +
     (result.mode ? `\nmode: ${result.mode}` : "") +
-    (result.deliveryStatus ? `\ninitialPrompt: ${result.deliveryStatus}` : "")
+    (result.deliveryStatus ? `\ninitialPrompt: ${result.deliveryStatus}` : "") +
+    "\nTo wait for completion, call read_thread once with wait_seconds (up to 120) instead of polling."
   );
 }
 
 function formatSendMessageToThreadResult(result: SendMessageToThreadToolDetails): string {
   const verb = result.status === "queued" ? "Queued" : "Sent";
   return (
+    (result.interrupted === true
+      ? `Interrupted thread ${result.threadId} and started a new turn. `
+      : "") +
     `${verb} message to thread ${result.threadId}.` +
     (result.queuedMessageCount && result.queuedMessageCount > 0
       ? ` Pending messages: ${result.queuedMessageCount}.`
       : "")
   );
-}
-
-function toThreadReadMessages(
-  transcript: readonly TranscriptMessage[],
-): readonly OrchestrationChildTranscriptMessage[] {
-  return toChildTranscript(transcript, MAX_READ_THREAD_MESSAGES);
 }
 
 function mergeEvidenceRecords(
@@ -2095,6 +2433,10 @@ function looksLikeBlocker(text: string): boolean {
 function severityFromText(text: string): OrchestrationEvidenceRecord["severity"] | undefined {
   const match = /^\s*\[?(P[0-3])\]?\s*:/.exec(text);
   return match?.[1] as OrchestrationEvidenceRecord["severity"] | undefined;
+}
+
+function truncateReadThreadText(text: string, limit: number): string {
+  return text.length > limit ? `${text.slice(0, limit)}…` : text;
 }
 
 function truncateEvidenceDetail(text: string): string {

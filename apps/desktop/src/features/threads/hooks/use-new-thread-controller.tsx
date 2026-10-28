@@ -69,6 +69,7 @@ export function useNewThreadController(params: UseNewThreadControllerParams) {
   const [provider, setProvider] = useState<string | undefined>();
   const [modelId, setModelId] = useState<string | undefined>();
   const [thinkingLevel, setThinkingLevel] = useState<string | undefined>();
+  const [orchestratorMode, setOrchestratorMode] = useState(false);
   // Flag edits on this surface, laid over the workspace's remembered defaults.
   const [extensionFlagEdits, setExtensionFlagEdits] = useState<ExtensionFlagValues>({});
   const [composerError, setComposerError] = useState<string | undefined>();
@@ -180,6 +181,7 @@ export function useNewThreadController(params: UseNewThreadControllerParams) {
       setProvider(undefined);
       setModelId(undefined);
       setThinkingLevel(undefined);
+      setOrchestratorMode(false);
       setExtensionFlagEdits({});
       setComposerError(undefined);
     },
@@ -211,6 +213,7 @@ export function useNewThreadController(params: UseNewThreadControllerParams) {
     setProvider(undefined);
     setModelId(undefined);
     setThinkingLevel(undefined);
+    setOrchestratorMode(false);
     setExtensionFlagEdits({});
     setComposerError(undefined);
   }, []);
@@ -312,6 +315,7 @@ export function useNewThreadController(params: UseNewThreadControllerParams) {
       provider: resolvedProvider,
       modelId: resolvedModelId,
       thinkingLevel: resolvedThinkingLevel,
+      ...(orchestratorMode ? { orchestratorMode: true as const } : {}),
       ...(Object.keys(extensionFlags).length > 0 ? { extensionFlags } : {}),
     };
     startingGenerationRef.current = generation;
@@ -329,6 +333,7 @@ export function useNewThreadController(params: UseNewThreadControllerParams) {
         setProvider(undefined);
         setModelId(undefined);
         setThinkingLevel(undefined);
+        setOrchestratorMode(false);
         setExtensionFlagEdits({});
         setEnvironment("local");
       })
@@ -346,6 +351,7 @@ export function useNewThreadController(params: UseNewThreadControllerParams) {
     environment,
     extensionFlags,
     modelOnboarding.requiresModelSelection,
+    orchestratorMode,
     prompt,
     resolvedModelId,
     resolvedProvider,
@@ -486,6 +492,7 @@ export function useNewThreadController(params: UseNewThreadControllerParams) {
       resolvedProvider,
       resolvedModelId,
       resolvedThinkingLevel,
+      orchestratorMode,
       extensionFlags,
       setExtensionFlag,
       modelOnboarding,
@@ -496,6 +503,7 @@ export function useNewThreadController(params: UseNewThreadControllerParams) {
       setProvider,
       setModelId,
       setThinkingLevel,
+      setOrchestratorMode,
       setPendingWorkspaceId,
       selectWorkspace,
       addAttachments,
@@ -520,6 +528,7 @@ export function useNewThreadController(params: UseNewThreadControllerParams) {
       resolvedProvider,
       resolvedModelId,
       resolvedThinkingLevel,
+      orchestratorMode,
       extensionFlags,
       setExtensionFlag,
       modelOnboarding,

@@ -71,6 +71,11 @@ export interface ReadThreadToolDetails {
   readonly childThreadId?: string;
   readonly goal?: string;
   readonly messages?: readonly OrchestrationThreadTranscriptMessage[];
+  readonly truncated?: boolean;
+  readonly totalMessages?: number;
+  readonly omittedEarlier?: number;
+  readonly waitedSeconds?: number;
+  readonly timedOut?: boolean;
   readonly error?: string;
 }
 
@@ -82,6 +87,7 @@ export interface SendMessageToThreadToolDetails {
   readonly sessionId?: string;
   readonly status?: "queued" | "sent";
   readonly queuedMessageCount?: number;
+  readonly interrupted?: boolean;
   readonly error?: string;
 }
 
@@ -90,6 +96,7 @@ export interface OrchestrationRuntimeBridge {
     ctx: ExtensionContext,
     input: {
       readonly prompt: string;
+      readonly sourcePrompt?: string;
       readonly toolCallId: string;
       readonly mode?: OrchestrationChildMode;
     },
@@ -98,10 +105,15 @@ export interface OrchestrationRuntimeBridge {
   readonly readThread: (
     ctx: ExtensionContext,
     threadId: string,
+    options?: {
+      readonly waitSeconds?: number;
+      readonly signal?: AbortSignal;
+      readonly full?: boolean;
+    },
   ) => Promise<AgentToolResult<ReadThreadToolDetails>>;
   readonly sendMessageToThread: (
     ctx: ExtensionContext,
-    input: { readonly threadId: string; readonly message: string },
+    input: { readonly threadId: string; readonly message: string; readonly interrupt?: boolean },
   ) => Promise<AgentToolResult<SendMessageToThreadToolDetails>>;
 }
 
@@ -118,13 +130,16 @@ function createCreateChildThreadTool(
     name: createChildThreadToolName,
     label: "Create child thread",
     description:
-      "Delegate an independent investigation or implementation task to a separate pi-gui child thread that runs in parallel. Child threads run on the workspace default model. Use mode scout for read-only investigations and worker when file or shell changes are required.",
+      "Delegate an independent investigation or implementation task to a separate pi-gui child thread that runs in parallel. Child threads run on the thread's configured sidekick model, falling back to the workspace default. Brief the child like a stranger: give it the objective, context, and verification it needs to finish without asking. Children report back automatically when a run ends. Use mode scout for read-only investigations and worker when file or shell changes are required.",
     promptSnippet:
       "create_child_thread: delegate independent work to a separate pi-gui child thread running in parallel.",
     promptGuidelines: [
       "When a task splits into independent parts (parallel investigations, independent implementations), spawn one child thread per part proactively instead of doing everything serially in this thread.",
       "Prefer mode scout for searches, exploration, and reviews; it is read-only and cannot edit files or run shell commands. Use worker only when the child must change files or run commands.",
-      "Keep the child prompt concrete and self-contained so the user can inspect the resulting thread.",
+      "Brief the child like a stranger: the prompt must stand alone with objective, context, constraints, scope, success criteria, and the verification to run. Use the scope, constraints, success_criteria, and verify fields for those blocks.",
+      "Children report back automatically when a run ends; act on the report instead of polling read_thread.",
+      "Children end every run with a four-part report: result summary, files changed or inspected, validation commands and outcomes, risks/blockers/questions.",
+      "Treat a report with no summary as unverified: call read_thread on the child to inspect what it actually did before trusting the task.",
       "Child threads are isolated: they cannot leave the workspace, write dotenv files, run destructive shell commands, or recurse past 3 levels. A scout thread cannot spawn a worker.",
       "Prefer reading a child thread before summarizing its status back to the user.",
     ],
@@ -134,6 +149,22 @@ function createCreateChildThreadTool(
         prompt: {
           type: "string",
           description: "Concrete instructions for the child thread.",
+        },
+        scope: {
+          type: "string",
+          description: "Files or areas the child should work in.",
+        },
+        constraints: {
+          type: "string",
+          description: "Limits the child must respect (what not to touch or change).",
+        },
+        success_criteria: {
+          type: "string",
+          description: "How the child knows it is done.",
+        },
+        verify: {
+          type: "string",
+          description: "Verification the child must run before reporting back.",
         },
         mode: {
           type: "string",
@@ -145,12 +176,14 @@ function createCreateChildThreadTool(
       required: ["prompt"],
     },
     async execute(toolCallId, params, _signal, _onUpdate, ctx) {
-      const prompt = createChildThreadPromptFromParams(params);
+      const prompt = createChildThreadBriefFromParams(params);
       if (!prompt) {
         throw new Error("create_child_thread requires a non-empty prompt.");
       }
+      const sourcePrompt = createChildThreadPromptFromParams(params);
       return bridge.createChildThread(ctx, {
         prompt,
+        ...(sourcePrompt ? { sourcePrompt } : {}),
         toolCallId,
         mode: createChildThreadModeFromParams(params),
       });
@@ -187,11 +220,17 @@ function createReadThreadTool(
   return {
     name: readThreadToolName,
     label: "Read thread",
-    description: "Read a pi-gui thread transcript or child thread summary by id.",
+    description:
+      "Read a pi-gui thread transcript or child thread summary by id. " +
+      "If the thread is still running, pass wait_seconds to block until it finishes " +
+      "(up to 120s) instead of polling. " +
+      "Incremental by default: returns only messages not yet seen by the calling parent; " +
+      "pass full:true for the entire transcript.",
     promptSnippet: "read_thread: read a pi-gui thread transcript by id.",
     promptGuidelines: [
-      "Use read_thread with a thread id returned by list_threads or create_child_thread.",
-      "Prefer reading a child thread before summarizing its status back to the parent.",
+      "Child threads report back automatically when a run ends; act on the report instead of polling read_thread.",
+      "Call read_thread only for detail a report omits; it returns only messages you have not seen yet.",
+      "Never poll read_thread in a loop while a child runs; wait once with wait_seconds or let the report wake you.",
     ],
     parameters: {
       type: "object",
@@ -200,10 +239,20 @@ function createReadThreadTool(
           type: "string",
           description: "Thread id, child thread id, or session id to read.",
         },
+        wait_seconds: {
+          type: "number",
+          description:
+            "Seconds to wait for a running thread to finish before returning (max 120). Omit or 0 to return immediately.",
+        },
+        full: {
+          type: "boolean",
+          description:
+            "Return the entire transcript. Omit for an incremental read of only messages not yet returned for this parent/child pair.",
+        },
       },
       required: ["thread_id"],
     },
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const threadId = threadIdFromParams(params);
       if (!threadId) {
         return {
@@ -215,7 +264,13 @@ function createReadThreadTool(
           },
         };
       }
-      return bridge.readThread(ctx, threadId);
+      const waitSeconds = readThreadWaitSecondsFromParams(params);
+      const full = fullFromParams(params);
+      return bridge.readThread(ctx, threadId, {
+        ...(waitSeconds !== undefined ? { waitSeconds } : {}),
+        ...(full !== undefined ? { full } : {}),
+        signal,
+      });
     },
   };
 }
@@ -231,6 +286,7 @@ function createSendMessageToThreadTool(
     promptGuidelines: [
       "Use send_message_to_thread to follow up with an existing child or sibling pi-gui thread.",
       "Use a thread id returned by list_threads or create_child_thread.",
+      "If a child is drifting, pass interrupt:true to stop its current run before the message starts a new turn; otherwise steer it without interrupting.",
     ],
     parameters: {
       type: "object",
@@ -242,6 +298,11 @@ function createSendMessageToThreadTool(
         message: {
           type: "string",
           description: "Follow-up message to send.",
+        },
+        interrupt: {
+          type: "boolean",
+          description:
+            "Set true to interrupt a still-running thread before delivering, so the message starts a new turn. Omit or false to steer without interrupting.",
         },
       },
       required: ["thread_id", "message"],
@@ -262,7 +323,12 @@ function createSendMessageToThreadTool(
           },
         };
       }
-      return bridge.sendMessageToThread(ctx, { threadId, message });
+      const interrupt = interruptFromParams(params);
+      return bridge.sendMessageToThread(ctx, {
+        threadId,
+        message,
+        ...(interrupt !== undefined ? { interrupt } : {}),
+      });
     },
   };
 }
@@ -294,6 +360,75 @@ export function createChildThreadPromptFromParams(params: unknown): string | und
   }
   const prompt = typeof params.prompt === "string" ? params.prompt.trim() : "";
   return prompt || undefined;
+}
+
+export interface ChildBriefParts {
+  readonly prompt: string;
+  readonly scope?: string;
+  readonly constraints?: string;
+  readonly success_criteria?: string;
+  readonly verify?: string;
+}
+
+/**
+ * Always-on closing instruction appended to every child brief so each handoff
+ * ends with a structured report. The lead acts on that report and only calls
+ * read_thread for detail it omits.
+ */
+export const CHILD_REPORT_SUFFIX =
+  "Report back with: 1) the result summary, 2) files changed or inspected, 3) the validation commands you ran and their outcomes, 4) risks, blockers, or open questions. Do not commit or push.";
+
+/**
+ * Compose the single prompt string handed to the child-thread bridge.
+ * The base prompt comes first, then each non-blank optional block as a
+ * labeled section in fixed order (Scope, Constraints, Success criteria,
+ * Verify), separated by blank lines. Blank blocks are omitted. The report
+ * suffix is always appended last so even a bare prompt teaches the report contract.
+ */
+export function composeChildBrief(parts: ChildBriefParts): string {
+  const blocks = [parts.prompt.trim()];
+  const labeled: ReadonlyArray<readonly [string, string | undefined]> = [
+    ["Scope", parts.scope],
+    ["Constraints", parts.constraints],
+    ["Success criteria", parts.success_criteria],
+    ["Verify", parts.verify],
+  ];
+  for (const [label, value] of labeled) {
+    const trimmed = value?.trim();
+    if (trimmed) blocks.push(`${label}: ${trimmed}`);
+  }
+  blocks.push(CHILD_REPORT_SUFFIX);
+  return blocks.join("\n\n");
+}
+
+/**
+ * Read the full child brief (prompt plus optional scope/constraints/
+ * success_criteria/verify blocks) from create_child_thread params.
+ */
+export function createChildThreadBriefFromParams(params: unknown): string | undefined {
+  if (!isRecord(params)) {
+    return undefined;
+  }
+  const prompt = createChildThreadPromptFromParams(params);
+  if (!prompt) {
+    return undefined;
+  }
+  return composeChildBrief({
+    prompt,
+    scope: optionalBriefParam(params, "scope"),
+    constraints: optionalBriefParam(params, "constraints"),
+    success_criteria: optionalBriefParam(params, "success_criteria"),
+    verify: optionalBriefParam(params, "verify"),
+  });
+}
+
+function optionalBriefParam(params: Record<string, unknown>, key: string): string | undefined {
+  const value = params[key];
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed || undefined;
 }
 
 export function createChildThreadModeFromParams(
@@ -333,6 +468,23 @@ export function readThreadIdFromToolOutput(output: unknown): string | undefined 
   return threadIdFromParams(details);
 }
 
+/** Upper bound for a single blocking read_thread wait. */
+export const MAX_READ_THREAD_WAIT_SECONDS = 120;
+
+/** Whole clamped wait seconds from read_thread params; undefined means return immediately. */
+export function readThreadWaitSecondsFromParams(params: unknown): number | undefined {
+  if (!isRecord(params)) return undefined;
+  const raw = params.wait_seconds ?? params.waitSeconds;
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) return undefined;
+  return Math.min(Math.floor(raw), MAX_READ_THREAD_WAIT_SECONDS);
+}
+
+/** True only when read_thread params explicitly request the full transcript. */
+function fullFromParams(params: unknown): boolean | undefined {
+  if (!isRecord(params)) return undefined;
+  return params.full === true || params.full === "true" ? true : undefined;
+}
+
 export function sendMessageToThreadFromToolOutput(
   output: unknown,
 ): { readonly threadId: string; readonly message: string } | undefined {
@@ -345,7 +497,15 @@ export function sendMessageToThreadFromToolOutput(
   if (!threadId || !message) {
     return undefined;
   }
+  // Legacy refresh rows predate the interrupt flag and must never cancel a
+  // live run, so the interrupt request is intentionally not replayed here.
   return { threadId, message };
+}
+
+/** True only when send_message_to_thread params explicitly request an interrupt. */
+function interruptFromParams(params: unknown): boolean | undefined {
+  if (!isRecord(params)) return undefined;
+  return params.interrupt === true ? true : undefined;
 }
 
 function toolOutputDetails(output: unknown): Record<string, unknown> | undefined {

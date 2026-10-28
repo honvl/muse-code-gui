@@ -42,6 +42,7 @@ interface NewThreadViewProps {
   readonly provider: string | undefined;
   readonly modelId: string | undefined;
   readonly thinkingLevel: string | undefined;
+  readonly orchestratorMode?: boolean;
   readonly modelOnboarding: ModelOnboardingState;
   readonly composerRef: RefObject<HTMLTextAreaElement | null>;
   readonly activeSlashCommand?: ComposerSlashCommand;
@@ -61,6 +62,11 @@ interface NewThreadViewProps {
   readonly onSelectWorkspace: (workspaceId: string) => void;
   readonly onSetModel: (provider: string, modelId: string) => void;
   readonly onSetThinking: (level: string) => void;
+  readonly onToggleOrchestrator?: (enabled: boolean) => void;
+  readonly sidekickProvider?: string | undefined;
+  readonly sidekickModelId?: string | undefined;
+  readonly onSetSidekickModel?: (provider: string, modelId: string) => void;
+  readonly onClearSidekickModel?: () => void;
   readonly extensionFlags: ExtensionFlagValues;
   readonly onSetExtensionFlag: (name: string, value: boolean | string) => void;
   readonly onOpenModelSettings: (section: ModelOnboardingSettingsSection) => void;
@@ -90,6 +96,7 @@ export function NewThreadView({
   provider,
   modelId,
   thinkingLevel,
+  orchestratorMode,
   modelOnboarding,
   composerRef,
   activeSlashCommand,
@@ -109,6 +116,11 @@ export function NewThreadView({
   onSelectWorkspace,
   onSetModel,
   onSetThinking,
+  onToggleOrchestrator,
+  sidekickProvider,
+  sidekickModelId,
+  onSetSidekickModel,
+  onClearSidekickModel,
   extensionFlags,
   onSetExtensionFlag,
   onOpenModelSettings,
@@ -232,12 +244,18 @@ export function NewThreadView({
                   provider={provider}
                   modelId={modelId}
                   thinkingLevel={thinkingLevel}
+                  orchestratorMode={orchestratorMode}
                   modelOnboarding={modelOnboarding}
+                  sidekickProvider={sidekickProvider}
+                  sidekickModelId={sidekickModelId}
+                  onSetSidekickModel={onSetSidekickModel}
+                  onClearSidekickModel={onClearSidekickModel}
                   hasContent={Boolean(prompt.trim() || attachments.length > 0)}
                   fileInputRef={fileInputRef}
                   onSelectEnvironment={onSelectEnvironment}
                   onSetModel={onSetModel}
                   onSetThinking={onSetThinking}
+                  onToggleOrchestrator={onToggleOrchestrator}
                   extensionFlags={extensionFlags}
                   onSetExtensionFlag={onSetExtensionFlag}
                   onAddAttachments={onAddAttachments}
@@ -258,12 +276,18 @@ interface NewThreadComposerFooterProps {
   readonly provider: string | undefined;
   readonly modelId: string | undefined;
   readonly thinkingLevel: string | undefined;
+  readonly orchestratorMode?: boolean;
   readonly modelOnboarding: ModelOnboardingState;
   readonly hasContent: boolean;
   readonly fileInputRef: RefObject<HTMLInputElement | null>;
   readonly onSelectEnvironment: (environment: NewThreadEnvironment) => void;
   readonly onSetModel: (provider: string, modelId: string) => void;
   readonly onSetThinking: (level: string) => void;
+  readonly onToggleOrchestrator?: (enabled: boolean) => void;
+  readonly sidekickProvider?: string | undefined;
+  readonly sidekickModelId?: string | undefined;
+  readonly onSetSidekickModel?: (provider: string, modelId: string) => void;
+  readonly onClearSidekickModel?: () => void;
   readonly extensionFlags: ExtensionFlagValues;
   readonly onSetExtensionFlag: (name: string, value: boolean | string) => void;
   readonly onAddAttachments: (files: File[]) => void;
@@ -282,6 +306,12 @@ function NewThreadComposerFooter({
   onSelectEnvironment,
   onSetModel,
   onSetThinking,
+  orchestratorMode,
+  onToggleOrchestrator,
+  sidekickProvider,
+  sidekickModelId,
+  onSetSidekickModel,
+  onClearSidekickModel,
   extensionFlags,
   onSetExtensionFlag,
   onAddAttachments,
@@ -314,6 +344,9 @@ function NewThreadComposerFooter({
               provider={provider}
               modelId={modelId}
               thinkingLevel={thinkingLevel}
+              orchestratorMode={orchestratorMode}
+              sidekickProvider={sidekickProvider}
+              sidekickModelId={sidekickModelId}
               dropdownPlacement="below"
               showEmptyModelControl
               unselectedModelLabel={modelOnboarding.unselectedModelLabel}
@@ -321,6 +354,9 @@ function NewThreadComposerFooter({
               emptyModelTitle={modelOnboarding.emptyModelTitle}
               onSetModel={onSetModel}
               onSetThinking={onSetThinking}
+              onToggleOrchestrator={onToggleOrchestrator}
+              onSetSidekickModel={onSetSidekickModel}
+              onClearSidekickModel={onClearSidekickModel}
             />
             <ExtensionFlagsSelector
               runtime={runtime}

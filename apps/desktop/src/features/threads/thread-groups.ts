@@ -385,6 +385,30 @@ function groupChildrenByParent(
   return groups;
 }
 
+export interface ChildGroupSummary {
+  readonly count: number;
+  readonly running: number;
+  readonly failed: number;
+}
+
+/**
+ * Summarize a parent's direct child rows for the sidebar disclosure label.
+ * An entry counts as running/failed when either its session row or its
+ * orchestration record says so; the two can disagree during transitions.
+ */
+export function summarizeChildGroup(entries: readonly ThreadListEntry[]): ChildGroupSummary {
+  let running = 0;
+  let failed = 0;
+  for (const entry of entries) {
+    if (entry.session.status === "failed" || entry.child?.status === "failed") {
+      failed += 1;
+    } else if (entry.session.status === "running" || entry.child?.status === "running") {
+      running += 1;
+    }
+  }
+  return { count: entries.length, running, failed };
+}
+
 const EMPTY_EXPANDED_HISTORY: ReadonlySet<string> = new Set();
 
 export function workspaceHistoryExpansionKey(workspaceId: string): string {

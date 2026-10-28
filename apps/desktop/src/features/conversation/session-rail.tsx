@@ -88,6 +88,7 @@ export function SessionRail({
         >
           {provider && modelId ? `${provider} · ${modelId}` : "No model selected"}
           {thinkingLevel ? ` · ${thinkingLevel}` : null}
+          {session.config?.orchestratorMode ? " · Orchestrator" : null}
         </div>
       </section>
 

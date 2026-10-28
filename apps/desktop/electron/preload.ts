@@ -43,7 +43,7 @@ import type {
   ChangeReviewFileStageInput,
   ChangeReviewFileStageResult,
 } from "../contracts/review";
-import type { SessionRef } from "@pi-gui/session-driver/types";
+import type { SessionModelSelection, SessionRef } from "@pi-gui/session-driver/types";
 import type {
   NavigateSessionTreeOptions,
   NavigateSessionTreeResult,
@@ -339,6 +339,24 @@ contextBridge.exposeInMainWorld("piApp", {
       workspaceId,
       sessionId,
       thinkingLevel,
+    ) as Promise<DesktopAppState>,
+  setSessionOrchestratorMode: (workspaceId: string, sessionId: string, enabled: boolean) =>
+    ipcRenderer.invoke(
+      desktopIpc.setSessionOrchestratorMode,
+      workspaceId,
+      sessionId,
+      enabled,
+    ) as Promise<DesktopAppState>,
+  setSessionSidekickModel: (
+    workspaceId: string,
+    sessionId: string,
+    selection: SessionModelSelection | null,
+  ) =>
+    ipcRenderer.invoke(
+      desktopIpc.setSessionSidekickModel,
+      workspaceId,
+      sessionId,
+      selection,
     ) as Promise<DesktopAppState>,
   loginProvider: (workspaceId: string, providerId: string) =>
     ipcRenderer.invoke(

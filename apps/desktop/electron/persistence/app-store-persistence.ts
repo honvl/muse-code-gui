@@ -12,7 +12,7 @@ import type {
   ThreadGrouping,
 } from "../../contracts/desktop-state";
 import { isThemeMode, isThemePresetId, isThreadGrouping } from "../../contracts/desktop-state";
-import type { ExtensionFlagValues } from "@pi-gui/session-driver";
+import type { ExtensionFlagValues, SessionModelSelection } from "@pi-gui/session-driver";
 import type { ModelSettingsSnapshot } from "@pi-gui/session-driver/runtime-types";
 import { readJsonWithBackup, writeFileAtomicQueued } from "./atomic-file-write";
 import { decodeAttachments } from "./attachment-store";
@@ -57,6 +57,10 @@ export interface PersistedUiState {
   readonly themeMode?: ThemeMode;
   readonly themePresetId?: ThemePresetId;
   readonly orchestrationChildren?: readonly OrchestrationChildThread[];
+  /** Threads with lead-mode orchestration on, by session key. */
+  readonly orchestratorModeBySession?: Record<string, boolean>;
+  /** Per-thread sidekick model for child threads, by session key. */
+  readonly sidekickBySession?: Record<string, SessionModelSelection>;
 }
 
 export interface LegacyPersistedUiState extends PersistedUiState {
@@ -139,6 +143,8 @@ export function decodePersistedUiState(parsed: unknown): LegacyPersistedUiState 
     themeMode: toThemeMode(candidate.themeMode),
     themePresetId: toThemePresetId(candidate.themePresetId),
     orchestrationChildren: toPersistedOrchestrationChildren(candidate.orchestrationChildren),
+    orchestratorModeBySession: toBooleanRecord(candidate.orchestratorModeBySession),
+    sidekickBySession: toSidekickRecord(candidate.sidekickBySession),
     composerAttachmentsBySession: toObjectArrayRecord(candidate.composerAttachmentsBySession),
     transcripts: toObjectArrayRecord(candidate.transcripts),
   };
@@ -234,6 +240,8 @@ function validateUiState(value: unknown): Record<string, unknown> {
       "themeMode",
       "themePresetId",
       "orchestrationChildren",
+      "orchestratorModeBySession",
+      "sidekickBySession",
       "composerAttachmentsBySession",
       "transcripts",
     ],
@@ -289,6 +297,29 @@ function validateUiState(value: unknown): Record<string, unknown> {
     "extensionPackEnabled",
   ])
     optional(root, key, boolean);
+  if (root.orchestratorModeBySession !== undefined) {
+    const records =
+      objectRecord(root.orchestratorModeBySession) ?? fail("orchestratorModeBySession");
+    for (const [id, value] of Object.entries(records)) {
+      if (!id || typeof value !== "boolean") fail(`orchestratorModeBySession.${id}`);
+    }
+  }
+  if (root.sidekickBySession !== undefined) {
+    const records = objectRecord(root.sidekickBySession) ?? fail("sidekickBySession");
+    for (const [id, value] of Object.entries(records)) {
+      const selection = objectRecord(value);
+      const provider = selection?.provider;
+      const modelId = selection?.modelId;
+      if (
+        !id ||
+        typeof provider !== "string" ||
+        !provider.trim() ||
+        typeof modelId !== "string" ||
+        !modelId.trim()
+      )
+        fail(`sidekickBySession.${id}`);
+    }
+  }
   optional(root, "activeView", (v) => toAppView(v) !== undefined);
   optional(root, "threadGrouping", isThreadGrouping);
   optional(root, "themeMode", isThemeMode);
@@ -393,6 +424,8 @@ function validateUiState(value: unknown): Record<string, unknown> {
           "childSessionId",
           "title",
           "goal",
+          "mode",
+          "depth",
           "status",
           "latestTranscript",
           "transcript",
@@ -423,6 +456,13 @@ function validateUiState(value: unknown): Record<string, unknown> {
         "status",
         (v) => toOptionalOrchestrationStatus(v) !== undefined,
         `${path}.status`,
+      );
+      optional(record, "mode", (v) => v === "scout" || v === "worker", `${path}.mode`);
+      optional(
+        record,
+        "depth",
+        (v) => typeof v === "number" && Number.isInteger(v) && v >= 0,
+        `${path}.depth`,
       );
       if (record.transcript !== undefined) {
         if (!Array.isArray(record.transcript)) fail(`${path}.transcript`);
@@ -838,6 +878,39 @@ function toStringRecord(value: unknown): Record<string, string> | undefined {
   const entries = Object.entries(candidate).filter(
     (entry): entry is [string, string] =>
       Boolean(entry[0]) && typeof entry[1] === "string" && Boolean(entry[1]),
+  );
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+/** Only defined selections persist; a cleared sidekick is dropped like orchestrator off. */
+function toSidekickRecord(value: unknown): Record<string, SessionModelSelection> | undefined {
+  const candidate = objectRecord(value);
+  if (!candidate) {
+    return undefined;
+  }
+  const entries = Object.entries(candidate).flatMap(([id, selection]) => {
+    const record = objectRecord(selection);
+    const provider = record?.provider;
+    const modelId = record?.modelId;
+    return id &&
+      typeof provider === "string" &&
+      provider.trim() &&
+      typeof modelId === "string" &&
+      modelId.trim()
+      ? [[id, { provider, modelId }] as const]
+      : [];
+  });
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+/** Only true entries persist; false/off is the default and is dropped. */
+function toBooleanRecord(value: unknown): Record<string, boolean> | undefined {
+  const candidate = objectRecord(value);
+  if (!candidate) {
+    return undefined;
+  }
+  const entries = Object.entries(candidate).filter(
+    (entry): entry is [string, boolean] => Boolean(entry[0]) && entry[1] === true,
   );
   return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }

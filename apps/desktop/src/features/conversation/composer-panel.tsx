@@ -56,6 +56,9 @@ interface ComposerPanelProps {
   readonly provider: string | undefined;
   readonly modelId: string | undefined;
   readonly thinkingLevel: string | undefined;
+  readonly orchestratorMode?: boolean;
+  readonly sidekickProvider?: string | undefined;
+  readonly sidekickModelId?: string | undefined;
   readonly slashSections: readonly ComposerSlashCommandSection[];
   readonly slashOptions: readonly ComposerSlashOption[];
   readonly selectedSlashCommand?: ComposerSlashCommand;
@@ -77,6 +80,9 @@ interface ComposerPanelProps {
   readonly onSelectSlashOption: (option: ComposerSlashOption) => void;
   readonly onSetModel: (provider: string, modelId: string) => void;
   readonly onSetThinking: (level: string) => void;
+  readonly onToggleOrchestrator?: (enabled: boolean) => void;
+  readonly onSetSidekickModel?: (provider: string, modelId: string) => void;
+  readonly onClearSidekickModel?: () => void;
   readonly modelOnboarding: ModelOnboardingState;
   readonly onOpenModelSettings: (section: ModelOnboardingSettingsSection) => void;
   readonly onSubmit: () => void;
@@ -136,6 +142,12 @@ export function ComposerPanel({
   onSelectSlashOption,
   onSetModel,
   onSetThinking,
+  orchestratorMode,
+  onToggleOrchestrator,
+  sidekickProvider,
+  sidekickModelId,
+  onSetSidekickModel,
+  onClearSidekickModel,
   modelOnboarding,
   onOpenModelSettings,
   onSubmit,
@@ -230,11 +242,17 @@ export function ComposerPanel({
                     provider={provider}
                     modelId={modelId}
                     thinkingLevel={thinkingLevel}
+                    orchestratorMode={orchestratorMode}
+                    sidekickProvider={sidekickProvider}
+                    sidekickModelId={sidekickModelId}
                     disabled={selectedSession.status === "running"}
                     unselectedModelLabel={modelOnboarding.unselectedModelLabel}
                     emptyModelTitle={modelOnboarding.emptyModelTitle}
                     onSetModel={onSetModel}
                     onSetThinking={onSetThinking}
+                    onToggleOrchestrator={onToggleOrchestrator}
+                    onSetSidekickModel={onSetSidekickModel}
+                    onClearSidekickModel={onClearSidekickModel}
                   />
                   <ExtensionFlagsBadge values={extensionFlags} />
                   <ContextMeter usage={usage} />

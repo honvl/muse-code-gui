@@ -28,6 +28,7 @@ import type {
   CreateSessionOptions,
   HostUiResponse,
   SessionConfig,
+  SessionModelSelection,
   SessionUsageSnapshot,
   SessionDriverEvent,
   SessionQueuedMessage,
@@ -504,6 +505,9 @@ export class DesktopAppStore {
       ensureSessionSubscription: (sessionRef) => this.ensureSessionSubscription(sessionRef),
       subscribeToSessionEvents: (listener) => this.subscribeToSessionEvents(listener),
       updateSessionConfig: (sessionRef, config) => this.updateSessionConfig(sessionRef, config),
+      isOrchestratorSession: (sessionRef) => this.isOrchestratorSession(sessionRef),
+      sidekickModelFor: (sessionRef) => this.sidekickModelFor(sessionRef),
+      sessionModelFor: (sessionRef) => this.sessionModelFor(sessionRef),
       buildCreateSessionOptions: (workspaceId) => this.buildCreateSessionOptions(workspaceId),
       getQueuedComposerMessages: (sessionRef) => this.getQueuedComposerMessages(sessionRef),
       seedSession: (snapshot) => {
@@ -1350,6 +1354,7 @@ export class DesktopAppStore {
     parentRef: SessionRef,
     input: {
       readonly prompt: string;
+      readonly sourcePrompt?: string;
       readonly toolCallId: string;
       readonly mode?: "scout" | "worker";
     },
@@ -1362,14 +1367,22 @@ export class DesktopAppStore {
     return this.orchestrationOwner.listThreadsToolResult(parentRef);
   }
 
-  async readThreadToolResult(parentRef: SessionRef, threadId: string) {
+  async readThreadToolResult(
+    parentRef: SessionRef,
+    threadId: string,
+    options?: {
+      readonly waitSeconds?: number;
+      readonly signal?: AbortSignal;
+      readonly full?: boolean;
+    },
+  ) {
     await this.initialize();
-    return this.orchestrationOwner.readThreadToolResult(parentRef, threadId);
+    return this.orchestrationOwner.readThreadToolResult(parentRef, threadId, options);
   }
 
   async sendMessageToThreadToolResult(
     parentRef: SessionRef,
-    input: { readonly threadId: string; readonly message: string },
+    input: { readonly threadId: string; readonly message: string; readonly interrupt?: boolean },
   ) {
     await this.initialize();
     return this.orchestrationOwner.sendMessageToThreadToolResult(parentRef, input);
@@ -1706,6 +1719,20 @@ export class DesktopAppStore {
     thinkingLevel: NonNullable<RuntimeSettingsSnapshot["defaultThinkingLevel"]>,
   ): Promise<DesktopAppState> {
     return this.conversationOwner.setSessionThinkingLevel(sessionRef, thinkingLevel);
+  }
+
+  async setSessionOrchestratorMode(
+    sessionRef: SessionRef,
+    enabled: boolean,
+  ): Promise<DesktopAppState> {
+    return this.conversationOwner.setSessionOrchestratorMode(sessionRef, enabled);
+  }
+
+  async setSessionSidekickModel(
+    sessionRef: SessionRef,
+    selection: SessionModelSelection | null,
+  ): Promise<DesktopAppState> {
+    return this.conversationOwner.setSessionSidekickModel(sessionRef, selection);
   }
 
   async loginProvider(
@@ -2410,6 +2437,16 @@ export class DesktopAppStore {
     this.sessionState.extensionFlagsBySession.clear();
     for (const [key, flags] of Object.entries(persisted.extensionFlagsBySession ?? {})) {
       this.sessionState.extensionFlagsBySession.set(key, flags);
+    }
+    for (const [key, enabled] of Object.entries(persisted.orchestratorModeBySession ?? {})) {
+      if (enabled) {
+        const current = this.sessionState.sessionConfigBySession.get(key) ?? {};
+        this.sessionState.sessionConfigBySession.set(key, { ...current, orchestratorMode: true });
+      }
+    }
+    for (const [key, selection] of Object.entries(persisted.sidekickBySession ?? {})) {
+      const current = this.sessionState.sessionConfigBySession.get(key) ?? {};
+      this.sessionState.sessionConfigBySession.set(key, { ...current, sidekick: selection });
     }
     this.extensionFlagsByWorkspace.clear();
     for (const [workspaceId, flags] of Object.entries(persisted.extensionFlagsByWorkspace ?? {})) {
@@ -3677,8 +3714,11 @@ export class DesktopAppStore {
       }
       this.markSessionViewedIfActivelyViewed(event.sessionRef);
       this.state = this.syncDerivedSessionState(this.state, event.sessionRef);
+      const isOrchestrationChild = this.orchestrationOwner.hasOrchestrationChildSession(
+        event.sessionRef,
+      );
       if (
-        this.orchestrationOwner.hasOrchestrationChildSession(event.sessionRef) ||
+        isOrchestrationChild ||
         this.orchestrationOwner.hasOrchestrationParentSession(event.sessionRef)
       ) {
         this.state = {
@@ -3688,6 +3728,13 @@ export class DesktopAppStore {
           ),
         };
         this.scheduleOrchestrationSupervision();
+      }
+      // A finished child wakes its orchestrator with a report instead of
+      // leaving the parent to poll read_thread. Only real run endings qualify:
+      // a cancelled child settles with a bare session update, and reporting it
+      // would restart the parent the user just stopped.
+      if (isOrchestrationChild && (event.type === "runCompleted" || event.type === "runFailed")) {
+        await this.orchestrationOwner.reportChildCompletion(event.sessionRef);
       }
       if (shouldFollowSessionMutation && event.type !== "sessionClosed") {
         this.applyFastSessionSelection(event.sessionRef);
@@ -4165,6 +4212,8 @@ export class DesktopAppStore {
       orchestrationChildren: orchestration.toPersistedOrchestrationChildren(
         this.state.orchestrationChildren,
       ),
+      orchestratorModeBySession: this.orchestratorModeRecord(),
+      sidekickBySession: this.sidekickRecord(),
     };
 
     await writePersistedUiState(this.uiStateFilePath, payload);
@@ -4739,12 +4788,88 @@ export class DesktopAppStore {
     return this.sessionState.sessionErrorsBySession.get(key);
   }
 
+  /** True when this thread runs in lead mode and can be woken by child reports. */
+  private isOrchestratorSession(sessionRef: SessionRef): boolean {
+    return (
+      this.sessionState.sessionConfigBySession.get(sessionKey(sessionRef))?.orchestratorMode ===
+      true
+    );
+  }
+
+  /** The cheap model this thread's children should run on, if one is configured. */
+  private sidekickModelFor(sessionRef: SessionRef): SessionModelSelection | undefined {
+    return this.sessionState.sessionConfigBySession.get(sessionKey(sessionRef))?.sidekick;
+  }
+
+  /** The model this session itself runs on, if known. */
+  private sessionModelFor(sessionRef: SessionRef): SessionModelSelection | undefined {
+    const config = this.sessionState.sessionConfigBySession.get(sessionKey(sessionRef));
+    return config?.provider !== undefined && config?.modelId !== undefined
+      ? { provider: config.provider, modelId: config.modelId }
+      : undefined;
+  }
+
+  private orchestratorModeRecord(): Record<string, boolean> | undefined {
+    const entries: Array<[string, boolean]> = [];
+    for (const [key, config] of this.sessionState.sessionConfigBySession) {
+      if (config.orchestratorMode === true) entries.push([key, true]);
+    }
+    return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+  }
+
+  private sidekickRecord(): Record<string, SessionModelSelection> | undefined {
+    const entries: Array<[string, SessionModelSelection]> = [];
+    for (const [key, config] of this.sessionState.sessionConfigBySession) {
+      if (config.sidekick !== undefined) entries.push([key, config.sidekick]);
+    }
+    return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+  }
+
   updateSessionConfig(sessionRef: SessionRef, config: SessionConfig | undefined): void {
     const key = sessionKey(sessionRef);
-    if (config && Object.keys(config).length > 0) {
-      this.sessionState.sessionConfigBySession.set(key, config);
+    const existing = this.sessionState.sessionConfigBySession.get(key);
+    // Driver snapshots omit orchestratorMode when off; preserve a hydrated true
+    // across reopens where the in-memory driver map was lost. Explicit off
+    // flows through eager {orchestratorMode:false} first, so preserving only
+    // true never resurrects a turned-off toggle.
+    const withOrchestratorMode =
+      existing?.orchestratorMode === true && config?.orchestratorMode === undefined
+        ? { ...(config ?? {}), orchestratorMode: true as const }
+        : config;
+    // Driver snapshots omit sidekick when cleared; preserve a hydrated selection
+    // across reopens where the in-memory driver map was lost. An explicit clear
+    // flows through eager {sidekick:undefined} first, so preserving only a
+    // defined selection never resurrects a cleared one.
+    const merged =
+      existing?.sidekick !== undefined && withOrchestratorMode?.sidekick === undefined
+        ? { ...(withOrchestratorMode ?? {}), sidekick: existing.sidekick }
+        : withOrchestratorMode;
+    if (merged && Object.keys(merged).length > 0) {
+      this.sessionState.sessionConfigBySession.set(key, merged);
     } else {
       this.sessionState.sessionConfigBySession.delete(key);
+    }
+    // Rehydrate only when the driver snapshot lacks the mode. When it already
+    // reports true the driver knows; pushing again would persist and emit
+    // another sessionUpdated, looping back here with unbounded catalog writes.
+    if (merged?.orchestratorMode === true && config?.orchestratorMode !== true) {
+      void this.driver.setSessionOrchestratorMode(sessionRef, true).catch((error: unknown) => {
+        console.warn(`[app-store] orchestrator rehydrate failed for ${key}:`, error);
+      });
+    }
+    // Rehydrate only when the driver snapshot lacks (or differs from) the selection.
+    // When it already reports the same selection the driver knows; pushing again
+    // would persist and emit another sessionUpdated, looping back here with
+    // unbounded catalog writes.
+    if (
+      merged?.sidekick !== undefined &&
+      !sidekickSelectionsEqual(config?.sidekick, merged.sidekick)
+    ) {
+      void this.driver
+        .setSessionSidekickModel(sessionRef, merged.sidekick)
+        .catch((error: unknown) => {
+          console.warn(`[app-store] sidekick rehydrate failed for ${key}:`, error);
+        });
     }
   }
 
@@ -4880,6 +5005,14 @@ export class DesktopAppStore {
 }
 
 /* ── Module-private free functions ───────────────────────── */
+
+function sidekickSelectionsEqual(
+  a: SessionModelSelection | undefined,
+  b: SessionModelSelection | undefined,
+): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  return a.provider === b.provider && a.modelId === b.modelId;
+}
 
 function updateRecordValue<T>(
   record: Readonly<Record<string, T>>,

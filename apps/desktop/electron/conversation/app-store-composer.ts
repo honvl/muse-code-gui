@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { sessionKey } from "@pi-gui/session-driver";
-import type { SessionConfig, SessionQueuedMessage, SessionRef } from "@pi-gui/session-driver";
+import type {
+  SessionConfig,
+  SessionModelSelection,
+  SessionQueuedMessage,
+  SessionRef,
+} from "@pi-gui/session-driver";
 import type { PiSdkDriver } from "@pi-gui/pi-sdk-driver";
 import type { BackgroundTaskOutput, BackgroundTaskSnapshot } from "@pi-gui/pi-sdk-driver";
 import type { RuntimeCommandRecord, RuntimeSnapshot } from "@pi-gui/session-driver/runtime-types";
@@ -61,6 +66,8 @@ type ConversationDriver = Pick<
   | "replaceQueuedMessages"
   | "sendUserMessage"
   | "setSessionModel"
+  | "setSessionOrchestratorMode"
+  | "setSessionSidekickModel"
   | "setSessionThinkingLevel"
   | "stopBackgroundTask"
   | "unarchiveSession"
@@ -186,6 +193,11 @@ export interface ConversationOwner {
     modelId: string,
   ): Promise<DesktopAppState>;
   setSessionThinkingLevel(sessionRef: SessionRef, thinkingLevel: string): Promise<DesktopAppState>;
+  setSessionOrchestratorMode(sessionRef: SessionRef, enabled: boolean): Promise<DesktopAppState>;
+  setSessionSidekickModel(
+    sessionRef: SessionRef,
+    selection: SessionModelSelection | null,
+  ): Promise<DesktopAppState>;
   cancelCurrentRun(sessionRef: SessionRef | undefined): Promise<DesktopAppState>;
   listBackgroundTasks(sessionRef: SessionRef): Promise<readonly BackgroundTaskSnapshot[]>;
   stopBackgroundTask(
@@ -236,6 +248,10 @@ export function createConversationOwner(store: ConversationOwnerHost): Conversat
       setSessionModel(store, target, provider, modelId),
     setSessionThinkingLevel: (sessionRef, thinkingLevel) =>
       setSessionThinkingLevel(store, sessionRef, thinkingLevel),
+    setSessionOrchestratorMode: (sessionRef, enabled) =>
+      setSessionOrchestratorMode(store, sessionRef, enabled),
+    setSessionSidekickModel: (sessionRef, selection) =>
+      setSessionSidekickModel(store, sessionRef, selection),
     cancelCurrentRun: (sessionRef) => cancelCurrentRun(store, sessionRef),
     listBackgroundTasks: (sessionRef) => listBackgroundTasks(store, sessionRef),
     stopBackgroundTask: (sessionRef, taskId) => stopBackgroundTask(store, sessionRef, taskId),
@@ -713,6 +729,55 @@ async function setSessionThinkingLevel(
     await store.driver.setSessionThinkingLevel(sessionRef, thinkingLevel);
     syncSessionConfig(store, key, { thinkingLevel });
     return finishSessionChange(store, sessionRef, key, `Thinking set to ${thinkingLevel}`);
+  });
+}
+
+async function setSessionSidekickModel(
+  store: ComposerStore,
+  sessionRef: SessionRef,
+  selection: SessionModelSelection | null,
+): Promise<DesktopAppState> {
+  await store.initialize();
+  const key = sessionKey(sessionRef);
+  // Eager first: the driver's sessionUpdated is emitted inside setSessionSidekickModel,
+  // before it resolves. For a clear, the snapshot omits the sidekick; without the eager
+  // removal already in place, updateSessionConfig would preserve the old selection and
+  // push it back.
+  syncSessionConfig(store, key, { sidekick: selection ?? undefined });
+  return store.withErrorHandling(async () => {
+    await store.driver.setSessionSidekickModel(sessionRef, selection ?? undefined);
+    store.schedulePersistUiState();
+    return finishSessionChange(
+      store,
+      sessionRef,
+      key,
+      selection
+        ? `Sidekick model set to ${selection.provider}:${selection.modelId}`
+        : "Sidekick model cleared",
+    );
+  });
+}
+
+async function setSessionOrchestratorMode(
+  store: ComposerStore,
+  sessionRef: SessionRef,
+  enabled: boolean,
+): Promise<DesktopAppState> {
+  await store.initialize();
+  const key = sessionKey(sessionRef);
+  // Eager first: the driver's sessionUpdated is emitted inside setSessionOrchestratorMode,
+  // before it resolves. For off, the snapshot omits the mode; without the eager false
+  // already in place, updateSessionConfig would preserve the old true and push it back.
+  syncSessionConfig(store, key, { orchestratorMode: enabled });
+  return store.withErrorHandling(async () => {
+    await store.driver.setSessionOrchestratorMode(sessionRef, enabled);
+    store.schedulePersistUiState();
+    return finishSessionChange(
+      store,
+      sessionRef,
+      key,
+      enabled ? "Lead mode on: delegates bulky work, keeps all tools" : "Orchestrator mode off",
+    );
   });
 }
 

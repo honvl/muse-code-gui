@@ -14,7 +14,7 @@ import type {
   SessionTreeSnapshot,
 } from "@pi-gui/session-driver/types";
 import type { ClipboardImageRead } from "./composer-attachments";
-import type { SessionRef } from "@pi-gui/session-driver/types";
+import type { SessionModelSelection, SessionRef } from "@pi-gui/session-driver/types";
 import type { BackgroundTaskOutput, BackgroundTaskSnapshot } from "@pi-gui/pi-sdk-driver";
 import type { SaveTaskWorkbenchTemplateInput, TaskWorkbenchTemplate } from "./workbench";
 import type {
@@ -163,6 +163,8 @@ export const desktopIpc = {
   setDefaultThinkingLevel: "pi-gui:set-default-thinking-level",
   setSessionModel: "pi-gui:set-session-model",
   setSessionThinkingLevel: "pi-gui:set-session-thinking-level",
+  setSessionOrchestratorMode: "pi-gui:set-session-orchestrator-mode",
+  setSessionSidekickModel: "pi-gui:set-session-sidekick-model",
   loginProvider: "pi-gui:login-provider",
   logoutProvider: "pi-gui:logout-provider",
   setProviderApiKey: "pi-gui:set-provider-api-key",
@@ -772,6 +774,16 @@ export interface PiDesktopApi {
     workspaceId: string,
     sessionId: string,
     thinkingLevel: NonNullable<RuntimeSettingsSnapshot["defaultThinkingLevel"]>,
+  ): Promise<DesktopAppState>;
+  setSessionOrchestratorMode(
+    workspaceId: string,
+    sessionId: string,
+    enabled: boolean,
+  ): Promise<DesktopAppState>;
+  setSessionSidekickModel(
+    workspaceId: string,
+    sessionId: string,
+    selection: SessionModelSelection | null,
   ): Promise<DesktopAppState>;
   loginProvider(workspaceId: string, providerId: string): Promise<DesktopAppState>;
   logoutProvider(workspaceId: string, providerId: string): Promise<DesktopAppState>;

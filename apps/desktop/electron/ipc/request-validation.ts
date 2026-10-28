@@ -2,6 +2,7 @@ import {
   parseExtensionAction,
   type ExtensionFlagValues,
   type HostUiResponse,
+  type SessionModelSelection,
 } from "@pi-gui/session-driver";
 import type { ExtensionActionRequest } from "../../contracts/extension-actions";
 import type { NavigateSessionTreeOptions } from "@pi-gui/session-driver/types";
@@ -247,6 +248,7 @@ export function expectStartThreadInput(value: unknown): StartThreadInput {
     provider: expectOptionalNonEmptyString(record.provider, "input.provider"),
     modelId: expectOptionalNonEmptyString(record.modelId, "input.modelId"),
     thinkingLevel: expectOptionalString(record.thinkingLevel, "input.thinkingLevel"),
+    orchestratorMode: expectOptionalBoolean(record.orchestratorMode, "input.orchestratorMode"),
     extensionFlags:
       record.extensionFlags === undefined
         ? undefined
@@ -416,6 +418,17 @@ export function expectHostUiResponse(value: unknown): HostUiResponse {
     return { requestId, confirmed: record.confirmed };
   }
   return { requestId, cancelled: true };
+}
+
+export function expectSessionSidekickSelection(value: unknown): SessionModelSelection | null {
+  if (value === null) {
+    return null;
+  }
+  const record = expectRecord(value, "selection");
+  return {
+    provider: expectNonEmptyString(record.provider, "selection.provider"),
+    modelId: expectNonEmptyString(record.modelId, "selection.modelId"),
+  };
 }
 
 export function expectNavigateSessionTreeOptions(value: unknown): NavigateSessionTreeOptions {

@@ -43,6 +43,7 @@ import {
   expectNewMcpServerInput,
   expectNavigateSessionTreeOptions,
   expectNonEmptyString,
+  expectSessionSidekickSelection,
   expectNotificationPreferences,
   expectOptionalDeliverOptions,
   expectOptionalNonNegativeInteger,
@@ -128,6 +129,8 @@ type ConversationOwner = Pick<
   | "respondToHostUiRequest"
   | "setSessionModel"
   | "setSessionThinkingLevel"
+  | "setSessionOrchestratorMode"
+  | "setSessionSidekickModel"
   | "withError"
 >;
 
@@ -482,6 +485,32 @@ export function registerDesktopIpc({
             sessionId: expectNonEmptyString(rawSessionId, "sessionId"),
           },
           expectThinkingLevel(thinkingLevel),
+        ),
+      ),
+  );
+  ipcMain.handle(
+    desktopIpc.setSessionOrchestratorMode,
+    (event, rawWorkspaceId: unknown, rawSessionId: unknown, rawEnabled: unknown) =>
+      run(event, () =>
+        owners.conversation.setSessionOrchestratorMode(
+          {
+            workspaceId: expectNonEmptyString(rawWorkspaceId, "workspaceId"),
+            sessionId: expectNonEmptyString(rawSessionId, "sessionId"),
+          },
+          expectBoolean(rawEnabled, "enabled"),
+        ),
+      ),
+  );
+  ipcMain.handle(
+    desktopIpc.setSessionSidekickModel,
+    (event, rawWorkspaceId: unknown, rawSessionId: unknown, rawSelection: unknown) =>
+      run(event, () =>
+        owners.conversation.setSessionSidekickModel(
+          {
+            workspaceId: expectNonEmptyString(rawWorkspaceId, "workspaceId"),
+            sessionId: expectNonEmptyString(rawSessionId, "sessionId"),
+          },
+          expectSessionSidekickSelection(rawSelection),
         ),
       ),
   );

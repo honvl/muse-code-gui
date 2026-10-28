@@ -67,6 +67,7 @@ import { archiveThreadShortcut, ThreadActionsMenu } from "./thread-actions";
 import {
   recencyHistoryExpansionKey,
   sessionThreadKey,
+  summarizeChildGroup,
   threadHistoryPreview,
   visibleThreadShortcutOrder,
   workspaceHistoryExpansionKey,
@@ -1097,7 +1098,117 @@ function HistoryThreadRow({
         }
       />
       {nestedChildren && nestedChildren.length > 0 ? (
-        <div className="session-children" role="group" aria-label="Child threads">
+        <ChildThreadGroup
+          parentKey={`${thread.workspaceId}:${thread.session.id}`}
+          nestedChildren={nestedChildren}
+          childrenByParentKey={childrenByParentKey}
+          showContext={showContext}
+          selectedWorkspace={selectedWorkspace}
+          selectedSession={selectedSession}
+          threadMenu={threadMenu}
+          onArchiveSession={onArchiveSession}
+          onSelectSession={onSelectSession}
+          onSetSessionPinned={onSetSessionPinned}
+        />
+      ) : null}
+    </>
+  );
+}
+
+/** Whether a session id sits anywhere under these direct children. */
+function subtreeContainsSession(
+  childrenByParentKey: ReadonlyMap<string, readonly ThreadListEntry[]> | undefined,
+  directChildren: readonly ThreadListEntry[],
+  selectedSessionId: string,
+  seen: Set<string>,
+): boolean {
+  for (const child of directChildren) {
+    if (child.session.id === selectedSessionId) {
+      return true;
+    }
+    const key = `${child.workspaceId}:${child.session.id}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    const grandchildren = childrenByParentKey?.get(key);
+    if (
+      grandchildren &&
+      subtreeContainsSession(childrenByParentKey, grandchildren, selectedSessionId, seen)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function ChildThreadGroup({
+  parentKey,
+  nestedChildren,
+  childrenByParentKey,
+  showContext,
+  selectedWorkspace,
+  selectedSession,
+  threadMenu,
+  onArchiveSession,
+  onSelectSession,
+  onSetSessionPinned,
+}: {
+  readonly parentKey: string;
+  readonly nestedChildren: readonly ThreadListEntry[];
+  readonly childrenByParentKey?: ReadonlyMap<string, readonly ThreadListEntry[]>;
+  readonly showContext?: boolean;
+  readonly selectedWorkspace: WorkspaceRecord | undefined;
+  readonly selectedSession: SessionRecord | undefined;
+  readonly threadMenu: ThreadMenuState | undefined;
+  readonly onArchiveSession: (target: { workspaceId: string; sessionId: string }) => void;
+  readonly onSelectSession: (target: { workspaceId: string; sessionId: string }) => void;
+  readonly onSetSessionPinned: (
+    target: { workspaceId: string; sessionId: string },
+    pinned: boolean,
+  ) => void;
+}) {
+  const summary = summarizeChildGroup(nestedChildren);
+  const [expanded, setExpanded] = useState(false);
+  const selectedSessionId = selectedSession?.id;
+  // Selecting a descendant (e.g. from the transcript tool row) reveals its
+  // rows. This only ever opens the group, so a manual collapse afterwards
+  // sticks until the selection moves again.
+  useEffect(() => {
+    if (!selectedSessionId) {
+      return;
+    }
+    if (subtreeContainsSession(childrenByParentKey, nestedChildren, selectedSessionId, new Set())) {
+      setExpanded(true);
+    }
+  }, [selectedSessionId, nestedChildren, childrenByParentKey]);
+  const groupId = `session-children-${parentKey.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+  const noun = summary.count === 1 ? "child thread" : "child threads";
+  const statusBits = [
+    summary.running > 0 ? `${summary.running} running` : null,
+    summary.failed > 0 ? `${summary.failed} failed` : null,
+  ].filter((bit): bit is string => bit !== null);
+  const label =
+    statusBits.length > 0
+      ? `${summary.count} ${noun} · ${statusBits.join(" · ")}`
+      : `${summary.count} ${noun}`;
+  return (
+    <div className="session-children">
+      <button
+        aria-controls={groupId}
+        aria-expanded={expanded}
+        className="session-children__toggle"
+        data-testid="child-thread-group-toggle"
+        type="button"
+        onClick={() => setExpanded((current) => !current)}
+      >
+        <span aria-hidden="true" className="session-children__chevron">
+          {expanded ? <ChevronDownIcon /> : <ChevronRightIcon />}
+        </span>
+        <span>{label}</span>
+      </button>
+      {expanded ? (
+        <div id={groupId} role="group" aria-label="Child threads">
           {nestedChildren.map((child) => (
             <HistoryThreadRow
               key={`${child.workspaceId}:${child.session.id}`}
@@ -1116,7 +1227,7 @@ function HistoryThreadRow({
           ))}
         </div>
       ) : null}
-    </>
+    </div>
   );
 }
 
