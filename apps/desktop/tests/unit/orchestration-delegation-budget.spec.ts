@@ -294,7 +294,7 @@ test("brief hint appears when success_criteria is missing and never reaches the 
 });
 
 test("child report suffix carries the character budget", () => {
-  expect(CHILD_REPORT_SUFFIX).toContain("~1200 characters");
+  expect(CHILD_REPORT_SUFFIX).toContain("~800 characters");
 });
 
 test("injected report marks host-side truncation explicitly", async () => {

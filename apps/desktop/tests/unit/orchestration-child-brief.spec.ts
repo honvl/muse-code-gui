@@ -4,6 +4,8 @@ import {
   DEFAULT_SUCCESS_CRITERIA,
   DEFAULT_VERIFY,
   SCOPE_BRIEF_WARNING,
+  SCOUT_SELF_CHECK,
+  WORKER_SELF_CHECK,
   briefWarningsFromParams,
   composeChildBrief,
   createChildThreadBriefFromParams,
@@ -25,6 +27,7 @@ test("composeChildBrief composes a full brief in fixed order", () => {
       "Constraints: Do not change the login screen.",
       "Success criteria: A written summary of the token path.",
       "Verify: pnpm --filter @pi-gui/desktop run typecheck",
+      WORKER_SELF_CHECK,
       CHILD_REPORT_SUFFIX,
     ].join("\n\n"),
   );
@@ -36,6 +39,7 @@ test("composeChildBrief omits blank scope/constraints and defaults success crite
       "Just do it.",
       `Success criteria: ${DEFAULT_SUCCESS_CRITERIA}`,
       `Verify: ${DEFAULT_VERIFY}`,
+      WORKER_SELF_CHECK,
       CHILD_REPORT_SUFFIX,
     ].join("\n\n"),
   );
@@ -52,6 +56,7 @@ test("composeChildBrief omits blank scope/constraints and defaults success crite
       "Tidy the helper.",
       "Success criteria: No lint errors.",
       `Verify: ${DEFAULT_VERIFY}`,
+      WORKER_SELF_CHECK,
       CHILD_REPORT_SUFFIX,
     ].join("\n\n"),
   );
@@ -68,6 +73,40 @@ test("composeChildBrief always ends with the report contract", () => {
       verify: "pnpm --filter @pi-gui/desktop run typecheck",
     }).endsWith(`\n\n${CHILD_REPORT_SUFFIX}`),
   ).toBe(true);
+});
+
+test("worker briefs self-check their diff; scout briefs skip the diff step", () => {
+  expect(WORKER_SELF_CHECK).toContain("re-read your own diff against the success criteria");
+  expect(WORKER_SELF_CHECK).toContain(
+    "rerun the narrowest check until it passes or you hit a real blocker",
+  );
+  expect(SCOUT_SELF_CHECK).not.toContain("diff");
+  expect(composeChildBrief({ prompt: "Fix it.", mode: "worker" })).toBe(
+    composeChildBrief({ prompt: "Fix it." }),
+  );
+  const scout = composeChildBrief({ prompt: "Map the auth flow.", mode: "scout" });
+  expect(scout).toBe(
+    [
+      "Map the auth flow.",
+      `Success criteria: ${DEFAULT_SUCCESS_CRITERIA}`,
+      `Verify: ${DEFAULT_VERIFY}`,
+      SCOUT_SELF_CHECK,
+      CHILD_REPORT_SUFFIX,
+    ].join("\n\n"),
+  );
+  expect(scout).not.toContain(WORKER_SELF_CHECK);
+  expect(createChildThreadBriefFromParams({ prompt: "Map it.", mode: "scout" })).toContain(
+    `${SCOUT_SELF_CHECK}\n\n${CHILD_REPORT_SUFFIX}`,
+  );
+});
+
+test("the report suffix asks for a structured report of about 800 characters", () => {
+  expect(CHILD_REPORT_SUFFIX).toContain("~800 characters");
+  expect(CHILD_REPORT_SUFFIX).not.toContain("1200");
+  for (const field of ["Result:", "Files:", "Checks:", "Risks:"]) {
+    expect(CHILD_REPORT_SUFFIX).toContain(`\n${field}`);
+  }
+  expect(CHILD_REPORT_SUFFIX).toContain("Do not commit or push.");
 });
 
 test("briefWarningsFromParams flags only missing scope", () => {
@@ -96,6 +135,7 @@ test("createChildThreadBriefFromParams reads prompt plus optional blocks", () =>
       "Explore.",
       `Success criteria: ${DEFAULT_SUCCESS_CRITERIA}`,
       `Verify: ${DEFAULT_VERIFY}`,
+      WORKER_SELF_CHECK,
       CHILD_REPORT_SUFFIX,
     ].join("\n\n"),
   );
@@ -111,6 +151,7 @@ test("createChildThreadBriefFromParams reads prompt plus optional blocks", () =>
       "Scope: packages/pi-sdk-driver/src",
       "Success criteria: List the owners.",
       `Verify: ${DEFAULT_VERIFY}`,
+      WORKER_SELF_CHECK,
       CHILD_REPORT_SUFFIX,
     ].join("\n\n"),
   );
@@ -126,6 +167,7 @@ test("createChildThreadBriefFromParams reads prompt plus optional blocks", () =>
       "Explore.",
       `Success criteria: ${DEFAULT_SUCCESS_CRITERIA}`,
       "Verify: pnpm test",
+      WORKER_SELF_CHECK,
       CHILD_REPORT_SUFFIX,
     ].join("\n\n"),
   );

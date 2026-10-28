@@ -395,16 +395,29 @@ export interface ChildBriefParts {
   readonly constraints?: string;
   readonly success_criteria?: string;
   readonly verify?: string;
+  /** Child isolation mode; selects the self-check block. Defaults to worker. */
+  readonly mode?: OrchestrationChildMode;
 }
 
 /**
  * Always-on closing instruction appended to every child brief so each handoff
  * ends with a structured report. The lead acts on that report and only calls
- * read_thread for detail it omits. The character budget keeps the expensive
- * half of delegation (the child's output) bounded: summarize, don't paste.
+ * read_thread for detail it omits. The report lands in the lead's
+ * frontier-priced context while the child is near-free, so the child
+ * compresses: a short fixed form, summarized rather than pasted.
  */
 export const CHILD_REPORT_SUFFIX =
-  "Report back with: 1) the result summary, 2) files changed or inspected, 3) the validation commands you ran and their outcomes, 4) risks, blockers, or open questions. Do not commit or push. Keep the final report under ~1200 characters: summarize rather than pasting files, diffs, or logs.";
+  "Do not commit or push. End with a report under ~800 characters in this form:\nResult: what you found or changed, in 1-2 sentences.\nFiles: paths changed or inspected.\nChecks: each command you ran and its outcome.\nRisks: blockers or open questions, or none.\nSummarize; never paste files, diffs, or logs.";
+
+/**
+ * Child-side quality loop: child tokens are near-free, so the child checks
+ * and retries before the lead pays to review. Workers re-read their own diff;
+ * scouts have no diff, so they only check their findings.
+ */
+export const WORKER_SELF_CHECK =
+  "Before reporting, re-read your own diff against the success criteria, then rerun the narrowest check until it passes or you hit a real blocker.";
+export const SCOUT_SELF_CHECK =
+  "Before reporting, check your findings against the success criteria.";
 
 /**
  * Host-supplied defaults so the cheapest possible delegation is a one-liner:
@@ -423,8 +436,9 @@ export const DEFAULT_VERIFY =
  * The base prompt comes first, then each optional block as a labeled section
  * in fixed order (Scope, Constraints, Success criteria, Verify), separated
  * by blank lines. Blank scope/constraints blocks are omitted; blank success
- * criteria/verify fall back to the host defaults above. The report suffix is
- * always appended last so even a bare prompt teaches the report contract.
+ * criteria/verify fall back to the host defaults above. The mode's self-check
+ * comes next, and the report suffix is always appended last so even a bare
+ * prompt teaches the report contract.
  */
 export function composeChildBrief(parts: ChildBriefParts): string {
   const blocks = [parts.prompt.trim()];
@@ -438,6 +452,7 @@ export function composeChildBrief(parts: ChildBriefParts): string {
     const trimmed = value?.trim();
     if (trimmed) blocks.push(`${label}: ${trimmed}`);
   }
+  blocks.push(parts.mode === "scout" ? SCOUT_SELF_CHECK : WORKER_SELF_CHECK);
   blocks.push(CHILD_REPORT_SUFFIX);
   return blocks.join("\n\n");
 }
@@ -514,6 +529,7 @@ export function createChildThreadBriefFromParams(params: unknown): string | unde
     constraints: optionalBriefParam(params, "constraints"),
     success_criteria: optionalBriefParam(params, "success_criteria"),
     verify: optionalBriefParam(params, "verify"),
+    mode: createChildThreadModeFromParams(params),
   });
 }
 

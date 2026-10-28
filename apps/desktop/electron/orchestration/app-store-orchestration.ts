@@ -624,7 +624,7 @@ async function handleCreateChildThreadToolResult(
   // Legacy outputs already end with the suffix and pass through unchanged.
   const deliveryPrompt = prompt.endsWith(CHILD_REPORT_SUFFIX)
     ? prompt
-    : composeChildBrief({ prompt });
+    : composeChildBrief({ prompt, ...(mode ? { mode } : {}) });
 
   let deliveryStatus: CreatedChildThreadResult["deliveryStatus"];
   try {
