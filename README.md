@@ -1,28 +1,26 @@
 # Muse Code GUI
 
-Muse Code GUI is an open source fork of [pi-gui](https://github.com/minghinmatthewlam/pi-gui)
-by [Matthew Lam](https://github.com/minghinmatthewlam) — the desktop app for the
-[pi](https://github.com/earendil-works/pi) coding agent, with a lead agent that delegates.
+Muse Code GUI is a free, open source desktop app for the
+[pi](https://github.com/earendil-works/pi) coding agent, where coding agents work as a team:
+a lead agent plans and hands work to cheaper sidekick threads, while you review every change,
+run the tests in a real terminal, and ship without leaving the window.
 Website: https://muse-code-gui.vercel.app
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Latest release](https://img.shields.io/github/v/release/honvl/muse-code-gui?include_prereleases&label=release)](https://github.com/honvl/muse-code-gui/releases)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](#install)
 
-> The installed app is still named **pi-gui** (binary, data folder and Homebrew cask), so
-existing installs keep their sessions, settings and updates. Only the project name changed.
-
 Run agents in parallel threads, each in its own git worktree if you want one. Review every
-change, run the tests in a real terminal, and ship without leaving the window. pi-gui is a
+change, run the tests in a real terminal, and ship without leaving the window. Muse Code GUI is a
 desktop shell around [`@earendil-works/pi-coding-agent`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent),
 not a separate agent: sessions, models, auth and tools all run through pi itself, so anything
 you set up with the pi CLI carries over.
 
-[![An agent in pi-gui fixing a bug, running the tests, then the change open in the review tab](./apps/website/public/media/hero.gif)](./apps/website/public/media/hero.mp4)
+[![An agent in Muse Code GUI fixing a bug, running the tests, then the change open in the review tab](./apps/website/public/media/hero.gif)](./apps/website/public/media/hero.mp4)
 
 <sub>A real run: the agent fixes a bug, adds a test and runs it, then the change opens for review. ([Watch in full quality](./apps/website/public/media/hero.mp4))</sub>
 
-## What this fork adds
+## Features
 
 - **Lead threads that delegate.** Switch a thread to Lead in the model picker and it plans,
   then hands work to child threads running a cheaper sidekick model. Scouts read and search
@@ -39,9 +37,7 @@ you set up with the pi CLI carries over.
 - **Threads that talk to each other**, delegation guardrails (30 children per thread, one
   writer per scope, no `.env` writes, max three levels deep), child threads nested under
   their lead, fork-while-running, honest thinking levels, a one-switch extension pack, and
-  self-updates from this fork's own GitHub Releases.
-
-## Features
+  automatic updates from this project's own GitHub Releases.
 
 ### Run agents side by side
 
@@ -49,7 +45,7 @@ Every task gets its own thread. Start it in your checkout or in a fresh git work
 start the next one while it works. The sidebar shows what is running, what finished and what
 needs you. Pin threads, group them by time or workspace, and archive the ones you are done with.
 
-<img src="./apps/website/public/media/threads.webp" alt="pi-gui running an agent thread while two other threads work in the sidebar" width="720">
+<img src="./apps/website/public/media/threads.webp" alt="Muse Code GUI running an agent thread while two other threads work in the sidebar" width="720">
 
 ### Review every change before it lands
 
@@ -109,12 +105,12 @@ the review tab, your worktrees, and tabs from desktop extensions. Each task keep
 
 ## Install
 
-pi-gui runs on macOS (Apple Silicon), Linux (x64) and Windows (x64).
+Muse Code GUI runs on macOS (Apple Silicon), Linux (x64) and Windows (x64).
 
 Download the latest `.dmg` (macOS), `.AppImage` or `.deb` (Linux), or `.exe` (Windows) from the
 [Releases page](https://github.com/honvl/muse-code-gui/releases).
 
-- **macOS:** drag `pi-gui.app` into Applications. Releases are signed and notarized.
+- **macOS:** drag the app into Applications. Releases are signed and notarized.
 - **Linux:** make the AppImage executable and run it, or install the `.deb`.
 - **Windows:** run the setup `.exe`, or use the portable `.exe`. Builds are not code-signed
   yet, so SmartScreen may ask you to confirm.
@@ -125,25 +121,23 @@ On macOS you can also use Homebrew:
 brew install --cask honvl/tap/pi-gui
 ```
 
-Update with `brew upgrade --cask pi-gui`. A Homebrew upgrade may ask you to
-re-confirm macOS permissions or Dock placement. Other installs tell you when a new release is
-out and update from the Releases page.
+A Homebrew upgrade may ask you to re-confirm macOS permissions or Dock placement. Other installs tell you when a new release is out and update from the Releases page.
 
 Building from source is for contributors; see [Development](#development).
 
 ## Quickstart
 
-1. Install pi-gui and open it.
+1. Install Muse Code GUI and open it.
 2. Open **Settings → Providers** and connect a model provider (OAuth or API key).
 3. Add a workspace: a local project folder.
 4. Click **New thread**, choose **Local** or **Worktree**, and send your first prompt.
 
-pi-gui reads and writes pi's own session files and settings, so threads, credentials and
+Muse Code GUI reads and writes pi's own session files and settings, so threads, credentials and
 skills are shared with the pi CLI.
 
 ## Architecture
 
-pi-gui is an Electron app with a tight main, preload and renderer boundary, on top of the pi
+Muse Code GUI is an Electron app with a tight main, preload and renderer boundary, on top of the pi
 runtime:
 
 - **Renderer** (`apps/desktop/src`): the React UI, including the timeline, composer,
@@ -155,7 +149,7 @@ runtime:
 - **`packages/pi-sdk-driver`**: a thin adapter over `@earendil-works/pi-coding-agent`. It stays
   close to upstream pi and does not fork or reimplement runtime behavior.
 - **Session files are the source of truth.** pi stores each session as a JSONL transcript on
-  disk, and pi-gui reads those files rather than keeping its own copy.
+  disk, and Muse Code GUI reads those files rather than keeping its own copy.
 
 See [docs/architecture.md](docs/architecture.md) for ownership and boundaries.
 
@@ -216,14 +210,17 @@ Electron app, not only by unit tests.
 
 ## Computer use
 
-Native computer use is not built into pi-gui. Desktop and browser control is available
+Native computer use is not built into Muse Code GUI. Desktop and browser control is available
 separately through the standalone
 [`computer-use-mcp`](https://github.com/minghinmatthewlam/computer-use-mcp) server, which any
 MCP-capable agent can use.
 
 ## Acknowledgements
 
-Built on [`@earendil-works/pi-coding-agent`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)
+Muse Code GUI started as a fork of [pi-gui](https://github.com/minghinmatthewlam/pi-gui) by
+[Matthew Lam](https://github.com/minghinmatthewlam); the original MIT copyright notice is kept
+in [LICENSE](./LICENSE). It is built on
+[`@earendil-works/pi-coding-agent`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)
 and the [pi](https://github.com/earendil-works/pi) runtime and ecosystem.
 
 ## License
