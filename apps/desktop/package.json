@@ -1,7 +1,7 @@
 {
   "name": "@pi-gui/desktop",
   "private": true,
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": "Matthew Lam",
   "license": "MIT",
   "description": "Codex-style desktop shell for pi",
@@ -9,7 +9,7 @@
   "main": "out/main/main.js",
   "scripts": {
     "build:deps": "pnpm --dir ../.. --filter @pi-gui/session-driver --filter @pi-gui/pi-sdk-driver --filter @pi-gui/extension-ui --filter @pi-gui/catalogs run build",
-    "build:pack-extensions": "node ../../examples/desktop-extensions/muse-usage/build.mjs && node ../../examples/desktop-extensions/subagents/build.mjs",
+    "build:pack-extensions": "node ../../examples/desktop-extensions/muse-usage/build.mjs",
     "build:notification-helper": "node scripts/build-notification-status-helper.mjs",
     "dev": "node scripts/dev.mjs",
     "build": "pnpm run build:deps && pnpm run build:pack-extensions && pnpm run build:notification-helper && electron-vite build",

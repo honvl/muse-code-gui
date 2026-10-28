@@ -36,12 +36,6 @@ extraResources:
       - "**/*"
       - "!test/**"
       - "!tsconfig.json"
-  - from: ../../examples/desktop-extensions/subagents
-    to: pack/examples/desktop-extensions/subagents
-    filter:
-      - "**/*"
-      - "!test/**"
-      - "!tsconfig.json"
   - from: ../../skills/chrome
     to: pack/skills/chrome
 
