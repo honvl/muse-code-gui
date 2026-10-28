@@ -555,6 +555,8 @@ export class DesktopAppStore {
         this.sessionState.sidekickThinkingBySession.get(sessionKey(sessionRef)),
       defaultScoutThinkingLevel: () => this.state.defaultScoutThinkingLevel,
       sessionModelFor: (sessionRef) => this.sessionModelFor(sessionRef),
+      sessionThinkingLevelFor: (sessionRef) =>
+        this.sessionState.sessionConfigBySession.get(sessionKey(sessionRef))?.thinkingLevel,
       sessionUsageFor: (sessionRef) =>
         this.sessionState.sessionUsageBySession.get(sessionKey(sessionRef)),
       buildCreateSessionOptions: (workspaceId) => this.buildCreateSessionOptions(workspaceId),

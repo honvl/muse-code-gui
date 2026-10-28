@@ -201,10 +201,16 @@ interface ReuseHostState {
   orchestrator?: boolean;
   usage?: SessionUsageSnapshot;
   compactions?: number;
+  /** The thread's sidekick reasoning setting. */
+  sidekickThinking?: string;
+  /** The reused child's current reasoning level. */
+  childThinking?: string;
+  failThinkingChange?: boolean;
 }
 
 function makeHost(state: ReuseHostState) {
   const createSessionCalls: string[] = [];
+  const thinkingChanges: Array<{ sessionId: string; level: string }> = [];
   const submitted: Array<{ sessionId: string; text: string }> = [];
   const runningSessions = new Set<string>();
   let counter = 0;
@@ -243,6 +249,11 @@ function makeHost(state: ReuseHostState) {
       },
       setChildIsolation: () => {},
       sendCustomMessage: async () => {},
+      setSessionThinkingLevel: async (ref: SessionRef, level: string) => {
+        if (state.failThinkingChange) throw new Error("thinking change failed");
+        thinkingChanges.push({ sessionId: ref.sessionId, level });
+        state.childThinking = level;
+      },
     },
     initialize: async () => {},
     orchestrationState: () => ({
@@ -278,8 +289,12 @@ function makeHost(state: ReuseHostState) {
       (state.orchestrator ?? true) && ref.sessionId === leadRef.sessionId,
     sidekickModelFor: () => SIDEKICK,
     defaultScoutModel: () => undefined,
+    sidekickThinkingLevelFor: () => state.sidekickThinking,
+    defaultScoutThinkingLevel: () => undefined,
     sessionModelFor: (ref: SessionRef) =>
       ref.sessionId === leadRef.sessionId ? undefined : SIDEKICK,
+    sessionThinkingLevelFor: (ref: SessionRef) =>
+      ref.sessionId === leadRef.sessionId ? undefined : state.childThinking,
     sessionUsageFor: () => state.usage,
     buildCreateSessionOptions: async () => undefined,
     getQueuedComposerMessages: () => [],
@@ -299,7 +314,7 @@ function makeHost(state: ReuseHostState) {
   const owner = createOrchestrationOwner(
     host as unknown as Parameters<typeof createOrchestrationOwner>[0],
   );
-  return { owner, createSessionCalls, submitted, state };
+  return { owner, createSessionCalls, submitted, state, thinkingChanges };
 }
 
 function idleSidekick(overrides: Partial<OrchestrationChildThread> = {}) {
@@ -502,4 +517,52 @@ test("the queued reuse claim survives a parent re-projection mid-delivery", asyn
   expect(result.details).toMatchObject({ reused: true, childThreadId: "child-1" });
   // Lead-mode reuse results never nudge toward polling.
   expect(resultText(result)).not.toMatch(/read_thread|wait_seconds/);
+});
+
+test("a reused sidekick takes the thread's reasoning effort before the brief", async () => {
+  // Distinct children: generations are module-level and earlier tests reused child-1.
+  const idleSidekickN = (n: number) => child(n, { updatedAt: agoIso(30_000, Date.now()) });
+  const changed = makeHost({
+    children: [idleSidekickN(21)],
+    sidekickThinking: "high",
+    childThinking: "low",
+  });
+  const result = await changed.owner.createChildThreadToolResult(leadRef, {
+    prompt: brief,
+    toolCallId: "call-thinking-change",
+  });
+  expect(result.details).toMatchObject({ reused: true, childThreadId: "child-21" });
+  expect(changed.thinkingChanges).toEqual([{ sessionId: "child-session-21", level: "high" }]);
+  expect(changed.createSessionCalls).toHaveLength(0);
+
+  // Same level, or no setting: the child is left as it is.
+  for (const [n, state] of [
+    [22, { sidekickThinking: "high", childThinking: "high" }],
+    [23, { childThinking: "low" }],
+  ] as const) {
+    const unchanged = makeHost({ children: [idleSidekickN(n)], ...state });
+    await unchanged.owner.createChildThreadToolResult(leadRef, {
+      prompt: brief,
+      toolCallId: "call-thinking-same",
+    });
+    expect(unchanged.thinkingChanges).toEqual([]);
+    expect(unchanged.createSessionCalls).toHaveLength(0);
+  }
+
+  // Applying the effort fails: a fresh child spawns instead, and the idle
+  // sidekick keeps its record.
+  const failing = makeHost({
+    children: [idleSidekickN(24)],
+    sidekickThinking: "high",
+    childThinking: "low",
+    failThinkingChange: true,
+  });
+  const fallback = await failing.owner.createChildThreadToolResult(leadRef, {
+    prompt: brief,
+    toolCallId: "call-thinking-fails",
+  });
+  expect(fallback.details).not.toMatchObject({ reused: true });
+  expect(failing.createSessionCalls).toHaveLength(1);
+  expect(failing.submitted.map((entry) => entry.sessionId)).toEqual(["spawned-1"]);
+  expect(failing.state.children.find((entry) => entry.id === "child-24")?.status).toBe("complete");
 });

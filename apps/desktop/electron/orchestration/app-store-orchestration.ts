@@ -152,6 +152,7 @@ type OrchestrationDriver = Pick<
   | "getSessionTree"
   | "sendCustomMessage"
   | "setChildIsolation"
+  | "setSessionThinkingLevel"
 >;
 
 interface OrchestrationOwnerHost {
@@ -183,6 +184,7 @@ interface OrchestrationOwnerHost {
   sidekickThinkingLevelFor(sessionRef: SessionRef): ThinkingLevel | undefined;
   defaultScoutThinkingLevel(): ThinkingLevel | undefined;
   sessionModelFor(sessionRef: SessionRef): SessionModelSelection | undefined;
+  sessionThinkingLevelFor(sessionRef: SessionRef): string | undefined;
   sessionUsageFor(sessionRef: SessionRef): SessionUsageSnapshot | undefined;
   buildCreateSessionOptions(workspaceId: string): Promise<CreateSessionOptions | undefined>;
   getQueuedComposerMessages(
@@ -921,6 +923,17 @@ async function reuseSidekickForBrief(
       await countChildCompactions(store, childSessionRef(child)),
     );
     if (budgetNote) return { note: budgetNote };
+    // The reused sidekick takes the thread's current reasoning effort, as a
+    // fresh one would. It is applied in place, keeping the warm context that
+    // reuse is for; if that fails, a fresh child spawns with the right effort.
+    const thinkingLevel = store.sidekickThinkingLevelFor(parentRef);
+    if (thinkingLevel && thinkingLevel !== store.sessionThinkingLevelFor(childSessionRef(child))) {
+      try {
+        await store.driver.setSessionThinkingLevel(childSessionRef(child), thinkingLevel);
+      } catch {
+        return {};
+      }
+    }
     const displayPrompt = (input.sourcePrompt ?? input.prompt).trim();
     // Route straight to the claimed record: no thread re-listing, and its
     // `queued` claim already holds the writer slot.
