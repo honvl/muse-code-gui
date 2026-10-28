@@ -1,18 +1,23 @@
+import { execFile } from "node:child_process";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { expect, test } from "@playwright/test";
 import type { SessionRef } from "@pi-gui/session-driver";
 import {
   createNamedThread,
   getDesktopState,
   launchDesktop,
+  makeGitWorkspace,
   makeUserDataDir,
   makeWorkspace,
   runOrchestrationRuntimeTool,
   seedAgentDir,
 } from "../helpers/electron-app";
+
+const execFileAsync = promisify(execFile);
 
 async function startHangingOpenAiServer(): Promise<{
   readonly baseUrl: string;
@@ -506,6 +511,167 @@ test("a lead's sequential worker briefs share one sidekick; parallel briefs do n
     expect(new Set(ids).size).toBe(2);
     expect(parallel.filter((result) => result.details?.reused === true)).toHaveLength(1);
     expect(await children()).toHaveLength(2);
+  } finally {
+    await harness.close();
+    await server.close();
+  }
+});
+
+test("two worktree workers with overlapping scopes run concurrently, each on its own branch", async () => {
+  test.setTimeout(120_000);
+  const server = await startAnsweringOpenAiServer();
+  const userDataDir = await makeUserDataDir();
+  const agentDir = join(userDataDir, "agent");
+  const workspacePath = await makeGitWorkspace("orchestration-worktree-children");
+  await seedAgentDir(agentDir, {
+    withOpenAiAuth: false,
+    withDefaultModel: false,
+    enabledModels: ["answer-test/answer"],
+  });
+  await writeFile(
+    join(agentDir, "settings.json"),
+    `${JSON.stringify({ defaultProvider: "answer-test", defaultModel: "answer", enabledModels: ["answer-test/answer"] }, null, 2)}\n`,
+  );
+  await writeFile(
+    join(agentDir, "models.json"),
+    `${JSON.stringify(
+      {
+        providers: {
+          "answer-test": {
+            baseUrl: server.baseUrl,
+            api: "openai-completions",
+            apiKey: "unused",
+            models: [{ id: "answer" }],
+          },
+        },
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  const launch = () =>
+    launchDesktop(userDataDir, {
+      agentDir,
+      initialWorkspaces: [workspacePath],
+      scrubProviderEnv: true,
+      testMode: "background",
+    });
+  let harness = await launch();
+
+  try {
+    const window = await harness.firstWindow();
+    await createNamedThread(window, "Lead with worktree workers");
+    const parentRef = await selectedSessionRef(window);
+    // Reports reach Lead parents only: switch the thread to Lead.
+    await window.getByRole("button", { name: "Solo", exact: true }).click();
+    await expect(window.getByRole("button", { name: "Lead", exact: true })).toBeVisible();
+
+    // Both claim apps/a: in the shared checkout the second would be refused.
+    const results = await Promise.all(
+      [1, 2].map((n) =>
+        runOrchestrationRuntimeTool(harness, {
+          toolName: "create_child_thread",
+          toolCallId: `worktree-worker-${n}`,
+          sessionRef: parentRef,
+          params: { prompt: `Worktree slice ${n}.`, scope: "apps/a", isolation: "worktree" },
+        }),
+      ),
+    );
+    expect(results.map((result) => result.details?.error)).toEqual([undefined, undefined]);
+    const ids = results.map((result) => String(result.details?.childThreadId));
+    expect(new Set(ids).size).toBe(2);
+
+    const state = await getDesktopState(window);
+    const children = ids.map((id) => state.orchestrationChildren.find((entry) => entry.id === id)!);
+    for (const child of children) {
+      const short = child.id.slice(0, 8);
+      expect(child.branch).toBe(`child/${short}`);
+      expect(child.worktreePath).toBe(join(workspacePath, ".worktrees", short));
+      expect(child.writeScopes).toBeUndefined();
+      // The checkout nests under the folder instead of becoming its own folder.
+      const workspace = state.workspaces.find((entry) => entry.id === child.childWorkspaceId);
+      expect(workspace?.path).toBe(child.worktreePath);
+      expect(workspace?.kind).toBe("worktree");
+      expect(workspace?.rootWorkspaceId).toBe(parentRef.workspaceId);
+    }
+
+    // Each run ends and its report, naming its branch, reaches the lead.
+    await expect
+      .poll(
+        async () =>
+          (await getDesktopState(window)).orchestrationChildren
+            .filter((entry) => ids.includes(entry.id))
+            .map((entry) => entry.status),
+        { timeout: 60_000 },
+      )
+      .toEqual(["complete", "complete"]);
+    for (const child of children) {
+      await expect
+        .poll(() => server.prompts.some((prompt) => prompt.includes(`branch: ${child.branch} (`)), {
+          timeout: 60_000,
+        })
+        .toBe(true);
+    }
+
+    // Both children appear under the lead in the sidebar.
+    const groupToggle = window.getByTestId("child-thread-group-toggle");
+    if ((await groupToggle.getAttribute("aria-expanded")) === "false") {
+      await groupToggle.click();
+    }
+    for (const child of children) {
+      await expect(
+        window.locator(`.session-row[data-session-id="${child.childSessionId}"]`),
+      ).toBeVisible();
+    }
+
+    // Excluded through info/exclude; the main checkout stays clean.
+    const exclude = await readFile(join(workspacePath, ".git", "info", "exclude"), "utf8");
+    expect(exclude).toContain("/.worktrees/");
+    const { stdout } = await execFileAsync("git", ["status", "--porcelain"], {
+      cwd: workspacePath,
+    });
+    expect(stdout.trim()).toBe("");
+
+    // After a restart the children keep their status and record, and a
+    // follow-up continues the same session in its worktree.
+    await harness.close();
+    harness = await launch();
+    const restartedWindow = await harness.firstWindow();
+    await expect
+      .poll(async () =>
+        (await getDesktopState(restartedWindow)).orchestrationChildren
+          .filter((entry) => ids.includes(entry.id))
+          .map((entry) => [entry.status, entry.branch]),
+      )
+      .toEqual(children.map((child) => ["complete", child.branch]));
+    const followUp = await runOrchestrationRuntimeTool(harness, {
+      toolName: "send_message_to_thread",
+      toolCallId: "worktree-follow-up",
+      sessionRef: parentRef,
+      params: { thread_id: ids[0], message: "WORKTREE-FOLLOW-UP" },
+    });
+    expect(followUp.details?.error).toBeUndefined();
+    await expect
+      .poll(
+        () =>
+          server.prompts.some(
+            (prompt) =>
+              prompt.includes("WORKTREE-FOLLOW-UP") &&
+              prompt.includes("Worktree slice 1.") &&
+              prompt.includes(children[0]!.worktreePath!),
+          ),
+        { timeout: 60_000 },
+      )
+      .toBe(true);
+    await expect
+      .poll(
+        async () =>
+          (await getDesktopState(restartedWindow)).orchestrationChildren.find(
+            (entry) => entry.id === ids[0],
+          )?.status,
+        { timeout: 60_000 },
+      )
+      .toBe("complete");
   } finally {
     await harness.close();
     await server.close();
