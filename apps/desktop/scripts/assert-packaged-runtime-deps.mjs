@@ -55,6 +55,7 @@ const requiredPackages = [
   "cross-spawn",
   "data-uri-to-buffer",
   "diff",
+  "electron-updater",
   "glob",
   "highlight.js",
   "hosted-git-info",

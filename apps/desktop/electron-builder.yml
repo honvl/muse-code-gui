@@ -133,5 +133,5 @@ dmg:
 
 publish:
   provider: github
-  owner: minghinmatthewlam
-  repo: pi-gui
+  owner: honvl
+  repo: muse-code-gui
