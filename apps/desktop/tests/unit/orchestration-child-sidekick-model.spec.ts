@@ -30,6 +30,7 @@ function makeHost(options: {
   createOptions: CreateSessionOptions | undefined;
   parentSessionId?: string;
   parentIsChild?: boolean;
+  scoutModel?: SessionModelSelection;
 }) {
   const parentSessionId = options.parentSessionId ?? "parent";
   const createSessionCalls: CreateSessionCall[] = [];
@@ -102,6 +103,7 @@ function makeHost(options: {
     updateSessionConfig: () => {},
     isOrchestratorSession: () => false,
     sidekickModelFor: (ref: SessionRef) => options.sidekickMap[ref.sessionId],
+    defaultScoutModel: () => options.scoutModel,
     sessionModelFor: (ref: SessionRef) => options.sessionModelMap?.[ref.sessionId],
     buildCreateSessionOptions: async () => options.createOptions,
     getQueuedComposerMessages: () => [],
@@ -134,6 +136,52 @@ test("a configured sidekick becomes the child's initial model", async () => {
   expect(createSessionCalls).toHaveLength(1);
   expect(createSessionCalls[0]?.options.initialModel).toEqual(sidekick);
   expect(result.details.childSessionId).toBe(spawnedSessionId);
+});
+
+const scoutModel: SessionModelSelection = { provider: "scout-provider", modelId: "scout-model" };
+
+test("a scout child uses the scout model instead of the thread sidekick", async () => {
+  const { owner, createSessionCalls } = makeHost({
+    sidekickMap: { parent: sidekick },
+    scoutModel,
+    createOptions: { initialModel: workspaceDefault },
+  });
+
+  await owner.createChildThreadToolResult(
+    { workspaceId: "ws", sessionId: "parent" },
+    { prompt, toolCallId: "call-scout", mode: "scout" },
+  );
+
+  expect(createSessionCalls[0]?.options.initialModel).toEqual(scoutModel);
+});
+
+test("a worker child ignores the scout model and keeps the thread sidekick", async () => {
+  const { owner, createSessionCalls } = makeHost({
+    sidekickMap: { parent: sidekick },
+    scoutModel,
+    createOptions: { initialModel: workspaceDefault },
+  });
+
+  await owner.createChildThreadToolResult(
+    { workspaceId: "ws", sessionId: "parent" },
+    { prompt, toolCallId: "call-worker", mode: "worker" },
+  );
+
+  expect(createSessionCalls[0]?.options.initialModel).toEqual(sidekick);
+});
+
+test("a scout child falls back to the sidekick when no scout model is set", async () => {
+  const { owner, createSessionCalls } = makeHost({
+    sidekickMap: { parent: sidekick },
+    createOptions: { initialModel: workspaceDefault },
+  });
+
+  await owner.createChildThreadToolResult(
+    { workspaceId: "ws", sessionId: "parent" },
+    { prompt, toolCallId: "call-scout-fallback", mode: "scout" },
+  );
+
+  expect(createSessionCalls[0]?.options.initialModel).toEqual(sidekick);
 });
 
 test("no sidekick leaves the workspace default untouched", async () => {

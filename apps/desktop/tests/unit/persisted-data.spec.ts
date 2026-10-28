@@ -24,6 +24,14 @@ for (const invalid of [
   { version: 19, collapsedWorkspaceIds: ["alpha", 42] },
   { version: 19, sidekickBySession: { "ws:sess": { provider: "", modelId: "x" } } },
   { version: 19, sidekickBySession: { "ws:sess": "acme" } },
+  { version: 19, defaultLeadModel: { provider: "", modelId: "x" } },
+  { version: 19, defaultLeadModel: { provider: "acme", modelId: "" } },
+  { version: 19, defaultLeadModel: { provider: "acme" } },
+  { version: 19, defaultLeadModel: "acme" },
+  { version: 19, defaultScoutModel: { provider: "", modelId: "x" } },
+  { version: 19, defaultScoutModel: { provider: "acme", modelId: "" } },
+  { version: 19, defaultScoutModel: { provider: "acme" } },
+  { version: 19, defaultScoutModel: "acme" },
   [],
 ]) {
   test(`preserves invalid UI state ${JSON.stringify(invalid)}`, async () => {
@@ -190,6 +198,56 @@ test("sidekick model selections round-trip through ui-state", async () => {
   expect(written.sidekickBySession).toEqual({
     "ws:sess": { provider: "acme", modelId: "sidekick-1" },
   });
+});
+
+test("default lead model round-trips through ui-state", async () => {
+  const path = join(await mkdtemp(join(tmpdir(), "ui-state-default-lead-")), "ui-state.json");
+  await writePersistedUiState(path, {
+    defaultLeadModel: { provider: "acme", modelId: "lead-1" },
+  });
+  const decoded = await readPersistedUiState(path);
+  expect(decoded.defaultLeadModel).toEqual({ provider: "acme", modelId: "lead-1" });
+  const written = JSON.parse(await readFile(path, "utf8")) as {
+    version: number;
+    defaultLeadModel: { provider: string; modelId: string };
+  };
+  expect(written.version).toBe(19);
+  expect(written.defaultLeadModel).toEqual({ provider: "acme", modelId: "lead-1" });
+});
+
+test("ui-state without default lead model loads as absent", async () => {
+  const path = join(await mkdtemp(join(tmpdir(), "ui-state-no-default-lead-")), "ui-state.json");
+  await writeFile(path, JSON.stringify({ version: 15, composerDraft: "kept" }));
+  expect((await readPersistedUiState(path)).defaultLeadModel).toBeUndefined();
+  await writePersistedUiState(path, { composerDraft: "kept" });
+  const written = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+  expect("defaultLeadModel" in written).toBe(false);
+  expect((await readPersistedUiState(path)).defaultLeadModel).toBeUndefined();
+});
+
+test("default scout model round-trips through ui-state", async () => {
+  const path = join(await mkdtemp(join(tmpdir(), "ui-state-default-scout-")), "ui-state.json");
+  await writePersistedUiState(path, {
+    defaultScoutModel: { provider: "acme", modelId: "scout-1" },
+  });
+  const decoded = await readPersistedUiState(path);
+  expect(decoded.defaultScoutModel).toEqual({ provider: "acme", modelId: "scout-1" });
+  const written = JSON.parse(await readFile(path, "utf8")) as {
+    version: number;
+    defaultScoutModel: { provider: string; modelId: string };
+  };
+  expect(written.version).toBe(19);
+  expect(written.defaultScoutModel).toEqual({ provider: "acme", modelId: "scout-1" });
+});
+
+test("ui-state without default scout model loads as absent", async () => {
+  const path = join(await mkdtemp(join(tmpdir(), "ui-state-no-default-scout-")), "ui-state.json");
+  await writeFile(path, JSON.stringify({ version: 15, composerDraft: "kept" }));
+  expect((await readPersistedUiState(path)).defaultScoutModel).toBeUndefined();
+  await writePersistedUiState(path, { composerDraft: "kept" });
+  const written = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+  expect("defaultScoutModel" in written).toBe(false);
+  expect((await readPersistedUiState(path)).defaultScoutModel).toBeUndefined();
 });
 
 test("orchestration child mode and depth round-trip through ui-state", async () => {

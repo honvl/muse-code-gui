@@ -157,8 +157,8 @@ test("a finished child wakes its orchestrator with a visible report", async () =
 
     // The report only wakes dispatcher-only threads; a normal thread keeps
     // owning its children through tool results.
-    await window.getByRole("button", { name: "Orchestrate", exact: true }).click();
-    await expect(window.getByRole("button", { name: "Orchestrator", exact: true })).toBeVisible();
+    await window.getByRole("button", { name: "Solo", exact: true }).click();
+    await expect(window.getByRole("button", { name: "Lead", exact: true })).toBeVisible();
     await expect
       .poll(async () => {
         const state = await getDesktopState(window);

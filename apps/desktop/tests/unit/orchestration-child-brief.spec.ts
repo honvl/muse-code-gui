@@ -1,6 +1,9 @@
 import { expect, test } from "@playwright/test";
 import {
   CHILD_REPORT_SUFFIX,
+  SCOPE_BRIEF_WARNING,
+  SUCCESS_CRITERIA_BRIEF_WARNING,
+  briefWarningsFromParams,
   composeChildBrief,
   createChildThreadBriefFromParams,
 } from "../../electron/orchestration/orchestration-runtime";
@@ -54,6 +57,27 @@ test("composeChildBrief always ends with the report contract", () => {
       verify: "pnpm --filter @pi-gui/desktop run typecheck",
     }).endsWith(`\n\n${CHILD_REPORT_SUFFIX}`),
   ).toBe(true);
+});
+
+test("briefWarningsFromParams flags missing scope and success_criteria separately", () => {
+  expect(briefWarningsFromParams(undefined)).toEqual([]);
+  expect(briefWarningsFromParams({})).toEqual([
+    SCOPE_BRIEF_WARNING,
+    SUCCESS_CRITERIA_BRIEF_WARNING,
+  ]);
+  expect(
+    briefWarningsFromParams({ prompt: "x", scope: "apps/a", success_criteria: "done when green" }),
+  ).toEqual([]);
+  expect(briefWarningsFromParams({ prompt: "x", scope: "apps/a" })).toEqual([
+    SUCCESS_CRITERIA_BRIEF_WARNING,
+  ]);
+  expect(briefWarningsFromParams({ prompt: "x", success_criteria: "done when green" })).toEqual([
+    SCOPE_BRIEF_WARNING,
+  ]);
+  // Blank blocks count as missing; constraints/verify gaps never warn.
+  expect(
+    briefWarningsFromParams({ prompt: "x", scope: "  ", success_criteria: "", verify: "pnpm t" }),
+  ).toEqual([SCOPE_BRIEF_WARNING, SUCCESS_CRITERIA_BRIEF_WARNING]);
 });
 
 test("createChildThreadBriefFromParams reads prompt plus optional blocks", () => {

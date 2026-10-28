@@ -59,8 +59,8 @@ test("lead-mode sidekick picker drives config.sidekick from badge to reset", asy
     // The badge only exists in lead mode.
     await expect(window.getByRole("button", { name: /^Sidekick:/ })).toHaveCount(0);
 
-    await window.getByRole("button", { name: "Orchestrate", exact: true }).click();
-    await expect(window.getByRole("button", { name: "Orchestrator", exact: true })).toBeVisible();
+    await window.getByRole("button", { name: "Solo", exact: true }).click();
+    await expect(window.getByRole("button", { name: "Lead", exact: true })).toBeVisible();
     await expect
       .poll(async () => {
         const state = await getDesktopState(window);

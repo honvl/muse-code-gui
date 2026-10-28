@@ -188,7 +188,7 @@ test("grandchild chains group under their direct parent", () => {
 });
 
 test("summarizeChildGroup is empty when there are no children", () => {
-  expect(summarizeChildGroup([])).toEqual({ count: 0, running: 0, failed: 0 });
+  expect(summarizeChildGroup([])).toEqual({ count: 0, running: 0, failed: 0, done: 0 });
 });
 
 test("summarizeChildGroup counts entries and live statuses", () => {
@@ -212,7 +212,9 @@ test("summarizeChildGroup counts entries and live statuses", () => {
   );
 
   const kids = model.childrenByParentKey.get("ws:parent") ?? [];
-  expect(summarizeChildGroup(kids)).toEqual({ count: 3, running: 1, failed: 1 });
+  // A finished child stays visible in a collapsed group as "done", so work
+  // completing is never silent in the sidebar.
+  expect(summarizeChildGroup(kids)).toEqual({ count: 3, running: 1, failed: 1, done: 1 });
 });
 
 test("summarizeChildGroup sees orchestration status when the session row is idle", () => {
@@ -231,7 +233,7 @@ test("summarizeChildGroup sees orchestration status when the session row is idle
 
   const kids = model.childrenByParentKey.get("ws:parent") ?? [];
   expect(kids).toHaveLength(1);
-  expect(summarizeChildGroup(kids)).toEqual({ count: 1, running: 1, failed: 0 });
+  expect(summarizeChildGroup(kids)).toEqual({ count: 1, running: 1, failed: 0, done: 0 });
 });
 
 test("childThreadFinalDetail reports completion and failure", () => {

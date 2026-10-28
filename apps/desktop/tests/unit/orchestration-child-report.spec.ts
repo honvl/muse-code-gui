@@ -207,3 +207,23 @@ test("report text carries the session error for a failed run", () => {
   expect(report).toContain("error: boom");
   expect(report).toContain("No final answer: the child run failed.");
 });
+
+test("report text carries the handoff generation when known", () => {
+  const report = childCompletionReportText(childRecord(), "complete", "done", undefined, 2);
+
+  expect(report).toContain("thread_id: child-thread-1 (run 2)");
+});
+
+test("report text omits the run marker when the generation is unknown", () => {
+  const report = childCompletionReportText(childRecord(), "complete", "done");
+
+  expect(report).toContain("thread_id: child-thread-1\n");
+  expect(report).not.toContain("(run ");
+});
+
+test("report text marks host-side truncation explicitly", () => {
+  const report = childCompletionReportText(childRecord(), "complete", `R${"e".repeat(5000)}`);
+
+  expect(report).toContain("…(report truncated; call read_thread for detail)");
+  expect(report).not.toContain("e".repeat(5000));
+});

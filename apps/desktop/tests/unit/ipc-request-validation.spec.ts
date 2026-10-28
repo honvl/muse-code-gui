@@ -11,7 +11,6 @@ import {
   expectNotificationPreferences,
   expectOptionalDeliverOptions,
   expectSessionTarget,
-  expectSetChildSupervisionLoopInput,
   expectStartThreadInput,
   expectStringArray,
   expectTerminalSize,
@@ -142,9 +141,6 @@ test("IPC request validation checks discriminated command records", () => {
     }),
   ).toThrow("input.environment must be local or worktree");
 
-  expect(() =>
-    expectSetChildSupervisionLoopInput({ childThreadId: "child-a", gate: "wake" }),
-  ).toThrow("input.gate must be continue or stop");
   expect(() => expectTerminalSize({ cols: 0, rows: 24 })).toThrow(
     "size.cols must be a positive integer",
   );
