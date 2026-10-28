@@ -391,11 +391,24 @@ async function makeLeadHarness(sessionId: string, enabled = true) {
   assert.ok(toolCall, "tool_call handler registered");
   const ctx = { sessionManager: { getSessionId: () => sessionId } };
   await before(makePromptEvent() as never, ctx as never);
+  const toolResult = handlers["tool_result"];
+  assert.ok(toolResult, "tool_result handler registered");
   const call = (event: unknown) =>
     (toolCall as (e: never, c: never) => Promise<unknown>)(event as never, ctx as never);
+  const result = (chars: number, extra: Record<string, unknown> = {}) =>
+    (toolResult as (e: never, c: never) => Promise<unknown>)(
+      { toolName: "read", content: [{ type: "text", text: "x".repeat(chars) }], ...extra } as never,
+      ctx as never,
+    );
   const rerun = () => before(makePromptEvent() as never, ctx as never);
-  return { call, rerun };
+  return { call, result, rerun };
 }
+
+function bashCall(command: string) {
+  return { toolName: "bash", input: { command } };
+}
+
+type GateResult = { block?: boolean; reason?: string } | undefined;
 
 function editCall(path: string, id: string) {
   return { toolName: "edit", input: { path, edits: [] }, toolCallId: id };
@@ -410,7 +423,7 @@ await test("lead soft gate blocks the 4th direct mutation and names create_child
     { block?: boolean; reason?: string } | undefined;
   assert.equal(blocked?.block, true, "4th mutation must block");
   assert.match(blocked?.reason ?? "", /create_child_thread/);
-  assert.match(blocked?.reason ?? "", /3 direct edits/);
+  assert.match(blocked?.reason ?? "", /Direct-work limit reached: 3 /);
 });
 
 await test("read-only bash, reads, and delegation tools never consume the mutation budget", async () => {
@@ -444,7 +457,7 @@ await test("PI_APP_LEAD_DIRECT_MUTATION_LIMIT overrides the gate; junk falls bac
     const blocked = (await call(editCall("apps/a/y.ts", "c2"))) as
       { block?: boolean; reason?: string } | undefined;
     assert.equal(blocked?.block, true, "limit 1 must block the 2nd mutation");
-    assert.match(blocked?.reason ?? "", /1 direct edits/);
+    assert.match(blocked?.reason ?? "", /Direct-work limit reached: 1 /);
   } finally {
     delete process.env.PI_APP_LEAD_DIRECT_MUTATION_LIMIT;
   }
@@ -458,7 +471,7 @@ await test("PI_APP_LEAD_DIRECT_MUTATION_LIMIT overrides the gate; junk falls bac
       const blocked = (await call(editCall("apps/a/w.ts", "c4"))) as
         { block?: boolean; reason?: string } | undefined;
       assert.equal(blocked?.block, true, `junk ${junk} must fall back to 3`);
-      assert.match(blocked?.reason ?? "", /3 direct edits/);
+      assert.match(blocked?.reason ?? "", /Direct-work limit reached: 3 /);
     } finally {
       delete process.env.PI_APP_LEAD_DIRECT_MUTATION_LIMIT;
     }
@@ -493,6 +506,78 @@ await test("before_agent_start resets the mutation budget for a new run", async 
     ((await call(editCall("apps/a/w.ts", "c8"))) as { block?: boolean } | undefined)?.block,
     true,
   );
+});
+
+await test("cd-prefixed reads and diagnostics never spend the direct-work budget", async () => {
+  const { call } = await makeLeadHarness("lead-gate-cd-reads");
+  for (let i = 0; i < 10; i++) {
+    assert.equal(await call(bashCall(`cd /repo && sed -n '${i},+40p' src/a.ts`)), undefined);
+    assert.equal(
+      await call(bashCall("cd /repo\ngit log --oneline -3\necho ---\nps -eo pid")),
+      undefined,
+    );
+  }
+  assert.equal(await call(editCall("apps/a/x.ts", "c1")), undefined);
+  assert.equal(await call(editCall("apps/a/y.ts", "c2")), undefined);
+  assert.equal(await call(editCall("apps/a/z.ts", "c3")), undefined, "reads left all 3 slots");
+});
+
+await test("test/build runs share the budget and the block names what was counted", async () => {
+  const { call } = await makeLeadHarness("lead-gate-verification");
+  assert.equal(await call(editCall("apps/a/x.ts", "c1")), undefined);
+  assert.equal(
+    await call(bashCall("cd /repo && pnpm --filter @pi-gui/desktop run typecheck")),
+    undefined,
+  );
+  assert.equal(await call(bashCall("rm -rf apps/a/dist")), undefined);
+  const blocked = (await call(bashCall("cd /repo && cargo test -p core"))) as GateResult;
+  assert.equal(blocked?.block, true, "4th counted action must block");
+  const reason = blocked?.reason ?? "";
+  assert.match(reason, /Direct-work limit reached: 3 /);
+  assert.match(reason, /edit apps\/a\/x\.ts; pnpm --filter @pi-gui\/desktop run typecheck/);
+  assert.match(reason, /rm -rf apps\/a\/dist/);
+  assert.match(reason, /remaining test\/build runs/);
+  assert.match(reason, /mode "worker" and scope "apps\/a\/x\.ts"/);
+  assert.match(reason, /Reads stay free/);
+});
+
+await test("read budget bounces one exploratory call to a scout, then lets reads through", async () => {
+  process.env.PI_APP_LEAD_READ_BUDGET_CHARS = "1000";
+  try {
+    const { call, result } = await makeLeadHarness("lead-gate-read-budget");
+    assert.equal(await call(bashCall("rg -n foo src")), undefined);
+    await result(600);
+    assert.equal(await call({ toolName: "read", input: { path: "src/a.ts" } }), undefined);
+    await result(600);
+    const nudged = (await call(bashCall("cd /repo && sed -n '1,400p' src/b.ts"))) as GateResult;
+    assert.equal(nudged?.block, true, "first read past the budget is bounced");
+    assert.match(nudged?.reason ?? "", /about 1k characters/);
+    assert.match(nudged?.reason ?? "", /mode "scout"/);
+    assert.match(nudged?.reason ?? "", /repeat it and it will run/);
+    assert.equal(
+      await call(bashCall("cd /repo && sed -n '1,400p' src/b.ts")),
+      undefined,
+      "the repeated targeted read runs",
+    );
+    for (const toolName of ["read_thread", "create_child_thread", "send_message_to_thread"]) {
+      assert.equal(await call({ toolName }), undefined, `${toolName} is never nudged`);
+    }
+    await result(999);
+    assert.equal(await call({ toolName: "grep", input: { pattern: "x" } }), undefined);
+    await result(1);
+    assert.equal(
+      ((await call({ toolName: "grep", input: { pattern: "x" } })) as GateResult)?.block,
+      true,
+      "another budget's worth nudges again",
+    );
+    assert.equal(
+      await call(editCall("apps/a/x.ts", "c1")),
+      undefined,
+      "edits use their own budget",
+    );
+  } finally {
+    delete process.env.PI_APP_LEAD_READ_BUDGET_CHARS;
+  }
 });
 
 await test("lead prompt contains each policy sentence exactly once", async () => {
@@ -572,5 +657,28 @@ await test("solo and child prompts contain no delegation-strategy text", async (
       leadSentences.includes(phrase),
       `lead prompt must contain the strategy phrase under test: ${phrase}`,
     );
+  }
+});
+
+await test("read budget ignores nested tool output, resets per run, and skips solo threads", async () => {
+  process.env.PI_APP_LEAD_READ_BUDGET_CHARS = "100";
+  try {
+    const lead = await makeLeadHarness("lead-gate-read-reset");
+    await lead.result(5000, { parentToolCallId: "outer" });
+    assert.equal(
+      await lead.call(bashCall("rg foo")),
+      undefined,
+      "nested output is the tool's work",
+    );
+    await lead.result(150);
+    assert.equal(((await lead.call(bashCall("rg foo"))) as GateResult)?.block, true);
+    await lead.rerun();
+    assert.equal(await lead.call(bashCall("rg foo")), undefined, "a new run starts a fresh budget");
+
+    const solo = await makeLeadHarness("lead-gate-read-solo", false);
+    await solo.result(5000);
+    assert.equal(await solo.call(bashCall("rg foo")), undefined);
+  } finally {
+    delete process.env.PI_APP_LEAD_READ_BUDGET_CHARS;
   }
 });

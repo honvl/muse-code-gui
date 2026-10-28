@@ -3,7 +3,7 @@ import type {
   ExtensionContext,
   ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
-import { extractChildToolArg, isScoutReadOnlyBashCommand } from "./child-isolation.js";
+import { classifyLeadToolCall, type LeadAction } from "./lead-action-classifier.js";
 
 /**
  * Lead-mode orchestration for pi-gui threads.
@@ -41,7 +41,7 @@ export const ORCHESTRATOR_ALLOWED_TOOLS: readonly string[] = [
 export const ORCHESTRATOR_SYSTEM_PROMPT = [
   "You are the lead of a lead-plus-child team. You own the plan, the interpretation of ambiguity, and the final review before anything reaches the user. A report is a claim, not proof: verify by reading the diff and the files the child named against the brief's success criteria. A child's validation counts as evidence unless the change is subtle or risky — never re-run a suite it already ran; for subtle or shared/critical changes delegate a read-only scout review instead.",
   `Delegate by default: your own tokens are the expensive resource and a child's context is separate from yours. Spawn one child thread per independent part with parallel create_child_thread calls (mode "scout" for searches/reviews — scouts may run read-only shell commands such as rg, grep, and ls but cannot edit, write, or mutate — "worker" for edits and mutating shell). Reuse a child whose context already covers the work (list_threads to find it, send_message_to_thread to continue it — preserves context/cache); spawn fresh only for parallel/independent slices or when the child drifted or is out of scope. Your delegation tools are ${ORCHESTRATOR_ALLOWED_TOOLS.join(", ")}.`,
-  "Your own hands are for reading and for one-line fixes. Anything bigger — two files, a new file, or a command that writes — goes to a worker child with a one-line brief; the host fills the rest. If the writer rule blocks you, wait or narrow scope instead of doing the edit yourself.",
+  "Your own hands are for reading and for one-line fixes. Targeted reads (rg -l, line ranges, the diff hunks you must review) are yours; broad exploration (many files, logs, history) goes to a scout that returns a short summary. Anything bigger than a one-line fix — two files, a new file, a command that writes, or any test, build, or typecheck run — goes to a worker child with a one-line brief; the host fills the rest. If the writer rule blocks you, wait or narrow scope instead of doing the edit yourself.",
   "Write briefs a stranger could execute: objective, context, constraints, files/areas in scope, success criteria, what NOT to do, and the verification to run. Always pass scope: only one worker writes at a time, so parallel workers need disjoint scopes (apps/a vs apps/b); an unscoped worker claims the whole workspace and blocks the others.",
   "Children report back automatically when a run ends; do not poll read_thread in a loop. Act on each report. If a report is thin, steer the child with send_message_to_thread; if a child is drifting, take the work back and do it yourself.",
   "Keep your own context small: use targeted rg patterns, line ranges, and git diff --stat followed by only the files that matter. Never dump a whole file, a full diff, or a test log into your context; never re-read what a child already verified.",
@@ -67,13 +67,62 @@ export function resolveLeadDirectMutationLimit(env: NodeJS.ProcessEnv = process.
   return DEFAULT_LEAD_DIRECT_MUTATION_LIMIT;
 }
 
-interface LeadMutationState {
-  count: number;
-  paths: string[];
+/**
+ * Characters of tool output the lead may pull into its own context per run
+ * before the next exploratory read is redirected to a scout. One nudge per
+ * budget's worth of output: after a nudge, reads pass again until another
+ * budget accumulates, so a targeted read the lead genuinely needs is never
+ * locked out. Overridable with PI_APP_LEAD_READ_BUDGET_CHARS.
+ */
+export const DEFAULT_LEAD_READ_BUDGET_CHARS = 24_000;
+export const LEAD_READ_BUDGET_ENV_VAR = "PI_APP_LEAD_READ_BUDGET_CHARS";
+
+export function resolveLeadReadBudgetChars(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env[LEAD_READ_BUDGET_ENV_VAR]?.trim();
+  if (raw !== undefined && raw !== "" && /^\d+$/.test(raw)) {
+    const value = Number.parseInt(raw, 10);
+    if (Number.isSafeInteger(value) && value > 0) {
+      return value;
+    }
+  }
+  return DEFAULT_LEAD_READ_BUDGET_CHARS;
 }
 
-/** Direct-mutation counts per lead session, reset on every run. */
-const leadMutationBySession = new Map<string, LeadMutationState>();
+/** Tools whose output is exploration the lead could hand to a scout. Delegation tools never nudge. */
+const LEAD_EXPLORATION_TOOLS = new Set([
+  "read",
+  "grep",
+  "find",
+  "ls",
+  "bash",
+  "bash_background",
+  "shell",
+]);
+
+interface LeadRunState {
+  /** Labels of the edits and verification runs that spent the direct-work budget. */
+  counted: string[];
+  paths: string[];
+  outputChars: number;
+  nextReadNudgeAt: number;
+}
+
+/** Direct-work and read-volume accounting per lead session, reset on every run. */
+const leadRunBySession = new Map<string, LeadRunState>();
+
+function leadRunState(key: string): LeadRunState {
+  let state = leadRunBySession.get(key);
+  if (!state) {
+    state = {
+      counted: [],
+      paths: [],
+      outputChars: 0,
+      nextReadNudgeAt: resolveLeadReadBudgetChars(),
+    };
+    leadRunBySession.set(key, state);
+  }
+  return state;
+}
 
 function leadSessionKey(ctx: ExtensionContext): string {
   try {
@@ -87,31 +136,48 @@ function leadSessionKey(ctx: ExtensionContext): string {
   return "default";
 }
 
-/** True when a lead tool call mutates: edits, writes, and bash the scout read-only policy rejects. */
-function isLeadDirectMutation(toolName: string, input: unknown): boolean {
-  if (toolName === "edit" || toolName === "write") {
-    return true;
-  }
-  if (toolName === "bash") {
-    return !isScoutReadOnlyBashCommand(extractChildToolArg("bash", input));
-  }
-  return false;
-}
-
-function leadDirectMutationBlockReason(paths: readonly string[], limit: number): string {
-  const scopeHint = paths.length > 0 ? paths.join(", ") : "the files you were editing";
+function leadDirectWorkBlockReason(state: LeadRunState, limit: number, next: LeadAction): string {
+  const scopeHint = state.paths.length > 0 ? state.paths.join(", ") : "the files you were editing";
+  const counted = state.counted.join("; ");
+  const what = next.kind === "verification" ? "test/build runs" : "edits";
   return (
-    `You have made ${limit} direct edits this run. Delegate the remaining work: ` +
-    `create_child_thread with scope "${scopeHint}" and mode "worker". ` +
-    `Keep only a single one-line fix in your own hands.`
+    `Direct-work limit reached: ${limit} edits or test/build runs this run (${counted}). ` +
+    `Delegate the remaining ${what}: create_child_thread with mode "worker" and scope "${scopeHint}"; ` +
+    `a worker runs the checks and reports the command and outcome. ` +
+    `Reads stay free: rg, sed -n, and git diff/log never count.`
   );
 }
 
+function leadReadBudgetNudge(outputChars: number): string {
+  const thousands = Math.round(outputChars / 1000);
+  return (
+    `You have pulled about ${thousands}k characters of tool output into your own context this run. ` +
+    `Hand further broad exploration to a scout: create_child_thread with mode "scout" and ask for a summary under 800 characters. ` +
+    `If this exact call is a targeted read you need for the plan or a review, repeat it and it will run.`
+  );
+}
+
+function toolResultChars(content: unknown): number {
+  if (!Array.isArray(content)) return 0;
+  let total = 0;
+  for (const item of content) {
+    const text = (item as { readonly text?: unknown } | null)?.text;
+    if (typeof text === "string") total += text.length;
+  }
+  return total;
+}
+
 /**
- * Hidden inline extension: lead prompt nudge plus a soft gate on the lead's
- * own mutations. The first `limit` direct mutations per run pass through;
- * the next one is blocked with a redirect to `create_child_thread`. Solo
- * threads are untouched: the switch changes policy, not capability.
+ * Hidden inline extension: lead prompt nudge plus two soft gates on the
+ * lead's own hands, both aimed at the lead's tokens (children are cheap):
+ *
+ * - Direct work: the first `limit` edits or test/build runs per run pass;
+ *   the next is blocked with a redirect to a worker child. Reads never count
+ *   (see lead-action-classifier: cost classification, not a safety policy).
+ * - Read volume: after each budget's worth of tool output enters the lead's
+ *   context, the next exploratory call is bounced once toward a scout.
+ *
+ * Solo threads are untouched: the switch changes policy, not capability.
  */
 export function createOrchestratorModeExtension(
   resolveEnabled: (ctx: ExtensionContext) => boolean,
@@ -144,8 +210,8 @@ export function createOrchestratorModeExtension(
       );
       // Delegation strategy lives only in the orchestrator_mode section above:
       // no per-run guideline, so the lead's cached prefix stays small.
-      // A new run clears the direct-mutation budget for this session.
-      leadMutationBySession.delete(leadSessionKey(ctx));
+      // A new run clears the direct-work and read budgets for this session.
+      leadRunBySession.delete(leadSessionKey(ctx));
       event.systemPromptOptions.sections["orchestrator_mode"] = ORCHESTRATOR_SYSTEM_PROMPT;
       return undefined;
     });
@@ -158,21 +224,32 @@ export function createOrchestratorModeExtension(
       if (typeof toolName !== "string" || toolName.length === 0) return undefined;
       if ((_event as { readonly parentToolCallId?: unknown }).parentToolCallId) return undefined;
       const input = (_event as { readonly input?: unknown }).input;
-      if (!isLeadDirectMutation(toolName, input)) return undefined;
-      const key = leadSessionKey(ctx);
-      const limit = resolveLeadDirectMutationLimit();
-      const state = leadMutationBySession.get(key) ?? { count: 0, paths: [] };
-      if (state.count >= limit) {
-        return { block: true, reason: leadDirectMutationBlockReason(state.paths, limit) };
-      }
-      state.count += 1;
-      if (toolName === "edit" || toolName === "write") {
-        const path = extractChildToolArg(toolName, input)?.trim();
-        if (path && !state.paths.includes(path) && state.paths.length < 3) {
-          state.paths.push(path);
+      const action = classifyLeadToolCall(toolName, input);
+      const state = leadRunState(leadSessionKey(ctx));
+      if (action.kind === "read") {
+        if (!LEAD_EXPLORATION_TOOLS.has(toolName) || state.outputChars < state.nextReadNudgeAt) {
+          return undefined;
         }
+        state.nextReadNudgeAt = state.outputChars + resolveLeadReadBudgetChars();
+        return { block: true, reason: leadReadBudgetNudge(state.outputChars) };
       }
-      leadMutationBySession.set(key, state);
+      const limit = resolveLeadDirectMutationLimit();
+      if (state.counted.length >= limit) {
+        return { block: true, reason: leadDirectWorkBlockReason(state, limit, action) };
+      }
+      state.counted.push(action.label);
+      if (action.path && !state.paths.includes(action.path) && state.paths.length < 3) {
+        state.paths.push(action.path);
+      }
+      return undefined;
+    });
+
+    pi.on("tool_result", async (event, ctx) => {
+      if (!resolveEnabled(ctx)) return undefined;
+      if ((event as { readonly parentToolCallId?: unknown }).parentToolCallId) return undefined;
+      leadRunState(leadSessionKey(ctx)).outputChars += toolResultChars(
+        (event as { readonly content?: unknown }).content,
+      );
       return undefined;
     });
   };
