@@ -21,7 +21,7 @@ import { decodeTaskWorkbenchTemplate, type TaskWorkbenchTemplate } from "../../c
 
 export interface PersistedUiState {
   readonly version?:
-    2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19;
+    2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20;
   readonly taskWorkbenchTemplatesBySession?: Record<string, TaskWorkbenchTemplate>;
   readonly selectedWorkspaceId?: string;
   readonly selectedSessionId?: string;
@@ -65,6 +65,12 @@ export interface PersistedUiState {
   /** App-global default model for read-only scout children. */
   readonly defaultScoutModel?: SessionModelSelection;
 }
+
+/**
+ * Current UI-state format. v20 adds optional `writeScopes` on orchestration
+ * children; a v19 child without it claims the whole workspace.
+ */
+const UI_STATE_VERSION = 20;
 
 export interface LegacyPersistedUiState extends PersistedUiState {
   readonly composerAttachmentsBySession?: Record<string, readonly unknown[]>;
@@ -166,13 +172,14 @@ export async function writePersistedUiState(
   // megabytes synchronously on the main thread while threads were streaming.
   const serialized = `${JSON.stringify({
     ...payload,
-    version: 19,
+    version: UI_STATE_VERSION,
   } satisfies PersistedUiState)}\n`;
-  decodePersistedUiState(payload);
+  // Validate what is written: the stamped version decides which fields are allowed.
+  decodePersistedUiState({ ...payload, version: UI_STATE_VERSION });
   await writeFileAtomicQueued(uiStateFilePath, serialized, decodePersistedUiState, {
     preserveExistingAs: (validated) => {
       const existing = validated as LegacyPersistedUiState;
-      if (existing.version === 19) return undefined;
+      if (existing.version === UI_STATE_VERSION) return undefined;
       return join(
         dirname(uiStateFilePath),
         `${basename(uiStateFilePath, ".json")}.pre-workbench-v${existing.version ?? "legacy"}.${randomUUID()}.json`,
@@ -458,6 +465,7 @@ function validateUiState(value: unknown): Record<string, unknown> {
           "goal",
           "mode",
           "depth",
+          "writeScopes",
           "status",
           "latestTranscript",
           "transcript",
@@ -500,6 +508,14 @@ function validateUiState(value: unknown): Record<string, unknown> {
         (v) => typeof v === "number" && Number.isInteger(v) && v >= 0,
         `${path}.depth`,
       );
+      optional(
+        record,
+        "writeScopes",
+        (v) => Array.isArray(v) && v.every((token) => typeof token === "string" && token !== ""),
+        `${path}.writeScopes`,
+      );
+      if (record.writeScopes !== undefined && typeof root.version === "number" && root.version < 20)
+        fail(`${path}.writeScopes before v20`);
       if (record.transcript !== undefined) {
         if (!Array.isArray(record.transcript)) fail(`${path}.transcript`);
         for (const message of record.transcript as unknown[]) {
@@ -588,7 +604,10 @@ function toAppView(value: unknown): AppView | undefined {
 }
 
 function toPersistedVersion(value: unknown): NonNullable<PersistedUiState["version"]> | undefined {
-  return typeof value === "number" && Number.isInteger(value) && value >= 2 && value <= 19
+  return typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= 2 &&
+    value <= UI_STATE_VERSION
     ? (value as NonNullable<PersistedUiState["version"]>)
     : undefined;
 }
@@ -662,6 +681,12 @@ function toPersistedOrchestrationChildren(value: unknown): OrchestrationChildThr
       candidate.depth >= 0
         ? candidate.depth
         : undefined;
+    // Missing scopes (every file before v20) mean the whole workspace.
+    const writeScopes = Array.isArray(candidate.writeScopes)
+      ? candidate.writeScopes.filter(
+          (token): token is string => typeof token === "string" && token !== "",
+        )
+      : undefined;
     return [
       {
         id,
@@ -674,6 +699,7 @@ function toPersistedOrchestrationChildren(value: unknown): OrchestrationChildThr
         goal,
         ...(mode ? { mode } : {}),
         ...(depth !== undefined ? { depth } : {}),
+        ...(writeScopes ? { writeScopes } : {}),
         status,
         latestTranscript:
           stringValue(candidate.latestTranscript) || retainedTranscript.at(-1)?.text || goal,

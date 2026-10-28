@@ -184,6 +184,12 @@ export interface OrchestrationChildThread {
   readonly goal: string;
   readonly mode?: OrchestrationChildMode;
   readonly depth?: number;
+  /**
+   * Normalized path prefixes a worker claimed through its brief's `scope`.
+   * Missing or empty means the whole workspace. Scopes are advisory for
+   * artifacts every checkout shares (build outputs, lockfiles, the Git index).
+   */
+  readonly writeScopes?: readonly string[];
   readonly status: OrchestrationChildThreadStatus;
   readonly latestTranscript: string;
   readonly transcript: readonly OrchestrationChildTranscriptMessage[];

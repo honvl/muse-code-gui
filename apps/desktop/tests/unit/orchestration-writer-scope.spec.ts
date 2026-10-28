@@ -102,10 +102,13 @@ interface WriterHostState {
   children: OrchestrationChildThread[];
   childStatus: "running" | "idle";
   childTranscript: TranscriptMessage[];
+  /** Per-child session status override, by child session id. */
+  sessionStatusById?: Record<string, "running" | "idle">;
 }
 
 function makeHost(state: WriterHostState) {
   const createSessionCalls: string[] = [];
+  const submitted: Array<{ sessionId: string; text: string }> = [];
   let counter = state.children.length;
   const host = {
     driver: {
@@ -139,13 +142,15 @@ function makeHost(state: WriterHostState) {
     emit: () => ({}) as never,
     withError: async () => ({}) as never,
     persistUiState: async () => {},
+    schedulePersistUiState: () => {},
     workspaceRefFromState: () => ({ workspaceId: "ws", path: "/tmp/ws" }),
     sessionFromState: (ref: SessionRef) => {
       if (ref.sessionId === parentRef.sessionId) {
         return { status: "running", title: "Parent", updatedAt: createdAt };
       }
       if (state.children.some((child) => child.childSessionId === ref.sessionId)) {
-        return { status: state.childStatus, title: "Child", updatedAt: createdAt };
+        const status = state.sessionStatusById?.[ref.sessionId] ?? state.childStatus;
+        return { status, title: "Child", updatedAt: createdAt };
       }
       return undefined;
     },
@@ -167,12 +172,15 @@ function makeHost(state: WriterHostState) {
     isTranscriptLoaded: () => true,
     getSessionError: () => undefined,
     setSessionError: () => {},
-    submitComposerToSession: async () => ({}) as never,
+    submitComposerToSession: async (ref: SessionRef, text: string) => {
+      submitted.push({ sessionId: ref.sessionId, text });
+      return {} as never;
+    },
   };
   const owner = createOrchestrationOwner(
     host as unknown as Parameters<typeof createOrchestrationOwner>[0],
   );
-  return { owner, createSessionCalls };
+  return { owner, createSessionCalls, submitted, state };
 }
 
 function resultText(result: { content: Array<{ type: string; text?: string }> }): string {
@@ -314,4 +322,165 @@ test("a worker with no scope blocks a second scoped worker", async () => {
   expect(result.details.childThreadId).toBeUndefined();
   expect(result.details.error).toContain('Another worker is writing "apps/desktop"');
   expect(result.details.error).toContain('child "Whole-workspace writer"');
+});
+
+test("workers scoped to disjoint folders run concurrently", async () => {
+  const { owner, createSessionCalls, state } = makeHost({
+    children: [seedChild(1, { title: "Writer A", writeScopes: ["apps/a"] })],
+    childStatus: "running",
+    childTranscript: [userMessage("u1", prompt), assistantMessage("a1", "Working.")],
+  });
+
+  const result = await owner.createChildThreadToolResult(parentRef, {
+    prompt,
+    scope: "./Apps/B/",
+    toolCallId: "call-disjoint-writer",
+  });
+
+  expect(result.details.error).toBeUndefined();
+  expect(createSessionCalls).toHaveLength(1);
+  // The new worker's claim is persisted on its record, normalized.
+  const spawned = state.children.find((child) => child.id === result.details.childThreadId);
+  expect(spawned?.writeScopes).toEqual(["apps/b"]);
+});
+
+test("a nested scope conflicts with its parent folder", async () => {
+  const { owner, createSessionCalls } = makeHost({
+    children: [seedChild(1, { title: "Writer A", writeScopes: ["apps/a"] })],
+    childStatus: "running",
+    childTranscript: [userMessage("u1", prompt), assistantMessage("a1", "Working.")],
+  });
+
+  const result = await owner.createChildThreadToolResult(parentRef, {
+    prompt,
+    scope: "apps/a/src",
+    toolCallId: "call-nested-writer",
+  });
+
+  expect(createSessionCalls).toHaveLength(0);
+  expect(result.details.error).toContain('Another worker is writing "apps/a/src"');
+  expect(result.details.error).toContain('child "Writer A"');
+});
+
+test("an unscoped worker conflicts with a scoped active worker", async () => {
+  const { owner, createSessionCalls } = makeHost({
+    children: [seedChild(1, { title: "Writer A", writeScopes: ["apps/a"] })],
+    childStatus: "running",
+    childTranscript: [userMessage("u1", prompt), assistantMessage("a1", "Working.")],
+  });
+
+  const result = await owner.createChildThreadToolResult(parentRef, {
+    prompt,
+    toolCallId: "call-unscoped-vs-scoped",
+  });
+
+  expect(createSessionCalls).toHaveLength(0);
+  expect(result.details.error).toContain('Another worker is writing "the workspace"');
+});
+
+test("an unscoped spawn records an empty claim, which blocks every later worker", async () => {
+  const { owner, state } = makeHost({
+    children: [],
+    childStatus: "running",
+    childTranscript: [userMessage("u1", prompt), assistantMessage("a1", "Working.")],
+  });
+
+  const first = await owner.createChildThreadToolResult(parentRef, {
+    prompt,
+    toolCallId: "call-unscoped-first",
+  });
+  expect(first.details.error).toBeUndefined();
+  expect(state.children[0]?.writeScopes).toEqual([]);
+  // The stub session never reports running; mark the spawned worker active.
+  state.children = state.children.map((child) => ({ ...child, status: "running" as const }));
+
+  const second = await owner.createChildThreadToolResult(parentRef, {
+    prompt,
+    scope: "apps/b",
+    toolCallId: "call-scoped-after-unscoped",
+  });
+  expect(second.details.error).toContain('Another worker is writing "apps/b"');
+});
+
+test("waking an idle worker whose scope overlaps an active worker is refused", async () => {
+  const { owner, submitted } = makeHost({
+    children: [
+      seedChild(1, { title: "Active writer", status: "running", writeScopes: ["apps/a"] }),
+      seedChild(2, { title: "Idle writer", status: "complete", writeScopes: ["apps/a/src"] }),
+    ],
+    childStatus: "idle",
+    sessionStatusById: { "child-session-1": "running" },
+    childTranscript: [userMessage("u1", prompt), assistantMessage("a1", "Done.")],
+  });
+
+  const result = await owner.sendMessageToThreadToolResult(parentRef, {
+    threadId: "seed-child-2",
+    message: "Continue with the next step.",
+  });
+
+  expect(submitted).toHaveLength(0);
+  expect(result.details.error).toContain('Another worker is writing "apps/a/src"');
+  expect(result.details.error).toContain('child "Active writer"');
+});
+
+test("waking an idle worker with a disjoint scope delivers the message", async () => {
+  const { owner, submitted } = makeHost({
+    children: [
+      seedChild(1, { title: "Active writer", status: "running", writeScopes: ["apps/a"] }),
+      seedChild(2, { title: "Idle writer", status: "complete", writeScopes: ["apps/b"] }),
+    ],
+    childStatus: "idle",
+    sessionStatusById: { "child-session-1": "running" },
+    childTranscript: [userMessage("u1", prompt), assistantMessage("a1", "Done.")],
+  });
+
+  const result = await owner.sendMessageToThreadToolResult(parentRef, {
+    threadId: "seed-child-2",
+    message: "Continue with the next step.",
+  });
+
+  expect(result.details.error).toBeUndefined();
+  expect(submitted).toEqual([
+    { sessionId: "child-session-2", text: "Continue with the next step." },
+  ]);
+});
+
+test("waking an unscoped idle worker conflicts with any active worker", async () => {
+  const { owner, submitted } = makeHost({
+    children: [
+      seedChild(1, { title: "Active writer", status: "running", writeScopes: ["apps/a"] }),
+      // Saved before v20: no writeScopes, so it claims the whole workspace.
+      seedChild(2, { title: "Legacy writer", status: "complete" }),
+    ],
+    childStatus: "idle",
+    sessionStatusById: { "child-session-1": "running" },
+    childTranscript: [userMessage("u1", prompt), assistantMessage("a1", "Done.")],
+  });
+
+  const result = await owner.sendMessageToThreadToolResult(parentRef, {
+    threadId: "seed-child-2",
+    message: "Continue.",
+  });
+
+  expect(submitted).toHaveLength(0);
+  expect(result.details.error).toContain('Another worker is writing "the workspace"');
+});
+
+test("steering a running worker skips the scope check: it already holds its slot", async () => {
+  const { owner, submitted } = makeHost({
+    children: [
+      seedChild(1, { title: "Writer one", status: "running" }),
+      seedChild(2, { title: "Writer two", status: "running" }),
+    ],
+    childStatus: "running",
+    childTranscript: [userMessage("u1", prompt), assistantMessage("a1", "Working.")],
+  });
+
+  const result = await owner.sendMessageToThreadToolResult(parentRef, {
+    threadId: "seed-child-2",
+    message: "Also cover the edge case.",
+  });
+
+  expect(result.details.error).toBeUndefined();
+  expect(submitted).toHaveLength(1);
 });

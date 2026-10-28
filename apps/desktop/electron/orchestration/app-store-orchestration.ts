@@ -331,17 +331,15 @@ function isActiveWriterStatus(status: OrchestrationChildThreadStatus): boolean {
 }
 
 /**
- * Phase A seam for worktree isolation (phase B).
- *
- * Existing children carry no persisted scope (no contract change), so today
- * every known worker counts as the whole workspace (`[]` overlaps
- * everything). Phase B will return each blocker's real scope here — e.g.
- * from its worktree record or persisted brief — at which point disjoint
- * scopes stop conflicting and route to separate worktrees instead. The
- * `scopesOverlap` call below already honors that; only this function changes.
+ * The scope a worker claimed when it was spawned (or last reused). A record
+ * without one (unscoped, or saved before ui-state v20) claims the whole
+ * workspace: `[]` overlaps everything. Worktree-per-worker isolation (phase B)
+ * would route disjoint scopes to separate checkouts; today they share one, so
+ * scopes are advisory for shared artifacts (build outputs, lockfiles, the Git
+ * index).
  */
-function existingChildWriteScopes(_child: OrchestrationChildThread): readonly string[] {
-  return [];
+function existingChildWriteScopes(child: OrchestrationChildThread): readonly string[] {
+  return child.writeScopes ?? [];
 }
 
 function findConflictingWorker(
@@ -430,9 +428,8 @@ async function createChildThreadRecord(
   // bypasses this like the budget below. An unscoped worker is treated as the
   // WHOLE workspace, not as "no claim": two unscoped writers are exactly the
   // collision this rule exists to stop, so it must be the strictest case, not
-  // the exempt one. Existing scopes are unknown (no contract field), so any
-  // active worker of the same parent conflicts — see `existingChildWriteScopes`
-  // for the phase B seam.
+  // the exempt one. Each active worker's claimed scope comes from its record
+  // (`existingChildWriteScopes`), so disjoint scopes run concurrently.
   const newScopes = parseWriteScope(input.scope);
   if (mode !== "scout") {
     const blocker = findConflictingWorker(
@@ -502,6 +499,7 @@ async function createChildThreadRecord(
       goal: displayPrompt,
       mode,
       depth,
+      ...(mode === "worker" ? { writeScopes: [...newScopes] } : {}),
       status,
       latestTranscript: session.preview || displayPrompt,
       transcript: [],
@@ -1121,6 +1119,31 @@ async function sendMessageToThreadToolResult(
   // turn. An idle target submits normally either way. A rejected cancel never
   // loses the message: it still delivers, reported as not interrupted.
   const running = store.sessionFromState(target.sessionRef)?.status === "running";
+
+  // Waking an idle worker re-acquires its writer slot, so it faces the same
+  // scope check as a fresh spawn. A running worker already holds the slot.
+  const idleWorker =
+    target.child && target.child.mode !== "scout" && !isActiveWriterStatus(target.child.status)
+      ? target.child
+      : undefined;
+  if (idleWorker && !running) {
+    const scopes = existingChildWriteScopes(idleWorker);
+    const blocker = findConflictingWorker(
+      store
+        .orchestrationState()
+        .orchestrationChildren.filter((child) => child.id !== idleWorker.id),
+      idleWorker.parentWorkspaceId,
+      idleWorker.parentSessionId,
+      scopes,
+    );
+    if (blocker) {
+      return sendMessageToThreadErrorResult(
+        input.threadId,
+        input.message,
+        writerScopeConflictMessage(blocker.title || blocker.id, scopes[0] ?? "the workspace"),
+      );
+    }
+  }
   let interrupted = false;
   let deliverAs: "steer" | "followUp" = "followUp";
   if (running && input.interrupt === true) {

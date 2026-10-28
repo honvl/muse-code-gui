@@ -9,6 +9,11 @@
  * An empty scope (`undefined`/`""`/no tokens) means the whole workspace and
  * therefore overlaps everything. Comparison is case-insensitive; leading `./`
  * and trailing `/` are stripped.
+ *
+ * Workers with disjoint scopes share one checkout, so scopes are advisory for
+ * shared artifacts: build outputs, lockfiles and the Git index can still
+ * collide. Each worker's claimed scope is persisted on its child record
+ * (`writeScopes`).
  */
 
 /** Parse a raw scope string into normalized, de-duplicated path tokens. */

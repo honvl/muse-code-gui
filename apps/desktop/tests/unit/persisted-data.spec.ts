@@ -61,7 +61,7 @@ test("reads v15 ui-state without lastInteractedAt and writes v18", async () => {
     version: number;
     lastInteractedAtBySession: Record<string, string>;
   };
-  expect(written.version).toBe(19);
+  expect(written.version).toBe(20);
   expect(written.lastInteractedAtBySession).toEqual({ "ws:sess": "2026-09-21T12:00:00.000Z" });
 });
 
@@ -79,7 +79,7 @@ test("reads v16 ui-state without threadGrouping and writes the saved choice as v
     version: number;
     threadGrouping: string;
   };
-  expect(written.version).toBe(19);
+  expect(written.version).toBe(20);
   expect(written.threadGrouping).toBe("workspace");
 });
 
@@ -105,7 +105,7 @@ test("reads ui-state without folded folders and writes the collapsed ids", async
     version: number;
     collapsedWorkspaceIds: readonly string[];
   };
-  expect(written.version).toBe(19);
+  expect(written.version).toBe(20);
   expect(written.collapsedWorkspaceIds).toEqual(["alpha"]);
   expect((await readPersistedUiState(path)).collapsedWorkspaceIds).toEqual(["alpha"]);
 });
@@ -195,7 +195,7 @@ test("sidekick model selections round-trip through ui-state", async () => {
     version: number;
     sidekickBySession: Record<string, { provider: string; modelId: string }>;
   };
-  expect(written.version).toBe(19);
+  expect(written.version).toBe(20);
   expect(written.sidekickBySession).toEqual({
     "ws:sess": { provider: "acme", modelId: "sidekick-1" },
   });
@@ -212,7 +212,7 @@ test("default lead model round-trips through ui-state", async () => {
     version: number;
     defaultLeadModel: { provider: string; modelId: string };
   };
-  expect(written.version).toBe(19);
+  expect(written.version).toBe(20);
   expect(written.defaultLeadModel).toEqual({ provider: "acme", modelId: "lead-1" });
 });
 
@@ -237,7 +237,7 @@ test("default scout model round-trips through ui-state", async () => {
     version: number;
     defaultScoutModel: { provider: string; modelId: string };
   };
-  expect(written.version).toBe(19);
+  expect(written.version).toBe(20);
   expect(written.defaultScoutModel).toEqual({ provider: "acme", modelId: "scout-1" });
 });
 
@@ -265,6 +265,67 @@ test("orchestration child mode and depth round-trip through ui-state", async () 
   expect(decoded.orchestrationChildren?.[0]?.depth).toBe(2);
   expect(decoded.orchestrationChildren?.[1]?.mode).toBe("worker");
   expect(decoded.orchestrationChildren?.[1]?.depth).toBe(1);
+});
+
+test("orchestration child write scopes round-trip through ui-state v20", async () => {
+  const path = join(await mkdtemp(join(tmpdir(), "ui-state-child-scopes-")), "ui-state.json");
+  await writePersistedUiState(path, {
+    orchestrationChildren: [
+      childThread({ mode: "worker", writeScopes: ["apps/a", "packages/b"] }),
+      childThread({ id: "child-2", mode: "worker", writeScopes: [] }),
+    ],
+  });
+  const written = JSON.parse(await readFile(path, "utf8")) as { version: number };
+  expect(written.version).toBe(20);
+  const decoded = await readPersistedUiState(path);
+  expect(decoded.orchestrationChildren?.[0]?.writeScopes).toEqual(["apps/a", "packages/b"]);
+  expect(decoded.orchestrationChildren?.[1]?.writeScopes).toEqual([]);
+});
+
+test("a v19 ui-state without write scopes loads its workers as whole-workspace", async () => {
+  const path = join(await mkdtemp(join(tmpdir(), "ui-state-child-scopes-v19-")), "ui-state.json");
+  const original = JSON.stringify({
+    version: 19,
+    orchestrationChildren: [childThread({ mode: "worker", status: "running" })],
+  });
+  await writeFile(path, original);
+  const decoded = await readPersistedUiState(path);
+  expect(decoded.version).toBe(19);
+  expect(decoded.orchestrationChildren).toHaveLength(1);
+  // Missing means [] (the whole workspace): see existingChildWriteScopes.
+  expect(decoded.orchestrationChildren?.[0]?.writeScopes).toBeUndefined();
+  await writePersistedUiState(path, { orchestrationChildren: decoded.orchestrationChildren });
+  const rewritten = await readPersistedUiState(path);
+  expect(rewritten.version).toBe(20);
+  expect(rewritten.orchestrationChildren?.[0]?.writeScopes).toBeUndefined();
+  // The first v20 write keeps the exact v19 bytes, so a downgrade can restore them.
+  const dir = join(path, "..");
+  const copies = (await readdir(dir)).filter((name) =>
+    /^ui-state\.pre-workbench-v19\..+\.json$/.test(name),
+  );
+  expect(copies).toHaveLength(1);
+  expect(await readFile(join(dir, copies[0]!), "utf8")).toBe(original);
+});
+
+test("orchestration child write scopes reject malformed values and pre-v20 files", async () => {
+  const path = join(await mkdtemp(join(tmpdir(), "ui-state-child-scopes-bad-")), "ui-state.json");
+  await expect(
+    writePersistedUiState(path, {
+      orchestrationChildren: [
+        childThread({ writeScopes: ["apps/a", 3] as unknown as readonly string[] }),
+      ],
+    }),
+  ).rejects.toThrow(/Invalid ui-state field orchestrationChildren\[0\]\.writeScopes/);
+  await expect(
+    writePersistedUiState(path, { orchestrationChildren: [childThread({ writeScopes: [""] })] }),
+  ).rejects.toThrow(/Invalid ui-state field orchestrationChildren\[0\]\.writeScopes/);
+  const original = JSON.stringify({
+    version: 19,
+    orchestrationChildren: [childThread({ writeScopes: ["apps/a"] })],
+  });
+  await writeFile(path, original);
+  await expect(readPersistedUiState(path)).rejects.toThrow(/writeScopes before v20/);
+  expect(await readFile(path, "utf8")).toBe(original);
 });
 
 test("a ui-state saved with the removed supervision loop still loads", async () => {
