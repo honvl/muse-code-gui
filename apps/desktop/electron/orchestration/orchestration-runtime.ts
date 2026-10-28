@@ -141,15 +141,10 @@ function createCreateChildThreadTool(
     promptSnippet:
       "create_child_thread: delegate independent work to a separate pi-gui child thread running in parallel.",
     promptGuidelines: [
-      "When a task splits into independent parts (parallel investigations, independent implementations), spawn one child thread per part proactively instead of doing everything serially in this thread.",
-      "Reuse a child whose context already covers the work via send_message_to_thread (preserves context/cache); spawn fresh only for parallel or independent slices.",
-      "Prefer mode scout for searches, exploration, and reviews; it is read-only but may run read-only, workspace-confined shell commands such as rg, grep, and git log — it cannot edit, write, or run mutating/background shell. Use worker only when the child must change files or run mutating commands.",
-      "Brief the child like a stranger: the prompt must stand alone with objective, context, constraints, scope, success criteria, and the verification to run. Use the scope, constraints, success_criteria, and verify fields for those blocks.",
-      "Children report back automatically when a run ends; act on the report instead of polling read_thread.",
-      "Children end every run with a four-part report: result summary, files changed or inspected, validation commands and outcomes, risks/blockers/questions.",
-      "Treat a report with no summary as unverified — a report is a claim, not proof: call read_thread or check the diff/files against the success criteria before trusting it.",
-      "Child threads are isolated: they cannot leave the workspace, write dotenv files, run destructive shell commands, or recurse past 3 levels. A scout thread cannot spawn a worker.",
-      "Prefer reading a child thread before summarizing its status back to the user.",
+      "create_child_thread takes a prompt plus optional scope, constraints, success_criteria and verify blocks; scope decides the single-writer rule, so parallel workers need disjoint scopes and an unscoped worker claims the whole workspace.",
+      "Mode scout is read-only: it may run read-only, workspace-confined shell commands such as rg, grep, and ls, but cannot edit, write, or run mutating/background shell. Mode worker may edit files and run shell commands. Defaults to worker.",
+      "Returns the child thread id, workspace id, and session id. A thin brief still spawns; a missing scope adds a hint to the result instead of blocking.",
+      "Child threads are isolated: they cannot leave the workspace, write dotenv files, run destructive shell commands, or recurse past 3 levels. A scout cannot spawn a worker.",
     ],
     parameters: {
       type: "object",
@@ -246,9 +241,8 @@ function createReadThreadTool(
       "pass full:true for the entire transcript.",
     promptSnippet: "read_thread: read a pi-gui thread transcript by id.",
     promptGuidelines: [
-      "Child threads report back automatically when a run ends; act on the report instead of polling read_thread.",
-      "Call read_thread only for detail a report omits; it returns only messages you have not seen yet.",
-      "Never poll read_thread in a loop while a child runs; wait once with wait_seconds or let the report wake you.",
+      "Args: thread_id (required); wait_seconds (up to 120) to block until the thread settles instead of returning immediately; full (return the whole window, not just unseen messages).",
+      "Returns the latest window (default 8 messages) with per-message and total caps; earlier messages are reported as omitted.",
     ],
     parameters: {
       type: "object",

@@ -148,6 +148,7 @@ function childRecord(suffix: number, childSessionId: string): OrchestrationChild
 interface BoundsHostState {
   childTranscript: TranscriptMessage[];
   children: OrchestrationChildThread[];
+  lead?: boolean;
   sessions: Array<{
     id: string;
     title: string;
@@ -158,12 +159,20 @@ interface BoundsHostState {
 
 function makeHost(state: BoundsHostState) {
   const children = state.children;
+  const lead = state.lead ?? true;
+  // Prompt deliveries that started a run: submitComposerToSession records the
+  // delivered prompt so initialPromptDeliveryStatus sees a running child.
+  const runningChildren = new Map<string, string>();
   const host = {
     driver: {
       cancelCurrentRun: async () => {},
-      createSession: async () => {
-        throw new Error("not used");
-      },
+      createSession: async (workspace: { workspaceId: string }, options?: { title?: string }) => ({
+        ref: { workspaceId: workspace.workspaceId, sessionId: `spawned-${children.length}` },
+        title: options?.title ?? "Spawned child",
+        preview: "",
+        status: "running",
+        updatedAt: createdAt,
+      }),
       setChildIsolation: () => {},
       sendCustomMessage: async () => {},
     },
@@ -192,6 +201,9 @@ function makeHost(state: BoundsHostState) {
     persistUiState: async () => {},
     workspaceRefFromState: () => ({ workspaceId: "ws", path: "/tmp/ws" }),
     sessionFromState: (ref: SessionRef) => {
+      if (runningChildren.has(ref.sessionId)) {
+        return { status: "running", title: "Spawned child", updatedAt: createdAt };
+      }
       const session = state.sessions.find((entry) => entry.id === ref.sessionId);
       return session
         ? { status: "idle", title: session.title, updatedAt: session.updatedAt }
@@ -201,20 +213,31 @@ function makeHost(state: BoundsHostState) {
     ensureSessionSubscription: async () => {},
     subscribeToSessionEvents: () => () => {},
     updateSessionConfig: () => {},
-    isOrchestratorSession: (ref: SessionRef) => ref.sessionId === parentRef.sessionId,
+    defaultScoutModel: () => undefined,
+    seedSession: () => {},
+    refreshState: async () => ({}) as never,
+    isOrchestratorSession: () => lead,
     sidekickModelFor: () => undefined,
     sessionModelFor: () => undefined,
     buildCreateSessionOptions: async () => undefined,
     getQueuedComposerMessages: () => [],
     seedSession: () => {},
-    transcriptFor: (ref: SessionRef) =>
-      ref.sessionId === childRef.sessionId ? state.childTranscript : [],
+    transcriptFor: (ref: SessionRef) => {
+      if (ref.sessionId === childRef.sessionId) {
+        return state.childTranscript;
+      }
+      const prompt = runningChildren.get(ref.sessionId);
+      return prompt ? [userMessage("u-spawn", prompt)] : [];
+    },
     transcriptForKey: () => [],
     replaceTranscript: () => {},
     isTranscriptLoaded: () => true,
     getSessionError: () => undefined,
     setSessionError: () => {},
-    submitComposerToSession: async () => ({}) as never,
+    submitComposerToSession: async (ref: SessionRef, text: string) => {
+      runningChildren.set(ref.sessionId, text);
+      return {} as never;
+    },
   };
   const owner = createOrchestrationOwner(
     host as unknown as Parameters<typeof createOrchestrationOwner>[0],
@@ -376,6 +399,62 @@ test("list_threads query finds an older thread by title substring", async () => 
   expect(result.details.query).toBe("NEEDLE");
   expect(result.details.omitted).toBeUndefined();
   expect(resultText(result)).toContain("needle-in-haystack-1987");
+});
+
+test("create result tells the lead the child reports back; non-lead keeps the wait hint", async () => {
+  const sessions = [
+    {
+      id: "parent",
+      title: "Parent orchestrator thread",
+      updatedAt: createdAt,
+      preview: "parent preview",
+    },
+  ];
+  const lead = makeHost({ childTranscript: [], children: [], sessions });
+  const leadResult = await lead.owner.createChildThreadToolResult(parentRef, {
+    prompt: "Investigate the auth flow.",
+    toolCallId: "create-lead",
+  });
+  const leadText = resultText(leadResult);
+  expect(leadText).toContain("reports back automatically");
+  expect(leadText).not.toContain("read_thread");
+  expect(leadText).not.toContain("wait_seconds");
+
+  const solo = makeHost({ childTranscript: [], children: [], sessions, lead: false });
+  const soloResult = await solo.owner.createChildThreadToolResult(parentRef, {
+    prompt: "Investigate the auth flow.",
+    toolCallId: "create-solo",
+  });
+  const soloText = resultText(soloResult);
+  expect(soloText).toContain("wait_seconds");
+  expect(soloText).not.toContain("reports back automatically");
+});
+
+test("read running notice tells the lead about the report; non-lead keeps the wait hint", async () => {
+  const running = { ...childRecord(1, "child"), status: "running" as const };
+  const sessions = [
+    {
+      id: "parent",
+      title: "Parent orchestrator thread",
+      updatedAt: createdAt,
+      preview: "parent preview",
+    },
+  ];
+  const lead = makeHost({
+    childTranscript: [],
+    children: [running],
+    sessions,
+  });
+  const leadResult = await lead.owner.readThreadToolResult(parentRef, "child-thread-1");
+  expect(leadResult.details.status).toBe("running");
+  const leadText = resultText(leadResult);
+  expect(leadText).toContain("reports back automatically");
+  expect(leadText).not.toContain("read_thread");
+  expect(leadText).not.toContain("wait_seconds");
+
+  const solo = makeHost({ childTranscript: [], children: [running], sessions, lead: false });
+  const soloResult = await solo.owner.readThreadToolResult(parentRef, "child-thread-1");
+  expect(resultText(soloResult)).toContain("wait_seconds");
 });
 
 test("listThreadsQueryFromParams trims blanks to undefined", () => {

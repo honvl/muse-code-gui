@@ -211,12 +211,9 @@ await test("lead extension restores pi's default loadout to defeat a resumed cag
     event.systemPromptOptions.sections["orchestrator_mode"]?.includes("create_child_thread"),
     "lead section injected",
   );
-  assert.equal(event.systemPromptOptions.promptGuidelines.length, 1);
-  assert.match(
-    event.systemPromptOptions.promptGuidelines[0] ?? "",
-    /delegate/i,
-    "guideline must teach delegation",
-  );
+  // 1a: delegation strategy lives only in the orchestrator_mode section, so
+  // the lead adds no per-run guideline and the cached prefix stays small.
+  assert.deepEqual(event.systemPromptOptions.promptGuidelines, []);
 });
 
 await test("lead extension allows the first mutations at tool_call", async () => {
@@ -496,4 +493,84 @@ await test("before_agent_start resets the mutation budget for a new run", async 
     ((await call(editCall("apps/a/w.ts", "c8"))) as { block?: boolean } | undefined)?.block,
     true,
   );
+});
+
+await test("lead prompt contains each policy sentence exactly once", async () => {
+  const { pi, handlers } = makeMockPi();
+  await createOrchestratorModeExtension(() => true)(pi as never);
+  const event = makePromptEvent();
+  const before = handlers["before_agent_start"];
+  assert.ok(before, "before_agent_start handler registered");
+  await before(event as never, mockCtx as never);
+  const assembled = [
+    ...event.systemPromptOptions.promptGuidelines,
+    ...Object.values(event.systemPromptOptions.sections),
+  ].join("\n");
+  const sentences = ORCHESTRATOR_SYSTEM_PROMPT.split("\n");
+  assert.equal(sentences.length, 6, "lead prompt must have exactly six rules");
+  for (const sentence of sentences) {
+    const occurrences = assembled.split(sentence).length - 1;
+    assert.equal(
+      occurrences,
+      1,
+      `lead prompt must contain each policy sentence exactly once: ${sentence.slice(0, 60)}…`,
+    );
+  }
+});
+
+/** Lead-only delegation phrases: present in the lead section, absent from the solo guideline. */
+const LEAD_STRATEGY_PHRASES = [
+  "Delegate by default",
+  "expensive resource",
+  "Spawn one child thread per independent part",
+  "stranger could execute",
+  "report back automatically",
+  "do not poll",
+  "poll read_thread",
+  "take the work back",
+  "verify by reading the diff",
+  "never re-run a suite",
+  "Never dump a whole file",
+  "one-line brief",
+  "disjoint scopes",
+  "writer rule",
+  "Keep your own context small",
+  "own the plan",
+  "final review",
+  "scout review",
+  "preserves context/cache",
+];
+
+await test("solo and child prompts contain no delegation-strategy text", async () => {
+  // Child sessions never enable orchestrator mode, so they share the solo path.
+  for (const name of ["solo-session", "child-session"]) {
+    const { pi, handlers } = makeMockPi();
+    await createOrchestratorModeExtension(() => false)(pi as never);
+    const event = makePromptEvent();
+    const before = handlers["before_agent_start"];
+    assert.ok(before, "before_agent_start handler registered");
+    await before(event as never, { sessionManager: { getSessionId: () => name } } as never);
+    assert.deepEqual(event.systemPromptOptions.sections, {}, `${name} gains no prompt section`);
+    assert.deepEqual(
+      event.systemPromptOptions.promptGuidelines,
+      [SOLO_SYSTEM_GUIDELINE],
+      `${name} keeps only the solo guideline`,
+    );
+    const assembled = event.systemPromptOptions.promptGuidelines.join("\n");
+    for (const phrase of LEAD_STRATEGY_PHRASES) {
+      assert.equal(
+        assembled.includes(phrase),
+        false,
+        `${name} prompt must not contain delegation-strategy text: ${phrase}`,
+      );
+    }
+  }
+  // The phrases above are non-vacuous: the lead prompt contains each of them.
+  const leadSentences = ORCHESTRATOR_SYSTEM_PROMPT;
+  for (const phrase of LEAD_STRATEGY_PHRASES) {
+    assert.ok(
+      leadSentences.includes(phrase),
+      `lead prompt must contain the strategy phrase under test: ${phrase}`,
+    );
+  }
 });

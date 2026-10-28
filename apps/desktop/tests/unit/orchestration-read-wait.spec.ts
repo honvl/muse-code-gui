@@ -175,6 +175,7 @@ test("read_thread does not block when the child settles during session ready", a
       ref.sessionId === "child"
         ? { status: sessionStatus, title: child.title, updatedAt: child.updatedAt }
         : undefined,
+    isOrchestratorSession: () => true,
     // The child finishes while the ready round-trips are in flight.
     ensureSessionReady: async () => {
       childStatus = "complete";

@@ -227,3 +227,19 @@ test("report text marks host-side truncation explicitly", () => {
   expect(report).toContain("…(report truncated; call read_thread for detail)");
   expect(report).not.toContain("e".repeat(5000));
 });
+
+test("lead reports drop the goal the lead wrote itself", () => {
+  const report = childCompletionReportText(childRecord(), "complete", "done", undefined, 1, true);
+
+  expect(report).not.toContain("goal:");
+  expect(report).not.toContain("Trace how completion is surfaced");
+  expect(report).toContain('Child thread "Trace the plumbing" finished.');
+  expect(report).toContain("thread_id: child-thread-1 (run 1)");
+  expect(report).toContain("status: complete");
+});
+
+test("non-lead reports keep the goal line", () => {
+  const report = childCompletionReportText(childRecord(), "complete", "done");
+
+  expect(report).toContain("goal: Trace how completion is surfaced");
+});

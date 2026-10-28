@@ -142,12 +142,8 @@ export function createOrchestratorModeExtension(
           )
           .map((tool) => tool.name),
       );
-      event.systemPromptOptions.promptGuidelines.push(
-        "Lead mode: your tokens are the expensive resource — delegate by default, keep " +
-          "your own context to targeted reads and diffs, verify children by their diff rather " +
-          "than re-running what they already ran, and never poll read_thread — finished " +
-          "children report back automatically.",
-      );
+      // Delegation strategy lives only in the orchestrator_mode section above:
+      // no per-run guideline, so the lead's cached prefix stays small.
       // A new run clears the direct-mutation budget for this session.
       leadMutationBySession.delete(leadSessionKey(ctx));
       event.systemPromptOptions.sections["orchestrator_mode"] = ORCHESTRATOR_SYSTEM_PROMPT;

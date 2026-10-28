@@ -72,7 +72,7 @@ const LIST_THREADS_OTHER_LIMIT = 10;
 const LIST_THREADS_PREVIEW_LIMIT = 160;
 const MAX_EVIDENCE_RECORDS_PER_CHILD = 80;
 const CHILD_REPORT_CUSTOM_TYPE = "pi-gui.child-report";
-const CHILD_REPORT_MESSAGE_LIMIT = 4_000;
+const CHILD_REPORT_MESSAGE_LIMIT = 2_000;
 /** Trailing marker on a host-truncated child report so the lead knows content is missing. */
 const REPORT_TRUNCATED_NOTE = "…(report truncated; call read_thread for detail)";
 /** Default cap on child records per parent session (unbounded-spawn protection). */
@@ -258,8 +258,7 @@ export function createOrchestrationOwner(store: OrchestrationOwnerHost): Orchest
       hasOrchestrationParentSession(store.orchestrationState().orchestrationChildren, sessionRef),
     createChildThreadToolResult: (parentRef, input) =>
       createChildThreadToolResult(store, parentRef, input),
-    listThreadsToolResult: (parentRef, options) =>
-      listThreadsToolResult(store, parentRef, options),
+    listThreadsToolResult: (parentRef, options) => listThreadsToolResult(store, parentRef, options),
     readThreadToolResult: (parentRef, threadId, options) =>
       readThreadToolResult(store, parentRef, threadId, options, readThreadCursors),
     sendMessageToThreadToolResult: (parentRef, input) =>
@@ -762,7 +761,12 @@ async function createChildThreadToolResult(
   };
 
   return {
-    content: [{ type: "text", text: formatCreateChildThreadResult(details) }],
+    content: [
+      {
+        type: "text",
+        text: formatCreateChildThreadResult(details, store.isOrchestratorSession(parentRef)),
+      },
+    ],
     details,
   };
 }
@@ -851,11 +855,7 @@ function listThreadsToolResult(
 ): AgentToolResult<ListThreadsToolDetails> {
   store.replaceOrchestrationChildren(projectOrchestrationChildren(store));
   const query = options.query?.trim() || undefined;
-  const { threads, omitted } = listThreadsForContext(
-    store,
-    parentRef,
-    query ? { query } : undefined,
-  );
+  const { threads, omitted } = shownListThreads(listThreadsForContext(store, parentRef), query);
   return {
     content: [{ type: "text", text: formatThreadList(threads, omitted) }],
     details: {
@@ -991,10 +991,17 @@ async function readThreadToolResult(
   if (timedOut && !stillRunning) {
     timedOut = false;
   }
+  // Lead parents are woken by the child's report; only non-lead parents need
+  // the wait_seconds hint because they receive no report (see reportChildCompletion).
+  const isLead = store.isOrchestratorSession(parentRef);
   const notice = timedOut
-    ? `Still running after a ${waitSeconds}s wait. Call read_thread again with wait_seconds (up to 120) to keep waiting — do not poll rapidly.`
+    ? isLead
+      ? `Still running after a ${waitSeconds}s wait (timed out). This child reports back automatically when its run ends; act on the report.`
+      : `Still running after a ${waitSeconds}s wait. Call read_thread again with wait_seconds (up to 120) to keep waiting — do not poll rapidly.`
     : stillRunning
-      ? "The thread is still running. Call read_thread again with wait_seconds (up to 120) to wait for completion instead of polling."
+      ? isLead
+        ? "The thread is still running. It reports back automatically when its run ends; act on the report."
+        : "The thread is still running. Call read_thread again with wait_seconds (up to 120) to wait for completion instead of polling."
       : waitedSeconds > 0
         ? `Waited ${waitedSeconds}s for completion.`
         : undefined;
@@ -1388,6 +1395,7 @@ async function reportChildCompletion(
           finalText,
           error,
           generationForChildThread(child.id),
+          store.isOrchestratorSession(parentRef),
         ),
         display: true,
       },
@@ -1407,6 +1415,7 @@ export function childCompletionReportText(
   finalText: string | undefined,
   error?: string,
   generation?: number,
+  isLeadParent = false,
 ): string {
   const trimmed = finalText?.trim();
   // The child's output is the expensive half of delegation: cap what the
@@ -1419,11 +1428,15 @@ export function childCompletionReportText(
     : status === "failed"
       ? "No final answer: the child run failed."
       : `Child finished without a final report. Nothing was summarized, so this work is unverified: call read_thread("${child.id}") to inspect what it actually did before trusting this task.`;
+  // The lead wrote the goal itself, so repeating it back wastes lead tokens.
+  // Keep the title and thread_id so the lead can route follow-ups.
   return [
     `Child thread "${child.title}" ${status === "failed" ? "failed" : "finished"}.`,
     `thread_id: ${child.id}${generation !== undefined ? ` (run ${generation})` : ""}`,
     `status: ${status}`,
-    `goal: ${truncateReadThreadText(child.goal, READ_THREAD_GOAL_LIMIT)}`,
+    ...(isLeadParent
+      ? []
+      : [`goal: ${truncateReadThreadText(child.goal, READ_THREAD_GOAL_LIMIT)}`]),
     ...(error ? [`error: ${truncateReadThreadText(error, READ_THREAD_GOAL_LIMIT)}`] : []),
     "",
     body,
@@ -2059,8 +2072,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function listThreadsForContext(
   store: OrchestrationOwnerHost,
   parentRef: SessionRef,
-  options: { readonly query?: string; readonly limitOthers?: number } = {},
-): { readonly threads: readonly ThreadListEntry[]; readonly omitted: number } {
+): readonly ThreadListEntry[] {
   const entries = new Map<string, ThreadListEntry>();
   const state = store.orchestrationState();
   const parentChildren = state.orchestrationChildren.filter(
@@ -2097,7 +2109,7 @@ function listThreadsForContext(
             ? "current"
             : "workspace",
         updatedAt: child?.updatedAt ?? session.updatedAt,
-        preview: truncateListThreadsPreview(child?.latestTranscript ?? session.preview),
+        preview: child?.latestTranscript ?? session.preview,
         ...(child ? { childThreadId: child.id } : {}),
       });
     }
@@ -2116,18 +2128,12 @@ function listThreadsForContext(
       status: child.status,
       relationship: "child",
       updatedAt: child.updatedAt,
-      preview: truncateListThreadsPreview(child.latestTranscript),
+      preview: child.latestTranscript,
       childThreadId: child.id,
     });
   }
 
-  const normalizedQuery = options.query?.trim().toLowerCase();
-  const scoped = normalizedQuery
-    ? [...entries.values()].filter((thread) =>
-        thread.title.toLowerCase().includes(normalizedQuery),
-      )
-    : [...entries.values()];
-  scoped.sort((left, right) => {
+  return [...entries.values()].sort((left, right) => {
     const rank = relationshipRank(left.relationship) - relationshipRank(right.relationship);
     if (rank !== 0) {
       return rank;
@@ -2137,17 +2143,33 @@ function listThreadsForContext(
     }
     return left.title.localeCompare(right.title);
   });
-  // The current thread and its children come first; other workspace threads
-  // are capped so one call stays bounded. Resolution passes no limit so an
-  // older thread stays addressable even when it is not listed.
+}
+
+/**
+ * Display slice of the unbounded thread list: the current thread and its
+ * children first, then at most LIST_THREADS_OTHER_LIMIT other workspace
+ * threads with previews cut to LIST_THREADS_PREVIEW_LIMIT. Resolution keeps
+ * the full list so older threads stay addressable; only the formatted output
+ * is bounded.
+ */
+function shownListThreads(
+  threads: readonly ThreadListEntry[],
+  query: string | undefined,
+): { readonly threads: readonly ThreadListEntry[]; readonly omitted: number } {
+  const normalized = query?.trim().toLowerCase();
+  const scoped = normalized
+    ? threads.filter((thread) => thread.title.toLowerCase().includes(normalized))
+    : threads;
   const current = scoped.filter((thread) => thread.relationship === "current");
   const children = scoped.filter((thread) => thread.relationship === "child");
   const others = scoped.filter((thread) => thread.relationship === "workspace");
-  const limit = options.limitOthers ?? LIST_THREADS_OTHER_LIMIT;
-  // Number.POSITIVE_INFINITY (used for resolution) keeps every other thread.
-  const shownOthers = others.slice(0, limit);
+  const shownOthers = others.slice(0, LIST_THREADS_OTHER_LIMIT);
   return {
-    threads: [...current, ...children, ...shownOthers],
+    threads: [...current, ...children, ...shownOthers].map((thread) =>
+      thread.preview.length > LIST_THREADS_PREVIEW_LIMIT
+        ? { ...thread, preview: truncateListThreadsPreview(thread.preview) }
+        : thread,
+    ),
     omitted: others.length - shownOthers.length,
   };
 }
@@ -2178,9 +2200,8 @@ function resolveThreadTarget(
     return undefined;
   }
 
-  const visibleThread = listThreadsForContext(store, parentRef, {
-    limitOthers: Number.POSITIVE_INFINITY,
-  }).threads.find((thread) =>
+  const visibleThread = listThreadsForContext(store, parentRef).find(
+    (thread) =>
       thread.threadId === normalized ||
       thread.sessionId === normalized ||
       thread.childThreadId === normalized ||
@@ -2255,7 +2276,15 @@ function formatThreadReadResult(result: {
   return lines.join("\n");
 }
 
-function formatCreateChildThreadResult(result: CreateChildThreadToolDetails): string {
+function formatCreateChildThreadResult(
+  result: CreateChildThreadToolDetails,
+  isLead: boolean,
+): string {
+  // Lead parents are woken by the child's report; only non-lead parents,
+  // which receive no report, get the wait_seconds hint.
+  const closing = isLead
+    ? "This child reports back automatically when its run ends; act on the report."
+    : "To wait for completion, call read_thread once with wait_seconds (up to 120) instead of polling.";
   return (
     `Created child thread: ${result.title ?? result.prompt}\n` +
     `childThreadId: ${result.childThreadId ?? ""}\n` +
@@ -2266,7 +2295,7 @@ function formatCreateChildThreadResult(result: CreateChildThreadToolDetails): st
     (result.delegationsRemaining !== undefined
       ? `\ndelegationsRemaining: ${result.delegationsRemaining}`
       : "") +
-    "\nTo wait for completion, call read_thread once with wait_seconds (up to 120) instead of polling."
+    `\n${closing}`
   );
 }
 
@@ -2747,8 +2776,7 @@ function toReadThreadMessages(
   const messages: OrchestrationChildTranscriptMessage[] = [];
   for (const message of transcript) {
     if (message.kind === "tool") {
-      const label =
-        "label" in message && typeof message.label === "string" ? message.label : "";
+      const label = "label" in message && typeof message.label === "string" ? message.label : "";
       messages.push({
         id: message.id,
         role: "system",
