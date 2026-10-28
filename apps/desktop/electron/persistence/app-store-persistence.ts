@@ -461,8 +461,10 @@ function validateUiState(value: unknown): Record<string, unknown> {
           "latestTranscript",
           "transcript",
           "evidence",
-          // Removed loop field, still listed so pre-removal ui-state.json
-          // files validate; hydration below drops it.
+          // Older ui-state.json files may still contain supervisionLoop from the
+          // app-owned supervision loop that was removed. Unknown keys fail
+          // validation, so it stays listed here to keep those files loadable; the
+          // value is dropped on read.
           "supervisionLoop",
           "createdAt",
           "updatedAt",
@@ -829,6 +831,26 @@ function toStringRecord(value: unknown): Record<string, string> | undefined {
   return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
+/**
+ * Trim-checked `{provider, modelId}` selection read shared by the persisted
+ * model fields. Cleared or malformed selections read as absent; accepted
+ * records keep their exact shape.
+ */
+function toModelSelection(value: unknown): SessionModelSelection | undefined {
+  const record = objectRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const provider = record.provider;
+  const modelId = record.modelId;
+  return typeof provider === "string" &&
+    provider.trim() &&
+    typeof modelId === "string" &&
+    modelId.trim()
+    ? { provider, modelId }
+    : undefined;
+}
+
 /** Only defined selections persist; a cleared sidekick is dropped like orchestrator off. */
 function toSidekickRecord(value: unknown): Record<string, SessionModelSelection> | undefined {
   const candidate = objectRecord(value);
@@ -836,50 +858,20 @@ function toSidekickRecord(value: unknown): Record<string, SessionModelSelection>
     return undefined;
   }
   const entries = Object.entries(candidate).flatMap(([id, selection]) => {
-    const record = objectRecord(selection);
-    const provider = record?.provider;
-    const modelId = record?.modelId;
-    return id &&
-      typeof provider === "string" &&
-      provider.trim() &&
-      typeof modelId === "string" &&
-      modelId.trim()
-      ? [[id, { provider, modelId }] as const]
-      : [];
+    const parsed = toModelSelection(selection);
+    return id && parsed ? [[id, parsed] as const] : [];
   });
   return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
 /** A cleared scout default persists as absent, like a cleared sidekick. */
 function toDefaultScoutModel(value: unknown): SessionModelSelection | undefined {
-  const record = objectRecord(value);
-  if (!record) {
-    return undefined;
-  }
-  const provider = record.provider;
-  const modelId = record.modelId;
-  return typeof provider === "string" &&
-    provider.trim() &&
-    typeof modelId === "string" &&
-    modelId.trim()
-    ? { provider, modelId }
-    : undefined;
+  return toModelSelection(value);
 }
 
 /** A cleared default persists as absent, like a cleared sidekick. */
 function toDefaultLeadModel(value: unknown): SessionModelSelection | undefined {
-  const record = objectRecord(value);
-  if (!record) {
-    return undefined;
-  }
-  const provider = record.provider;
-  const modelId = record.modelId;
-  return typeof provider === "string" &&
-    provider.trim() &&
-    typeof modelId === "string" &&
-    modelId.trim()
-    ? { provider, modelId }
-    : undefined;
+  return toModelSelection(value);
 }
 
 /** Only true entries persist; false/off is the default and is dropped. */

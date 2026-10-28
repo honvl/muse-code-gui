@@ -266,6 +266,32 @@ test("orchestration child mode and depth round-trip through ui-state", async () 
   expect(decoded.orchestrationChildren?.[1]?.depth).toBe(1);
 });
 
+test("a ui-state saved with the removed supervision loop still loads", async () => {
+  const path = join(await mkdtemp(join(tmpdir(), "ui-state-legacy-supervision-")), "ui-state.json");
+  // The app-owned supervision loop was removed; files written before that still
+  // carry the field. Unknown keys fail validation, so this pins the legacy
+  // allowlist that keeps those files loadable.
+  const legacy = {
+    ...childThread(),
+    supervisionLoop: {
+      id: "loop-1",
+      status: "monitoring",
+      gate: "continue",
+      intervalMs: 60000,
+      iterationCount: 3,
+      lastCheckedAt: "2026-10-27T20:00:00.000Z",
+      reason: "Monitoring child thread.",
+      lastChildStatus: "running",
+    },
+  };
+  const raw = { version: 19, orchestrationChildren: [legacy] };
+  const { writeFile } = await import("node:fs/promises");
+  await writeFile(path, JSON.stringify(raw), "utf8");
+  const decoded = await readPersistedUiState(path);
+  expect(decoded.orchestrationChildren).toHaveLength(1);
+  expect(decoded.orchestrationChildren?.[0]?.id).toBe(legacy.id);
+});
+
 test("orchestration child rejects unknown mode and bad depth", async () => {
   const path = join(await mkdtemp(join(tmpdir(), "ui-state-child-mode-bad-")), "ui-state.json");
   await expect(
