@@ -6,6 +6,7 @@ import {
   readPersistedUiState,
   writePersistedUiState,
 } from "../../electron/persistence/app-store-persistence";
+import type { OrchestrationChildThread } from "../../contracts/desktop-state";
 import { AttachmentStore } from "../../electron/persistence/attachment-store";
 
 for (const invalid of [
@@ -21,6 +22,8 @@ for (const invalid of [
   { version: 19, extensionFlagsByWorkspace: { ws: { retries: 3 } } },
   { version: 19, extensionFlagsBySession: { "ws:sess": ["plan"] } },
   { version: 19, collapsedWorkspaceIds: ["alpha", 42] },
+  { version: 19, sidekickBySession: { "ws:sess": { provider: "", modelId: "x" } } },
+  { version: 19, sidekickBySession: { "ws:sess": "acme" } },
   [],
 ]) {
   test(`preserves invalid UI state ${JSON.stringify(invalid)}`, async () => {
@@ -147,6 +150,79 @@ test("attachment owner rejects malformed entries before read, replacement or pru
     ]),
   );
   expect(await store.read("session")).toEqual([valid]);
+});
+
+function childThread(overrides: Partial<OrchestrationChildThread> = {}): OrchestrationChildThread {
+  return {
+    id: "child-1",
+    parentWorkspaceId: "ws",
+    parentSessionId: "parent",
+    childWorkspaceId: "ws",
+    childSessionId: "child",
+    title: "Scout the repo",
+    goal: "Find the thing",
+    mode: "scout",
+    depth: 2,
+    status: "running",
+    latestTranscript: "working",
+    transcript: [],
+    evidence: [],
+    createdAt: "2026-10-27T00:00:00.000Z",
+    updatedAt: "2026-10-27T00:01:00.000Z",
+    ...overrides,
+  };
+}
+
+test("sidekick model selections round-trip through ui-state", async () => {
+  const path = join(await mkdtemp(join(tmpdir(), "ui-state-sidekick-")), "ui-state.json");
+  await writePersistedUiState(path, {
+    sidekickBySession: { "ws:sess": { provider: "acme", modelId: "sidekick-1" } },
+  });
+  const decoded = await readPersistedUiState(path);
+  expect(decoded.sidekickBySession).toEqual({
+    "ws:sess": { provider: "acme", modelId: "sidekick-1" },
+  });
+  const written = JSON.parse(await readFile(path, "utf8")) as {
+    version: number;
+    sidekickBySession: Record<string, { provider: string; modelId: string }>;
+  };
+  expect(written.version).toBe(19);
+  expect(written.sidekickBySession).toEqual({
+    "ws:sess": { provider: "acme", modelId: "sidekick-1" },
+  });
+});
+
+test("orchestration child mode and depth round-trip through ui-state", async () => {
+  const path = join(await mkdtemp(join(tmpdir(), "ui-state-child-mode-")), "ui-state.json");
+  await writePersistedUiState(path, {
+    orchestrationChildren: [
+      childThread(),
+      childThread({ id: "child-2", mode: "worker", depth: 1 }),
+    ],
+  });
+  const decoded = await readPersistedUiState(path);
+  expect(decoded.orchestrationChildren).toHaveLength(2);
+  expect(decoded.orchestrationChildren?.[0]?.mode).toBe("scout");
+  expect(decoded.orchestrationChildren?.[0]?.depth).toBe(2);
+  expect(decoded.orchestrationChildren?.[1]?.mode).toBe("worker");
+  expect(decoded.orchestrationChildren?.[1]?.depth).toBe(1);
+});
+
+test("orchestration child rejects unknown mode and bad depth", async () => {
+  const path = join(await mkdtemp(join(tmpdir(), "ui-state-child-mode-bad-")), "ui-state.json");
+  await expect(
+    writePersistedUiState(path, {
+      orchestrationChildren: [
+        childThread({ mode: "admin" as unknown as OrchestrationChildThread["mode"] }),
+      ],
+    }),
+  ).rejects.toThrow(/Invalid ui-state field orchestrationChildren\[0\]\.mode/);
+  await expect(
+    writePersistedUiState(path, { orchestrationChildren: [childThread({ depth: -1 })] }),
+  ).rejects.toThrow(/Invalid ui-state field orchestrationChildren\[0\]\.depth/);
+  await expect(
+    writePersistedUiState(path, { orchestrationChildren: [childThread({ depth: 1.5 })] }),
+  ).rejects.toThrow(/Invalid ui-state field orchestrationChildren\[0\]\.depth/);
 });
 
 test("unknown attachment fields survive rejected replacement and pruning", async () => {

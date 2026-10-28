@@ -131,12 +131,34 @@ test("create_child_thread returns after a slow worker starts, before its turn co
       }));
 
     expect(result.details).toMatchObject({ deliveryStatus: "running", prompt });
+    // details.prompt round-trips the caller's raw prompt: the composed
+    // child brief (with the always-on report suffix) is delivered to the
+    // child but never echoed here.
+    expect(String(result.details?.prompt)).not.toContain("Report back with:");
     // The worker's model request reached the server and is still unanswered.
     await expect.poll(() => server.pendingRequestCount()).toBeGreaterThan(0);
     const child = (await getDesktopState(window)).orchestrationChildren.find(
       (entry) => entry.sourceToolCallId === "create-child-start-ack",
     );
     expect(child?.status).toBe("running");
+    // The child record keeps the raw goal for display; delivery used the brief.
+    expect(child?.goal).toBe(prompt);
+    // The group stays collapsed (children unmount), but the disclosure label
+    // must still report the running child.
+    const groupToggle = window.getByTestId("child-thread-group-toggle");
+    await expect(groupToggle).toHaveAttribute("aria-expanded", "false");
+    await expect(groupToggle).toContainText("1 running");
+    await expect(
+      window.locator(`.session-row[data-session-id="${child?.childSessionId}"]`),
+    ).toHaveCount(0);
+    if (proofDir) {
+      await window.screenshot({
+        path: join(proofDir, "orchestration-child-collapsed.png"),
+        fullPage: true,
+      });
+    }
+    await groupToggle.click();
+    await expect(groupToggle).toHaveAttribute("aria-expanded", "true");
     const childRunningIndicator = window.locator(
       `.session-row[data-session-id="${child?.childSessionId}"] .session-row__status--running`,
     );
@@ -211,5 +233,121 @@ test("create_child_thread surfaces deterministic initial-prompt delivery failure
     ).toHaveLength(1);
   } finally {
     await harness.close();
+  }
+});
+
+test("read_thread with wait_seconds returns immediately for an idle thread", async () => {
+  test.setTimeout(60_000);
+  const userDataDir = await makeUserDataDir();
+  const agentDir = join(userDataDir, "agent");
+  const workspacePath = await makeWorkspace("orchestration-read-wait-idle");
+  await seedAgentDir(agentDir, { withOpenAiAuth: false });
+  const harness = await launchDesktop(userDataDir, {
+    agentDir,
+    initialWorkspaces: [workspacePath],
+    scrubProviderEnv: true,
+    testMode: "background",
+  });
+
+  try {
+    const window = await harness.firstWindow();
+    await createNamedThread(window, "Idle thread for waited read");
+    const parentRef = await selectedSessionRef(window);
+    const startedAt = Date.now();
+    const result = await runOrchestrationRuntimeTool(harness, {
+      toolName: "read_thread",
+      toolCallId: "read-idle-with-wait",
+      sessionRef: parentRef,
+      params: { thread_id: parentRef.sessionId, wait_seconds: 30 },
+    });
+    // Idle means no wait: a 30s request must return in seconds, not after 30s.
+    expect(Date.now() - startedAt).toBeLessThan(20_000);
+    expect(result.details).toMatchObject({ status: "idle" });
+    expect(result.details?.timedOut).toBeUndefined();
+    expect(result.details?.waitedSeconds).toBeUndefined();
+  } finally {
+    await harness.close();
+  }
+});
+
+test("read_thread wait_seconds times out on a running thread with back-off guidance", async () => {
+  test.setTimeout(90_000);
+  const server = await startHangingOpenAiServer();
+  const userDataDir = await makeUserDataDir();
+  const agentDir = join(userDataDir, "agent");
+  const workspacePath = await makeWorkspace("orchestration-read-wait-timeout");
+  await seedAgentDir(agentDir, {
+    withOpenAiAuth: false,
+    withDefaultModel: false,
+    enabledModels: ["slow-test/slow"],
+  });
+  await writeFile(
+    join(agentDir, "settings.json"),
+    `${JSON.stringify(
+      {
+        defaultProvider: "slow-test",
+        defaultModel: "slow",
+        enabledModels: ["slow-test/slow"],
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  await writeFile(
+    join(agentDir, "models.json"),
+    `${JSON.stringify(
+      {
+        providers: {
+          "slow-test": {
+            baseUrl: server.baseUrl,
+            api: "openai-completions",
+            apiKey: "unused",
+            models: [{ id: "slow" }],
+          },
+        },
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  const harness = await launchDesktop(userDataDir, {
+    agentDir,
+    initialWorkspaces: [workspacePath],
+    scrubProviderEnv: true,
+    testMode: "background",
+  });
+
+  try {
+    const window = await harness.firstWindow();
+    await createNamedThread(window, "Parent for waited read timeout");
+    const parentRef = await selectedSessionRef(window);
+    await runOrchestrationRuntimeTool(harness, {
+      toolName: "create_child_thread",
+      toolCallId: "create-child-read-wait-timeout",
+      sessionRef: parentRef,
+      params: { prompt: "Stay running while the parent waits." },
+    });
+    const child = (await getDesktopState(window)).orchestrationChildren.find(
+      (entry) => entry.sourceToolCallId === "create-child-read-wait-timeout",
+    );
+    expect(child?.status).toBe("running");
+    const startedAt = Date.now();
+    const result = await runOrchestrationRuntimeTool(harness, {
+      toolName: "read_thread",
+      toolCallId: "read-running-with-wait",
+      sessionRef: parentRef,
+      params: { thread_id: child?.childSessionId, wait_seconds: 2 },
+    });
+    const elapsedMs = Date.now() - startedAt;
+    // Bounded wait: blocked ~2s for the hung child, then returned running.
+    expect(elapsedMs).toBeGreaterThanOrEqual(1_500);
+    expect(elapsedMs).toBeLessThan(30_000);
+    expect(result.details).toMatchObject({ status: "running", timedOut: true });
+    const text = result.content.map((entry) => entry.text ?? "").join("\n");
+    expect(text).toMatch(/Still running after a 2s wait/);
+    expect(text).toMatch(/wait_seconds/);
+  } finally {
+    await harness.close();
+    await server.close();
   }
 });

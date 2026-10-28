@@ -9,6 +9,7 @@ import {
 import {
   buildThreadSidebarModel,
   sessionThreadKey,
+  summarizeChildGroup,
 } from "../../src/features/threads/thread-groups";
 import { childThreadFinalDetail } from "../../electron/orchestration/app-store-orchestration";
 
@@ -184,6 +185,53 @@ test("grandchild chains group under their direct parent", () => {
   expect(model.childrenByParentKey.get("ws:kid")?.map((thread) => thread.session.id)).toEqual([
     "grandkid",
   ]);
+});
+
+test("summarizeChildGroup is empty when there are no children", () => {
+  expect(summarizeChildGroup([])).toEqual({ count: 0, running: 0, failed: 0 });
+});
+
+test("summarizeChildGroup counts entries and live statuses", () => {
+  const model = buildThreadSidebarModel(
+    state(
+      [
+        workspace("ws", [
+          session("parent", "Parent", "2026-09-21T14:00:00.000Z"),
+          session("a", "A", "2026-09-21T14:10:00.000Z", { status: "running" }),
+          session("b", "B", "2026-09-21T14:20:00.000Z", { status: "failed" }),
+          session("c", "C", "2026-09-21T14:30:00.000Z"),
+        ]),
+      ],
+      [
+        child("c-a", "parent", "a", "running"),
+        child("c-b", "parent", "b", "failed"),
+        child("c-c", "parent", "c", "complete"),
+      ],
+    ),
+    NOW,
+  );
+
+  const kids = model.childrenByParentKey.get("ws:parent") ?? [];
+  expect(summarizeChildGroup(kids)).toEqual({ count: 3, running: 1, failed: 1 });
+});
+
+test("summarizeChildGroup sees orchestration status when the session row is idle", () => {
+  const model = buildThreadSidebarModel(
+    state(
+      [
+        workspace("ws", [
+          session("parent", "Parent", "2026-09-21T14:00:00.000Z"),
+          session("kid", "Kid", "2026-09-21T14:30:00.000Z"),
+        ]),
+      ],
+      [child("c1", "parent", "kid", "running")],
+    ),
+    NOW,
+  );
+
+  const kids = model.childrenByParentKey.get("ws:parent") ?? [];
+  expect(kids).toHaveLength(1);
+  expect(summarizeChildGroup(kids)).toEqual({ count: 1, running: 1, failed: 0 });
 });
 
 test("childThreadFinalDetail reports completion and failure", () => {
