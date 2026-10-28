@@ -1,19 +1,50 @@
 # Lead/sidekick optimization plan
 
-Status: **proposed**, not implemented. Written October 28, 2026 against `0a3e74a4`.
+Status: **mostly proposed.** Written October 28, 2026 against `0a3e74a4`. The [direct-work gate fix and lead read budget](#implemented-direct-work-gate-and-lead-read-budget) are implemented; everything else is open.
 
 pi-gui's Lead mode follows Cognition's Fusion design ([Devin Fusion](https://cognition.com/blog/devin-fusion), [Fusion in Devin Desktop & CLI](https://cognition.com/blog/local-fusion)): a frontier **lead** owns the plan, ambiguity and review; a cheaper **sidekick** explores, implements, tests and reports. Each keeps its own cached context, and they exchange only briefs, results and feedback. This plan lists the gaps between that design and the current implementation, in priority order. Each work item is a self-contained, separately committable change with its own acceptance criteria and the narrowest proof.
 
 ## What already matches Fusion
 
-| Fusion principle                             | pi-gui today                                                                                                                                           |
-| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Frontier lead, cost-effective sidekick       | Per-thread lead model plus sidekick model; scouts use the app-wide scout model (`app-store-orchestration.ts:421-424`).                                 |
-| Lead owns plan/review, delegates by default  | `ORCHESTRATOR_SYSTEM_PROMPT` (`packages/pi-sdk-driver/src/orchestrator-mode.ts:41-48`) plus a soft gate after 3 direct mutations per run (`:116-183`). |
-| Briefs with constraints and success criteria | `composeChildBrief` (`orchestration-runtime.ts:409-423`) with host defaults for criteria/verify.                                                       |
-| Results, not transcripts, flow back          | `reportChildCompletion` injects one `pi-gui.child-report` custom message and wakes the lead (`app-store-orchestration.ts:1294-1396`).                  |
-| Separate contexts and caches                 | Every child is its own Pi session; reports and tool results only append to the lead's context, so its cached prefix survives.                          |
-| Lead can take work back                      | `send_message_to_thread` steers or interrupts a child; the lead keeps its full toolset.                                                                |
+| Fusion principle                             | pi-gui today                                                                                                                                 |
+| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| Frontier lead, cost-effective sidekick       | Per-thread lead model plus sidekick model; scouts use the app-wide scout model (`app-store-orchestration.ts:421-424`).                       |
+| Lead owns plan/review, delegates by default  | `ORCHESTRATOR_SYSTEM_PROMPT` (`packages/pi-sdk-driver/src/orchestrator-mode.ts`) plus soft gates on direct work and read volume (see below). |
+| Briefs with constraints and success criteria | `composeChildBrief` (`orchestration-runtime.ts:409-423`) with host defaults for criteria/verify.                                             |
+| Results, not transcripts, flow back          | `reportChildCompletion` injects one `pi-gui.child-report` custom message and wakes the lead (`app-store-orchestration.ts:1294-1396`).        |
+| Separate contexts and caches                 | Every child is its own Pi session; reports and tool results only append to the lead's context, so its cached prefix survives.                |
+| Lead can take work back                      | `send_message_to_thread` steers or interrupts a child; the lead keeps its full toolset.                                                      |
+
+## Cost model
+
+In this deployment the child (sidekick or scout) is **almost free**; only lead tokens cost money. That differs from Fusion, where the sidekick is cheaper but still priced, and it changes the trade-offs:
+
+- **Delegation costs only what it adds to the lead:** writing the brief, reading the report, and reviewing. Anything a child can absorb without growing the lead's context is a saving.
+- **Reads split by purpose.** Targeted, plan-shaping reads stay with the lead; Fusion found that delegating planning exploration to a weaker model hurts quality. Broad exploration (many files, logs, history) goes to scouts that return short summaries.
+- **All verification goes to children.** Test, build and typecheck output is large and frontier-priced in the lead's context.
+- **Spend child tokens on quality, not just savings:** workers self-check and retry, and a scout reviews a worker's diff before the lead does (see the [child-side quality loop](#priority-2-child-side-quality-loop)).
+- **Warm sidekick caches save almost nothing**, so persistent-sidekick reuse is demoted to Priority 3. Parallelism is free, which makes the single-writer lock the main bottleneck.
+
+## Implemented: direct-work gate and lead read budget
+
+**Problem (measured):** the lead kept hitting the "3 direct edits" block. Your session history had 7 sessions with 19 blocked bash calls. 15 were reads or diagnostics, 3 were test runs and 1 was a real edit. The old gate counted any bash command that failed the scout read-only allowlist. That allowlist blocks anything not proven safe, and `cd` (which prefixes nearly every lead command), `echo`, `ps`, `xargs` and `$(...)` aren't on it. Each wrong block cost a lead turn, and the lead then delegated trivial reads.
+
+**Change:**
+
+- [`lead-action-classifier.ts`](../packages/pi-sdk-driver/src/lead-action-classifier.ts) classifies lead tool calls for **cost**, not safety, so it fails open:
+  - **mutation:** `edit`, `write`, `apply_patch`; non-temp redirects; file mutators (`rm`, `mv`, `cp` destination, `tee`, `sed -i`, …); working-tree git operations (`checkout`, `reset`, `stash`, …); package installs; formatters in write mode; inline or heredoc scripts that call file-write APIs.
+  - **verification:** tests, builds, typechecks and lint checks across pnpm/npm, cargo, swift, go, xcodebuild, pytest, `node --test` and similar.
+  - **read:** everything else, including `cd`, pipes, loops, `$(...)`, diagnostics, git bookkeeping (`add`, `commit`, `push`) and scratch work in temp directories.
+- [`orchestrator-mode.ts`](../packages/pi-sdk-driver/src/orchestrator-mode.ts):
+  - **Direct work:** up to 3 edits or test/build runs per run (`PI_APP_LEAD_DIRECT_MUTATION_LIMIT`). The block message lists exactly what was counted and points to a worker child.
+  - **Read volume:** characters of tool output entering the lead's context are tallied per run. After each 24k chars (`PI_APP_LEAD_READ_BUDGET_CHARS`), the next exploratory call is bounced **once** toward a scout. Repeating the call runs it, so a targeted read is never locked out. Delegation tools are never bounced.
+  - **Lead prompt:** targeted reads are the lead's; broad exploration goes to scouts; any test, build or typecheck run goes to a worker.
+
+**Replay against your real history:** all 15 wrongly blocked reads now pass. Across about 1,200 bash calls in the affected sessions, the remaining counted actions are real edits or test runs. A pattern scan of about 9,500 calls classed as reads found only scratch work in temp directories, git bookkeeping, or genuine reads.
+
+**Known gap:** inline scripts that write files without a recognizable write API (for example via a subprocess) count as reads. This is acceptable for a soft budget, since real edits belong in `edit`/`write`.
+
+**Proof:** `packages/pi-sdk-driver/test/lead-action-classifier.test.mts` (fixtures from the blocked commands) and `test/orchestrator-mode.test.mts` (gate and read-budget behavior). Run in `packages/pi-sdk-driver`: `pnpm exec tsc -p tsconfig.json && node --test test/orchestrator-mode.test.mts test/lead-action-classifier.test.mts`. Still open: a real-provider Lead run comparing lead tokens before and after.
 
 ## Priority 1: lead token diet
 
@@ -48,7 +79,7 @@ pi-gui's Lead mode follows Cognition's Fusion design ([Devin Fusion](https://cog
 - **1e. Tighten reports.**
   - Drop the `goal` line when the parent is the lead that wrote it. Keep the title and `thread_id`.
   - Lower `CHILD_REPORT_MESSAGE_LIMIT` to **2,000** chars, still with the explicit truncation note.
-  - Keep the 1,200-char request in `CHILD_REPORT_SUFFIX`.
+  - Lower the request in `CHILD_REPORT_SUFFIX` from about 1,200 to **about 800 chars**, structured. A near-free child can afford to compress; the lead shouldn't pay for padding.
 
 ### Acceptance criteria
 
@@ -122,15 +153,75 @@ pi-gui's Lead mode follows Cognition's Fusion design ([Devin Fusion](https://cog
 
 - Driver: extend `test/cross-session.test.mts` and `test/builtin-extensions.test.mts` with both cases (build first, as above).
 
-## Priority 2: persistent sidekick (warm cache)
+## Priority 2: parallel scoped workers
 
-**Why:** this is Fusion's core cost mechanism: "both the main model and sidekick model maintain their own persistent, cached contexts." pi-gui creates a **fresh** session for every `create_child_thread` (`app-store-orchestration.ts:426`), so each task pays a cold prefix plus re-exploration. Reuse depends only on the lead choosing `send_message_to_thread` (`orchestrator-mode.ts:43`).
+**Why:** the lead prompt promises "parallel workers need disjoint scopes" (`orchestrator-mode.ts:45`), but `existingChildWriteScopes` always returns `[]` (`app-store-orchestration.ts:288-290`). So **any** active worker blocks **every** new worker, and Lead mode serializes all implementation. Follow-ups through `send_message_to_thread` bypass the check entirely.
+
+### Change
+
+- **5a.** Persist `writeScopes: string[]` on `OrchestrationChildThread` (a desktop contract plus UI-state field; bump the UI-state version with a migration where a missing value means `[]`, the whole workspace). This follows the existing UI-state migration rules in [architecture](architecture.md#persistent-data).
+- **5b.** `existingChildWriteScopes(child)` returns `child.writeScopes ?? []`. `scopesOverlap` (`writer-scope.ts`) already handles the rest.
+- **5c.** Run the same check for `send_message_to_thread` to an idle worker (it re-acquires the writer slot) and for sidekick reuse (Priority 3, persistent sidekick).
+- **5d.** Relax the per-parent child budget (`DEFAULT_DELEGATION_BUDGET`, currently 12). With near-free children it only needs to stop runaway spawning, so a cap around 30 is enough. The real limits are the writer lock and machine or rate limits.
+- Keep the strict rule that an unscoped worker claims the whole workspace.
+
+### Acceptance criteria
+
+- Workers scoped `apps/a` and `apps/b` run concurrently; `apps/a` and `apps/a/src` conflict; an unscoped worker conflicts with everything.
+- An older ui-state file without `writeScopes` loads and treats existing workers as whole-workspace.
+
+### Proof
+
+- `orchestration-writer-scope.spec.ts` (extend it), `pnpm --filter @pi-gui/desktop test:core:persistence`, and the UI-state decoder unit tests.
+
+### Risk
+
+Disjoint path scopes in one checkout still share build outputs, lockfiles and the Git index. Document that scopes are advisory for shared artifacts. Worktree-per-worker isolation (the "phase B" in the code comment) stays a separate decision.
+
+## Priority 2: child-side quality loop
+
+**Why:** child tokens are nearly free, so extra checking on the child side buys quality without lead cost. Fusion tunes for _fewer_ sidekick tokens; here the right move is the opposite, as long as the lead's context doesn't grow.
+
+### Change
+
+- **7a. Worker self-check.** Extend the worker brief suffix (`CHILD_REPORT_SUFFIX` / `composeChildBrief`, `orchestration-runtime.ts`): before reporting, re-read your own diff against the success criteria, rerun the narrowest check until it passes or you hit a real blocker, then report.
+- **7b. Scout pre-review.** When a worker finishes a change touching more than one file, the host (or the lead prompt) starts a read-only scout to review that worker's diff against the brief. The lead receives the worker report plus the scout's verdict (about 400 chars, listing only the hunks that need attention) and reads just those hunks.
+- **7c. Shorter briefs, more child iteration.** Fusion says weaker sidekicks need prescriptive briefs, which costs lead output tokens. With a free child, prefer a short brief and let the child explore, try, verify and retry. The host defaults for criteria and verification already make a one-line brief workable.
+
+### Acceptance criteria
+
+- On a multi-file change, the lead's context gains only the worker report, the scout verdict and the flagged hunks, not the full diff.
+- Lead-token cost per accepted task holds or drops in a before/after run of the same 5–10 tasks, while rework rounds (lead follow-ups to the same child) drop.
+
+### Proof
+
+- `orchestration-child-brief.spec.ts` for the suffix change; a core spec for the automatic scout review if it is host-driven; one real-provider comparison using the session rail's lead vs. delegated usage.
+
+## Priority 3: effort per lane and mid-session routing
+
+**Why:** Fusion tunes the lead's effort and the sidekick per pairing, and switches models during compaction, where the cache is lost anyway, so the switch costs nothing extra. pi-gui fixes model and thinking level at spawn: children get no thinking level (`app-store-orchestration.ts:421-426`), and a missing sidekick silently falls back to the workspace default, which may be the frontier lead model.
+
+### Change
+
+- **6a.** Add sidekick and scout **thinking-level** settings next to the existing sidekick and scout model pickers (`settings-models-section.tsx`, `sidekick-picker`), and apply them in `createChildThreadRecord` through the existing session-config setter.
+- **6b.** Warn in the composer's Lead badge when the effective sidekick model equals the lead model ("Sidekick is the lead model; no savings").
+- **6c (exploratory).** Add a hidden driver extension on `session_before_compact` (`pi-coding-agent` `ExtensionAPI.on("session_before_compact")`) that lets the desktop swap a child's model at compaction time, for example escalating a sidekick that has failed twice. Gate it behind a flag and measure it before making it a default.
+
+### Proof
+
+- `default-scout-model` and `orchestration-child-sidekick-model` unit specs (extend them), `sidekick-picker.spec.ts` (core), and one real-provider run for 6c.
+
+## Priority 3: persistent sidekick (nice to have)
+
+**Demoted:** with a near-free child (see [Cost model](#cost-model)), a warm sidekick cache saves almost nothing. Reuse still helps latency and continuity, so this stays as a nice-to-have.
+
+**Original rationale:** this is Fusion's core cost mechanism: "both the main model and sidekick model maintain their own persistent, cached contexts." pi-gui creates a **fresh** session for every `create_child_thread` (`app-store-orchestration.ts:426`), so each task pays a cold prefix plus re-exploration. Reuse depends only on the lead choosing `send_message_to_thread` (`orchestrator-mode.ts:43`).
 
 ### Change
 
 - **4a. Host-routed reuse.** When a lead calls `create_child_thread` with mode `worker`, the host first looks for that lead's most recent worker child that is idle (terminal status), under the generation limit, on the same model, and whose last run ended within the cache window (default 4 minutes, `PI_APP_SIDEKICK_REUSE_WINDOW_MS`). If it finds one, it delivers the composed brief there as a follow-up (the existing `send_message_to_thread` path, bumping `generation`) and returns `{ reused: true, childThreadId }`. Otherwise it spawns as today.
 - **4b. Opt-out.** Add a `fresh: true` parameter for parallel or unrelated slices. Parallel calls in one assistant turn must never collapse onto one child: only the first can reuse, and the rest spawn.
-- **4c. Scope interaction.** Reuse must pass the writer-scope check that a fresh spawn would face (follow-ups currently skip it; see Priority 2b).
+- **4c. Scope interaction.** Reuse must pass the writer-scope check that a fresh spawn would face (follow-ups currently skip it; see Priority 2, parallel scoped workers).
 - **4d. Context budget.** Do not reuse a child whose context is above a threshold (for example 60% of its model window) or that has compacted twice. Spawn fresh instead, with a one-line note in the tool result.
 - Update the lead prompt from "reuse a child…" to "the host reuses your sidekick automatically; pass fresh:true for parallel slices."
 
@@ -148,61 +239,24 @@ pi-gui's Lead mode follows Cognition's Fusion design ([Devin Fusion](https://cog
 
 ### Open question
 
-Pi's prompt-cache expiry is provider-defined (often 5 minutes). Fusion notes this explicitly. Decide whether to keep a reused sidekick warm (a cheap keep-alive costs tokens) or accept a cold restart after the window. The recommendation is to accept the cold restart; re-explore is still cheaper on the sidekick model.
-
-## Priority 2: parallel scoped workers
-
-**Why:** the lead prompt promises "parallel workers need disjoint scopes" (`orchestrator-mode.ts:45`), but `existingChildWriteScopes` always returns `[]` (`app-store-orchestration.ts:288-290`). So **any** active worker blocks **every** new worker, and Lead mode serializes all implementation. Follow-ups through `send_message_to_thread` bypass the check entirely.
-
-### Change
-
-- **5a.** Persist `writeScopes: string[]` on `OrchestrationChildThread` (a desktop contract plus UI-state field; bump the UI-state version with a migration where a missing value means `[]`, the whole workspace). This follows the existing UI-state migration rules in [architecture](architecture.md#persistent-data).
-- **5b.** `existingChildWriteScopes(child)` returns `child.writeScopes ?? []`. `scopesOverlap` (`writer-scope.ts`) already handles the rest.
-- **5c.** Run the same check for `send_message_to_thread` to an idle worker (it re-acquires the writer slot) and for sidekick reuse (Priority 2a).
-- Keep the strict rule that an unscoped worker claims the whole workspace.
-
-### Acceptance criteria
-
-- Workers scoped `apps/a` and `apps/b` run concurrently; `apps/a` and `apps/a/src` conflict; an unscoped worker conflicts with everything.
-- An older ui-state file without `writeScopes` loads and treats existing workers as whole-workspace.
-
-### Proof
-
-- `orchestration-writer-scope.spec.ts` (extend it), `pnpm --filter @pi-gui/desktop test:core:persistence`, and the UI-state decoder unit tests.
-
-### Risk
-
-Disjoint path scopes in one checkout still share build outputs, lockfiles and the Git index. Document that scopes are advisory for shared artifacts. Worktree-per-worker isolation (the "phase B" in the code comment) stays a separate decision.
-
-## Priority 3: effort per lane and mid-session routing
-
-**Why:** Fusion tunes the lead's effort and the sidekick per pairing, and switches models during compaction, where the cache is lost anyway, so the switch costs nothing extra. pi-gui fixes model and thinking level at spawn: children get no thinking level (`app-store-orchestration.ts:421-426`), and a missing sidekick silently falls back to the workspace default, which may be the frontier lead model.
-
-### Change
-
-- **6a.** Add sidekick and scout **thinking-level** settings next to the existing sidekick and scout model pickers (`settings-models-section.tsx`, `sidekick-picker`), and apply them in `createChildThreadRecord` through the existing session-config setter.
-- **6b.** Warn in the composer's Lead badge when the effective sidekick model equals the lead model ("Sidekick is the lead model; no savings").
-- **6c (exploratory).** Add a hidden driver extension on `session_before_compact` (`pi-coding-agent` `ExtensionAPI.on("session_before_compact")`) that lets the desktop swap a child's model at compaction time, for example escalating a sidekick that has failed twice. Gate it behind a flag and measure it before making it a default.
-
-### Proof
-
-- `default-scout-model` and `orchestration-child-sidekick-model` unit specs (extend them), `sidekick-picker.spec.ts` (core), and one real-provider run for 6c.
+Pi's prompt-cache expiry is provider-defined (often 5 minutes). Fusion notes this explicitly. With a near-free child, accept the cold restart; a keep-alive isn't worth any complexity.
 
 ## Out of scope / flagged for the owner
 
 - **Uncommitted `child-isolation.ts` change (not part of this plan):** the working-tree diff allows `gh api` for read-only scouts whenever `-X` is absent. `gh api` switches to POST when `-f`, `-F`, `--field`, `--raw-field` or `--input` is present, so a scout could make write calls. The author should reject those flags (and `--method`) for scouts and add cases to `test/child-isolation.test.mts`.
-- In-memory maps that never shrink (`childGenerationByThreadId`, read cursors, `reportedRuns`, `leadMutationBySession`) are small. Prune them when a child is archived as part of 2a, without treating it as a separate project.
+- In-memory maps that never shrink (`childGenerationByThreadId`, read cursors, `reportedRuns`, `leadRunBySession`) are small. Prune them when a child is archived as part of 2a, without treating it as a separate project.
 - Solo parents get no unsolicited child reports (`app-store-orchestration.ts:1326`). This is intentional (they await tool results); keep it.
 
 ## Suggested commit order
 
+0. Done: direct-work gate fix and lead read budget (driver only).
 1. Priority 1c and 1d (output bounds), with their unit spec.
 2. Priority 1a, 1b and 1e (prompt and report diet), with the driver prompt test.
 3. Priority 1, tool-name collision (3a, 3b), driver only.
 4. Priority 1 host performance 2a and 2b, then 2c, then 2d, then 2e (four small commits).
-5. Real-provider Lead verification, recording lead/sidekick token usage before and after.
-6. Priority 2 parallel scoped workers (contract and migration).
-7. Priority 2 persistent sidekick (depends on 6 for the scope check on reuse).
-8. Priority 3, after measuring 1–7.
+5. Real-provider Lead verification, recording lead/sidekick token usage before and after (the session rail splits lead vs. delegated).
+6. Priority 2 parallel scoped workers (contract, migration, relaxed budget).
+7. Priority 2 child-side quality loop (7a first; it's a suffix change).
+8. Priority 3 effort per lane, then persistent sidekick, after measuring 1–7.
 
 Every step keeps Pi-runtime behavior in Pi: the driver changes are limited to prompt sections, tool registration and the cross-session omit list, per [`packages/pi-sdk-driver/AGENTS.md`](../packages/pi-sdk-driver/AGENTS.md).
