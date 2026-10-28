@@ -634,6 +634,222 @@ video {
   }
 }
 
+/* ===== Recommended pairings ===== */
+.pairings {
+  padding: 140px 0 0;
+}
+
+.eyebrow--center {
+  text-align: center;
+}
+
+.pairings__stat {
+  margin-top: 20px;
+  text-align: center;
+}
+
+.pairings__stat-number {
+  font-size: clamp(56px, 9vw, 104px);
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: -0.045em;
+  color: var(--program);
+  text-wrap: balance;
+}
+
+.pairings__bars {
+  max-width: 760px;
+  margin: 44px auto 0;
+}
+
+.pairings__bar-row + .pairings__bar-row {
+  margin-top: 20px;
+}
+
+.pairings__bar-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  font-size: 14.5px;
+}
+
+.pairings__bar-meta span {
+  color: var(--ink-soft);
+}
+
+.pairings__bar-meta strong {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+.pairings__track {
+  height: 18px;
+  margin-top: 8px;
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  border: 1px solid var(--line);
+  overflow: hidden;
+}
+
+.pairings__bar {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--program);
+}
+
+.pairings__bar--full {
+  background: var(--ink-soft);
+}
+
+.pairings__caption {
+  margin-top: 14px;
+  color: var(--muted);
+  font-size: 14px;
+  text-align: center;
+}
+
+.pairings__prices {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  max-width: 760px;
+  margin: 32px auto 0;
+}
+
+.pairings__price {
+  padding: 18px 20px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-frame);
+  background: var(--bg-raised);
+  text-align: center;
+}
+
+.pairings__price-model {
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+.pairings__price-numbers {
+  margin-top: 6px;
+  font-family: var(--font-mono);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.pairings__price-meta {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.pairings__prices-note {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 14px;
+  text-align: center;
+}
+
+.pairings__cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  max-width: 900px;
+  margin: 32px auto 0;
+}
+
+.pairings__card {
+  position: relative;
+  padding: 26px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-frame);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-frame);
+}
+
+.pairings__card-badge {
+  display: inline-block;
+  margin-bottom: 12px;
+  padding: 3px 12px;
+  border-radius: 999px;
+  background: var(--program);
+  color: var(--bg);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.pairings__card h3 {
+  font-size: 20px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+
+.pairings__combo {
+  margin-top: 12px;
+  font-family: var(--font-mono);
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: var(--ink-soft);
+}
+
+.pairings__bestfor {
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 15px;
+}
+
+.pairings__cost {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  font-size: 14.5px;
+  font-weight: 500;
+}
+
+.pairings__howto {
+  max-width: 760px;
+  margin: 28px auto 0;
+  color: var(--muted);
+  font-size: 14px;
+  text-align: center;
+}
+
+.pairings__footnote {
+  max-width: 760px;
+  margin: 16px auto 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+  text-align: center;
+}
+
+@media (max-width: 640px) {
+  .pairings {
+    padding-top: 96px;
+  }
+
+  .pairings__prices {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .pairings__cards {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .pairings__bar-meta {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
@@ -980,5 +1196,19 @@ video {
 @media (prefers-reduced-motion: reduce) {
   .mock__status--running {
     animation: none;
+  }
+}
+
+/* Keep the long lead/sidekick chrome pill inside the frame on narrow screens. */
+@media (max-width: 640px) {
+  .mock__chrome {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+
+  .mock__chrome .mock__pill {
+    margin-left: 0;
+    white-space: normal;
+    line-height: 1.5;
   }
 }

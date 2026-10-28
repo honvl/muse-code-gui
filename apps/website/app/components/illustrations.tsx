@@ -23,7 +23,7 @@ const children = [
 export function LeadIllustration() {
   return (
     <div className="mock" role="img" aria-label="A lead thread delegating to four child threads">
-      <WindowChrome title="Fix flaky auth refresh" pill="Lead · Sidekick: default" />
+      <WindowChrome title="Fix flaky auth refresh" pill="Lead · Opus 5.5 · Sidekick: Muse Spark 1.3 Contributor" />
       <div className="mock__split">
         <div className="mock__thread">
           <div className="mock__bubble mock__bubble--user">

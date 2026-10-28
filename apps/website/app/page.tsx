@@ -11,7 +11,6 @@ import {
   BREW_INSTALL,
   GITHUB_URL,
   OG_IMAGE_PATH,
-  PI_URL,
   RELEASES_URL,
   SITE_DESCRIPTION,
   SITE_NAME,
@@ -39,7 +38,7 @@ const showcase = [
   {
     eyebrow: "Lead and sidekicks",
     title: "A lead agent that hands out the work",
-    body: "Switch a thread to Lead in the model picker and it plans, then delegates to child threads running a cheaper sidekick model (default lead, scout and sidekick models are in Settings). Scouts read and search but can't edit; workers edit inside their own write scope, so workers on different folders run in parallel. Each child reports back when it finishes, and the Session rail shows children live, with token usage split between the lead and delegated threads.",
+    body: "Switch a thread to Lead in the model picker and it plans, then hands the busywork — reading, searching and editing — to child threads running a cheap sidekick model (default lead, scout and sidekick models are in Settings). Scouts read and search but can't edit; workers edit inside their own write scope, so workers on different folders run in parallel. Each child reports back when it finishes, and the Session rail shows children live, with token usage split between the lead and delegated threads.",
     Illustration: LeadIllustration,
   },
   {
@@ -117,7 +116,7 @@ const features = [
   },
   {
     title: "Scheduled tasks",
-    body: "Have pi rerun a prompt on a schedule, such as a weekly dependency check, while the app is open.",
+    body: "Have the app rerun a prompt on a schedule, such as a weekly dependency check, while the app is open.",
   },
   {
     title: "Delegation guardrails",
@@ -125,7 +124,7 @@ const features = [
   },
   {
     title: "Skills and extensions",
-    body: "Turn pi skills and extensions on and off, try them from the composer, and give extensions their own tabs. One Settings switch installs the Muse Code GUI pack, with a Chrome browser-control skill and usage views.",
+    body: "Turn skills and extensions on and off, try them from the composer, and give extensions their own tabs. One Settings switch installs the Muse Code GUI pack, with a Chrome browser-control skill and usage views.",
   },
   {
     title: "Any provider",
@@ -133,7 +132,7 @@ const features = [
   },
   {
     title: "Your sessions, on disk",
-    body: "The app reads and writes pi's own session files. Anything you set up with the pi CLI carries over.",
+    body: "Your sessions are plain files on disk, so your threads, credentials and skills carry over."
   },
   {
     title: "Fork and rewind",
@@ -176,26 +175,22 @@ const installs = [
 
 const faqs = [
   {
-    q: "What is pi?",
+    q: "Which models can I use?",
+    a: "Any major provider via OAuth sign-in, API key or a custom endpoint, with model and thinking level set per thread. Lead and sidekick models are set separately — see Recommended pairings below.",
+  },
+  {
+    q: "Does it cost anything?",
     a: (
       <>
-        <a href={PI_URL}>pi</a> is an open source coding agent that runs in your terminal. Muse
-        Code GUI is a desktop app on top of it: sessions, models, tools and auth all run through
-        pi itself.
+        Muse Code GUI is free and MIT licensed. You pay your model provider. Pairing a strong
+        lead with a cheap sidekick cut costs about 64% in our measurements — see{" "}
+        <a href="#pairings">Recommended pairings</a>.
       </>
     ),
   },
   {
-    q: "Does it cost anything?",
-    a: "Muse Code GUI is free and MIT licensed. You bring your own model provider, through a subscription sign-in or an API key — and lead mode can save money by handing busywork to a cheaper sidekick model.",
-  },
-  {
-    q: "Can I keep using the pi CLI?",
-    a: "Yes. The app uses pi's own session files and settings, so threads, credentials and skills are shared between the two.",
-  },
-  {
     q: "Where does my code go?",
-    a: "The app runs on your machine. Your code goes only to the model provider you configure, the same way it does with the pi CLI. The app also checks GitHub for new releases.",
+    a: "The app runs on your machine. Your code goes only to the model provider you configure. The app also checks GitHub for new releases.",
   },
   {
     q: "How do updates work?",
@@ -232,6 +227,7 @@ export default function Page() {
         <div className="nav__inner">
           <Logo />
           <nav className="nav__links" aria-label="Main">
+            <a href="#pairings">Pairings</a>
             <a href="#features">Features</a>
             <a href="#install">Install</a>
             <a href="#faq">FAQ</a>
@@ -258,9 +254,10 @@ export default function Page() {
             </a>
             <h1>Coding agents that work as a team</h1>
             <p className="hero__lede">
-              Muse Code GUI is a desktop app for the pi coding agent. A lead agent plans and
-              hands work to cheaper sidekick threads, while you review every change, run the
-              tests in a real terminal, and ship without leaving the window.
+              Muse Code GUI is a desktop app for AI coding agents. A strong lead plans and
+              reviews, while a fast, cheap sidekick does the reading, searching and editing —
+              and you review every change, run the tests in a real terminal, and ship without
+              leaving the window.
             </p>
             <div className="hero__actions">
               <DownloadButton className="button button--primary" />
@@ -268,9 +265,7 @@ export default function Page() {
                 View on GitHub
               </a>
             </div>
-            <p className="hero__note">
-              Free and MIT licensed. Powered by <a href={PI_URL}>pi</a>.
-            </p>
+            <p className="hero__note">Free and MIT licensed.</p>
           </div>
           <div className="container container--wide">
             <div className="frame frame--hero">
@@ -289,6 +284,106 @@ export default function Page() {
                 <source src="/media/hero.mp4" type="video/mp4" />
               </video>
             </div>
+          </div>
+        </section>
+
+        <section id="pairings" className="pairings">
+          <div className="container">
+            <p className="eyebrow eyebrow--center">Recommended pairings</p>
+            <h2 className="section-title">Same work, about two thirds cheaper</h2>
+            <p className="pairings__stat">
+              <span className="pairings__stat-number">64% lower cost</span>
+            </p>
+            <p className="section-lede">
+              A strong lead plans and reviews. A fast, cheap sidekick does the reading,
+              searching and editing.
+            </p>
+            <div className="pairings__bars">
+              <div className="pairings__bar-row">
+                <div className="pairings__bar-meta">
+                  <span>Claude Opus 5.5 alone</span>
+                  <strong>$51.56</strong>
+                </div>
+                <div className="pairings__track">
+                  <div className="pairings__bar pairings__bar--full" style={{ width: "100%" }} />
+                </div>
+              </div>
+              <div className="pairings__bar-row">
+                <div className="pairings__bar-meta">
+                  <span>Opus 5.5 lead + Muse Spark 1.3 Contributor sidekicks</span>
+                  <strong>$18.53</strong>
+                </div>
+                <div className="pairings__track">
+                  <div className="pairings__bar" style={{ width: "36%" }} />
+                </div>
+              </div>
+              <p className="pairings__caption">
+                Measured: same 3 real lead threads, 12 delegated tasks. Per-thread savings
+                ranged 37% to 79%.
+              </p>
+            </div>
+            <div className="pairings__prices">
+              <div className="pairings__price">
+                <p className="pairings__price-model">Claude Opus 5.5</p>
+                <p className="pairings__price-numbers">$4 / $20</p>
+                <p className="pairings__price-meta">per 1M tokens, in / out</p>
+              </div>
+              <div className="pairings__price">
+                <p className="pairings__price-model">Muse Wonder</p>
+                <p className="pairings__price-numbers">$4 / $20</p>
+                <p className="pairings__price-meta">per 1M tokens, in / out</p>
+              </div>
+              <div className="pairings__price">
+                <p className="pairings__price-model">Muse Spark 1.3 Contributor</p>
+                <p className="pairings__price-numbers">$0.10 / $0.20</p>
+                <p className="pairings__price-meta">per 1M tokens, in / out</p>
+              </div>
+              <p className="pairings__prices-note">
+                40× cheaper input, 100× cheaper output than the lead models.
+              </p>
+            </div>
+            <div className="pairings__cards">
+              <div className="pairings__card">
+                <p className="pairings__card-badge">Recommended</p>
+                <h3>Hard bugs and large refactors</h3>
+                <p className="pairings__combo">
+                  Lead: Claude Opus 5.5 · high
+                  <br />
+                  Sidekick: Muse Spark 1.3 Contributor · xhigh
+                </p>
+                <p className="pairings__bestfor">
+                  Best for hard bugs and large refactors where planning quality matters.
+                </p>
+                <p className="pairings__cost">
+                  Measured: 64% lower cost than Opus alone.
+                </p>
+              </div>
+              <div className="pairings__card">
+                <h3>Long-context work on big codebases</h3>
+                <p className="pairings__combo">
+                  Lead: Muse Wonder · high
+                  <br />
+                  Sidekick: Muse Spark 1.3 Contributor · xhigh
+                </p>
+                <p className="pairings__bestfor">
+                  Best for long-context work across big codebases (1M-token context).
+                </p>
+                <p className="pairings__cost">
+                  Estimated: similar savings. Wonder has the same list price as Opus 5.5.
+                </p>
+              </div>
+            </div>
+            <p className="pairings__howto">
+              How to set it: Settings → Default lead model, Default scout model; or the Lead
+              toggle and Sidekick picker in the composer.
+            </p>
+            <p className="pairings__footnote">
+              Measured on the maintainer&apos;s own lead threads in October 2026: 3 threads led
+              by Claude Opus 5.5 with 12 child tasks on Muse Spark 1.3 Contributor. The
+              comparison prices the children&apos;s tokens at the lead model&apos;s list price,
+              assuming the lead would have used the same number of tokens. Your savings depend
+              on how much work the lead delegates.
+            </p>
           </div>
         </section>
 
@@ -379,7 +474,7 @@ export default function Page() {
 
         <section className="closing">
           <div className="container">
-            <h2>Give pi a team</h2>
+            <h2>Give your agent a team</h2>
             <div className="hero__actions">
               <DownloadButton className="button button--primary" />
               <a className="button button--secondary" href={GITHUB_URL}>
@@ -396,7 +491,6 @@ export default function Page() {
           <nav className="footer__links" aria-label="Footer">
             <a href={GITHUB_URL}>GitHub</a>
             <a href={RELEASES_URL}>Releases</a>
-            <a href={PI_URL}>pi</a>
             <a href={`${GITHUB_URL}/blob/main/LICENSE`}>MIT License</a>
           </nav>
         </div>
