@@ -83,6 +83,12 @@ test("lead-mode sidekick picker drives config.sidekick from badge to reset", asy
     const sidekickBadge = window.getByRole("button", { name: /^Sidekick:/ });
     await expect(sidekickBadge).toBeVisible();
     await expect(sidekickBadge).toHaveText("Sidekick: workspace default");
+
+    // The workspace default (openai/gpt-5) is also the lead's model, so the
+    // Lead badge warns that delegating saves nothing.
+    const leadBadge = window.getByRole("button", { name: "Lead", exact: true });
+    await expect(leadBadge).toHaveAttribute("data-warning", "sidekick-is-lead");
+    await expect(leadBadge).toHaveAttribute("title", "Sidekick is the lead model; no savings");
     await expect.poll(() => selectedSessionSidekick(window, leadRef)).toBeUndefined();
 
     // Sidekick reasoning sits next to the sidekick model and is stored per thread.
@@ -110,6 +116,7 @@ test("lead-mode sidekick picker drives config.sidekick from badge to reset", asy
       .poll(() => selectedSessionSidekick(window, leadRef))
       .toEqual({ provider: "openai", modelId: "gpt-4o" });
     await expect(sidekickBadge).toContainText("GPT-4o");
+    await expect(leadBadge).not.toHaveAttribute("data-warning", /.*/);
 
     // Reselecting the thread keeps the chosen sidekick.
     await createNamedThread(window, "Unrelated second thread");
@@ -129,6 +136,10 @@ test("lead-mode sidekick picker drives config.sidekick from badge to reset", asy
     await expect.poll(() => selectedSessionSidekick(window, leadRef)).toBeUndefined();
     await expect(window.getByRole("button", { name: /^Sidekick:/ })).toHaveText(
       "Sidekick: workspace default",
+    );
+    await expect(window.getByRole("button", { name: "Lead", exact: true })).toHaveAttribute(
+      "data-warning",
+      "sidekick-is-lead",
     );
 
     await window.getByRole("button", { name: /^Sidekick reasoning:/ }).click();

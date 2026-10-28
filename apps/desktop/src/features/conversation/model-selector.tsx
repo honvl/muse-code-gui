@@ -32,6 +32,28 @@ interface ModelSelectorProps {
   readonly onSetSidekickThinkingLevel?: (level: string | null) => void;
 }
 
+export const SIDEKICK_IS_LEAD_WARNING = "Sidekick is the lead model; no savings";
+
+/**
+ * True when children would run on the lead's own model: the thread's sidekick,
+ * or the workspace default when none is set, equals the lead model.
+ */
+export function sidekickMatchesLead(input: {
+  readonly provider: string | undefined;
+  readonly modelId: string | undefined;
+  readonly sidekickProvider: string | undefined;
+  readonly sidekickModelId: string | undefined;
+  readonly defaultProvider: string | undefined;
+  readonly defaultModelId: string | undefined;
+}): boolean {
+  const hasSidekick = Boolean(input.sidekickProvider && input.sidekickModelId);
+  const provider = hasSidekick ? input.sidekickProvider : input.defaultProvider;
+  const modelId = hasSidekick ? input.sidekickModelId : input.defaultModelId;
+  return Boolean(
+    input.provider && input.modelId && provider === input.provider && modelId === input.modelId,
+  );
+}
+
 type OpenDropdown = "none" | "model" | "thinking" | "sidekick" | "sidekick-thinking";
 
 export function ModelSelector({
@@ -146,6 +168,16 @@ export function ModelSelector({
     sidekickProvider && sidekickModelId
       ? `Sidekick: ${sidekickOption ? sidekickOption.label : `${sidekickProvider}:${sidekickModelId}`}`
       : "Sidekick: workspace default";
+  const sidekickIsLead =
+    showSidekickSelector &&
+    sidekickMatchesLead({
+      provider,
+      modelId,
+      sidekickProvider,
+      sidekickModelId,
+      defaultProvider: runtime?.settings.defaultProvider,
+      defaultModelId: runtime?.settings.defaultModelId,
+    });
   const sidekickThinkingOption = THINKING_OPTIONS.find(
     (option) => option.value === sidekickThinkingLevel,
   );
@@ -233,14 +265,20 @@ export function ModelSelector({
             className={`model-selector__badge${orchestratorMode ? " model-selector__item--active" : ""}`}
             type="button"
             disabled={disabled}
+            data-warning={sidekickIsLead ? "sidekick-is-lead" : undefined}
             title={
-              orchestratorMode
-                ? "Lead: delegates bulky work and reviews what children report"
-                : "Solo: works in this thread; can still delegate when needed"
+              sidekickIsLead
+                ? SIDEKICK_IS_LEAD_WARNING
+                : orchestratorMode
+                  ? "Lead: delegates bulky work and reviews what children report"
+                  : "Solo: works in this thread; can still delegate when needed"
             }
             onClick={() => onToggleOrchestrator?.(!orchestratorMode)}
           >
             {orchestratorMode ? "Lead" : "Solo"}
+            {sidekickIsLead ? (
+              <span aria-hidden="true" className="model-selector__badge-warning" />
+            ) : null}
           </button>
         </span>
       ) : null}

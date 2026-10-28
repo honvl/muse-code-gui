@@ -50,6 +50,14 @@
   color: var(--text-strong);
 }
 
+.model-selector__badge-warning {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--warning);
+}
+
 .model-selector__badge:disabled {
   cursor: default;
   opacity: 0.6;

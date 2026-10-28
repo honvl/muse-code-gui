@@ -10,6 +10,7 @@ import type {
   TranscriptMessage,
 } from "../../contracts/desktop-state";
 import { createOrchestrationOwner } from "../../electron/orchestration/app-store-orchestration";
+import { sidekickMatchesLead } from "../../src/features/conversation/model-selector";
 
 const createdAt = "2026-10-27T20:00:00.000Z";
 const prompt = "Investigate the auth flow.";
@@ -313,4 +314,32 @@ test("no reasoning override keeps the workspace default thinking level", async (
   );
 
   expect(createSessionCalls[0]?.options.initialThinkingLevel).toBe("high");
+});
+
+test("the Lead badge warns only when the effective sidekick is the lead model", () => {
+  const lead = { provider: "openai", modelId: "gpt-5" };
+  const base = {
+    ...lead,
+    sidekickProvider: undefined,
+    sidekickModelId: undefined,
+    defaultProvider: "openai",
+    defaultModelId: "gpt-5",
+  };
+  // No sidekick: children fall back to the workspace default, which is the lead.
+  expect(sidekickMatchesLead(base)).toBe(true);
+  expect(sidekickMatchesLead({ ...base, defaultModelId: "gpt-4o" })).toBe(false);
+  // An explicit sidekick wins over the workspace default either way.
+  expect(
+    sidekickMatchesLead({ ...base, sidekickProvider: "openai", sidekickModelId: "gpt-4o" }),
+  ).toBe(false);
+  expect(
+    sidekickMatchesLead({
+      ...base,
+      defaultModelId: "gpt-4o",
+      sidekickProvider: "openai",
+      sidekickModelId: "gpt-5",
+    }),
+  ).toBe(true);
+  // An unknown lead model never warns.
+  expect(sidekickMatchesLead({ ...base, provider: undefined, modelId: undefined })).toBe(false);
 });
