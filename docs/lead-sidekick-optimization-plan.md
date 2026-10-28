@@ -197,6 +197,43 @@ Disjoint path scopes in one checkout still share build outputs, lockfiles and th
 
 - `orchestration-child-brief.spec.ts` for the suffix change; a core spec for the automatic scout review if it is host-driven; one real-provider comparison using the session rail's lead vs. delegated usage.
 
+## Priority 2: subagent visibility and worktree children
+
+**Why:** for parallel writers the lead currently falls back to the `agent` tool with `isolation: "worktree"`, because `create_child_thread` children share one checkout under the single-writer rule. Those subagents are invisible in pi-gui and don't survive a restart.
+
+### Findings (verified)
+
+- `agent`/`agent_output` come from a third-party user extension, `pi-cc-subagent` (`~/.pi/agent/git/github.com/linearuncle/pi-cc-subagent/subagent.ts`), enabled in `~/.pi/agent/settings.json`. They are not pi built-ins and not pi-gui code.
+- `runSubagent` spawns `pi --mode json --no-extensions --name "agent:<type>: <desc>"` with `cwd` set to the worktree (`$TMPDIR/pi-subagent-agent-<type>-<n>-<suffix>`). The child writes an ordinary pi session file under `~/.pi/agent/sessions/--<cwd>/`.
+- The registry (`tasks`/`byAgentId`) lives only in memory, so a restart wipes it (`agent_output` returns "No such agent"). `resume` re-spawns `pi --session <id>` from the parent's cwd, so pi asks "Session found in different project… Fork?" on stdin, which the extension ignores, and the run fails.
+- pi-gui gets no signal apart from generic tool rows. `src/features/threads/use-activity-auto-open.ts` declares `SUBAGENT_TOOL_NAMES = {"agent"}` but nothing imports it.
+
+### Change
+
+- **8a. Worktree children (preferred).** Add `isolation: "worktree"` to `create_child_thread`.
+  - The host creates a repo-local worktree and branch (for example `.worktrees/<child-id>`, excluded through `.git/info/exclude`), opens the child session with that worktree as its cwd, and records `worktreePath`/`branch` on `OrchestrationChildThread`.
+  - A worktree child doesn't take the shared writer slot.
+  - The report includes the branch and the diff stat. Landing stays with the lead, by fast-forward or rebase, and the host never merges on its own.
+  - This is the code comment's "phase B". Children keep the full sidebar, rail, report and restart behavior, so the lead no longer needs the subagent tool for parallel writers.
+  - Built-ins can already supersede tools (3a), so `pi-gui-thread-orchestration` may later declare `agent`/`agent_output` superseded once worktree children cover the use case.
+- **8b. Observe third-party subagents (read-only).**
+  - When a transcript has an `agent` tool row, link the subagent's session (found by its `agent:<type>: <desc>` name and worktree cwd in the session catalog) as a read-only lane under the parent in the thread rail. Show its type, description, status, current tool and worktree branch.
+  - Delete the orphaned `use-activity-auto-open.ts` constant, or wire it up.
+  - Don't modify the third-party extension. Report the resume/cwd and registry-persistence bugs upstream.
+
+### Acceptance criteria
+
+- Two worktree children with overlapping paths run concurrently. Each appears in the sidebar and rail, and each report names its branch.
+- After a pi-gui restart, worktree children keep their status and can be continued with `send_message_to_thread`, with no fork prompt.
+- With 8b, a running third-party subagent appears under its parent within one session-catalog refresh and opens read-only.
+
+### Proof
+
+- A unit spec for worktree creation and cleanup policy.
+- An `orchestration-runtime-tools.spec.ts` core case for two concurrent worktree workers.
+- `session-rail-children.spec.ts` for the lane.
+- One visible-UI check through the verification skill.
+
 ## Priority 3: effort per lane and mid-session routing
 
 **Why:** Fusion tunes the lead's effort and the sidekick per pairing, and switches models during compaction, where the cache is lost anyway, so the switch costs nothing extra. pi-gui fixes model and thinking level at spawn: children get no thinking level (`app-store-orchestration.ts:421-426`), and a missing sidekick silently falls back to the workspace default, which may be the frontier lead model.
@@ -257,6 +294,7 @@ Pi's prompt-cache expiry is provider-defined (often 5 minutes). Fusion notes thi
 5. Real-provider Lead verification, recording lead/sidekick token usage before and after (the session rail splits lead vs. delegated).
 6. Priority 2 parallel scoped workers (contract, migration, relaxed budget).
 7. Priority 2 child-side quality loop (7a first; it's a suffix change).
+7b. Priority 2 subagent visibility: worktree children (8a), then the read-only subagent lane (8b).
 8. Priority 3 effort per lane, then persistent sidekick, after measuring 1–7.
 
 Every step keeps Pi-runtime behavior in Pi: the driver changes are limited to prompt sections, tool registration and the cross-session omit list, per [`packages/pi-sdk-driver/AGENTS.md`](../packages/pi-sdk-driver/AGENTS.md).
