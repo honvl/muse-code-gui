@@ -39,21 +39,16 @@ await test("lead prompt covers the six lead rules in order", () => {
   assert.match(lines[0] ?? "", /reading the diff/i);
 });
 
-await test("lead prompt teaches reusing a live child instead of always spawning fresh", () => {
+await test("lead prompt says the host reuses the sidekick and fresh:true opts out", () => {
   assert.match(
+    ORCHESTRATOR_SYSTEM_PROMPT,
+    /the host reuses your sidekick automatically/i,
+    "prompt must say the host continues the sidekick on its own",
+  );
+  assert.doesNotMatch(
     ORCHESTRATOR_SYSTEM_PROMPT,
     /reuse a child/i,
-    "prompt must teach reusing a child whose context covers the work",
-  );
-  assert.match(
-    ORCHESTRATOR_SYSTEM_PROMPT,
-    /send_message_to_thread/,
-    "reuse rule must name send_message_to_thread as the continue path",
-  );
-  assert.match(
-    ORCHESTRATOR_SYSTEM_PROMPT,
-    /list_threads/,
-    "reuse rule must name list_threads to find the child",
+    "the lead no longer picks a child to reuse by hand",
   );
   assert.match(
     ORCHESTRATOR_SYSTEM_PROMPT,
@@ -62,7 +57,7 @@ await test("lead prompt teaches reusing a live child instead of always spawning 
   );
   assert.match(
     ORCHESTRATOR_SYSTEM_PROMPT,
-    /parallel\/independent slices/i,
+    /fresh:true for parallel\/independent slices/i,
     "prompt must scope fresh spawns to parallel/independent work",
   );
   assert.match(

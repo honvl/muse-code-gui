@@ -10,10 +10,17 @@ import type {
   SessionModelSelection,
   SessionRef,
   SessionSnapshot,
+  SessionUsageSnapshot,
   WorkspaceRef,
 } from "@pi-gui/session-driver";
 import type { PiSdkDriver } from "@pi-gui/pi-sdk-driver";
 import { parseWriteScope, scopesOverlap } from "./writer-scope";
+import {
+  decideSidekickReuse,
+  resolveSidekickReuseWindowMs,
+  sidekickContextBudgetNote,
+  type SidekickReuseCandidate,
+} from "./sidekick-reuse";
 import type {
   DesktopAppState,
   OrchestrationEvidenceRecord,
@@ -139,7 +146,11 @@ interface OrchestrationStateView {
 
 type OrchestrationDriver = Pick<
   PiSdkDriver,
-  "cancelCurrentRun" | "createSession" | "sendCustomMessage" | "setChildIsolation"
+  | "cancelCurrentRun"
+  | "createSession"
+  | "getSessionTree"
+  | "sendCustomMessage"
+  | "setChildIsolation"
 >;
 
 interface OrchestrationOwnerHost {
@@ -169,6 +180,7 @@ interface OrchestrationOwnerHost {
   sidekickModelFor(sessionRef: SessionRef): SessionModelSelection | undefined;
   defaultScoutModel(): SessionModelSelection | undefined;
   sessionModelFor(sessionRef: SessionRef): SessionModelSelection | undefined;
+  sessionUsageFor(sessionRef: SessionRef): SessionUsageSnapshot | undefined;
   buildCreateSessionOptions(workspaceId: string): Promise<CreateSessionOptions | undefined>;
   getQueuedComposerMessages(
     sessionRef: SessionRef,
@@ -215,6 +227,8 @@ export interface OrchestrationOwner {
       readonly toolCallId: string;
       readonly mode?: OrchestrationChildMode;
       readonly scope?: string;
+      readonly fresh?: boolean;
+      readonly firstInTurn?: boolean;
     },
   ): Promise<AgentToolResult<CreateChildThreadToolDetails>>;
   listThreadsToolResult(
@@ -260,6 +274,8 @@ export function createOrchestrationOwner(
   // Completed runs already reported to a parent, keyed by child thread id.
   // Cleared when the child starts running again so a follow-up run reports too.
   const reportedChildRuns = new Map<string, string>();
+  const sidekickReuse: SidekickReuseState = { claimed: new Set(), inFlightByParent: new Map() };
+  sidekickClaimsByHost.set(store, sidekickReuse.claimed);
   return {
     reportChildCompletion: (sessionRef) =>
       reportChildCompletion(store, sessionRef, reportedChildRuns),
@@ -297,7 +313,7 @@ export function createOrchestrationOwner(
     hasOrchestrationParentSession: (sessionRef) =>
       hasOrchestrationParentSession(store.orchestrationState().orchestrationChildren, sessionRef),
     createChildThreadToolResult: (parentRef, input) =>
-      createChildThreadToolResult(store, parentRef, input),
+      createChildThreadToolResult(store, parentRef, input, sidekickReuse),
     listThreadsToolResult: (parentRef, options) => listThreadsToolResult(store, parentRef, options),
     readThreadToolResult: (parentRef, threadId, options) =>
       readThreadToolResult(store, parentRef, threadId, options, readThreadCursors),
@@ -736,16 +752,262 @@ async function cancelChildRunsForParent(
   await Promise.all(children.map((child) => cancelChildRun(store, child)));
 }
 
+interface CreateChildThreadToolInput {
+  readonly prompt: string;
+  readonly sourcePrompt?: string;
+  readonly toolCallId: string;
+  readonly mode?: OrchestrationChildMode;
+  readonly scope?: string;
+  readonly fresh?: boolean;
+  readonly firstInTurn?: boolean;
+}
+
+// Children a reuse is delivering to, keyed by host so projection keeps their
+// `queued` writer claim instead of re-deriving the idle session's status.
+const sidekickClaimsByHost = new WeakMap<OrchestrationOwnerHost, ReadonlySet<string>>();
+
+/** Owner-private bookkeeping that keeps parallel briefs off one sidekick. */
+interface SidekickReuseState {
+  /** Children a reuse is delivering to right now. */
+  readonly claimed: Set<string>;
+  /** create_child_thread calls in flight per parent session key. */
+  readonly inFlightByParent: Map<string, number>;
+}
+
 async function createChildThreadToolResult(
   store: OrchestrationOwnerHost,
   parentRef: SessionRef,
-  input: {
-    readonly prompt: string;
-    readonly sourcePrompt?: string;
-    readonly toolCallId: string;
-    readonly mode?: OrchestrationChildMode;
-    readonly scope?: string;
-  },
+  input: CreateChildThreadToolInput,
+  reuseState: SidekickReuseState,
+): Promise<AgentToolResult<CreateChildThreadToolDetails>> {
+  // Parallel calls of one assistant turn overlap in time: only a call that
+  // starts with none in flight, and that is first in its turn, may reuse.
+  const parentKey = sessionKey(parentRef);
+  const inFlight = reuseState.inFlightByParent.get(parentKey) ?? 0;
+  reuseState.inFlightByParent.set(parentKey, inFlight + 1);
+  try {
+    const parallel = inFlight > 0 || input.firstInTurn === false;
+    const reuse = await reuseSidekickForBrief(store, parentRef, input, reuseState, parallel);
+    return reuse.result ?? (await spawnChildThreadToolResult(store, parentRef, input, reuse.note));
+  } finally {
+    const remaining = (reuseState.inFlightByParent.get(parentKey) ?? 1) - 1;
+    if (remaining > 0) {
+      reuseState.inFlightByParent.set(parentKey, remaining);
+    } else {
+      reuseState.inFlightByParent.delete(parentKey);
+    }
+  }
+}
+
+/**
+ * Persistent sidekick: a lead's worker brief continues its most recent idle
+ * worker (same model, warm cache, context under budget) through the
+ * send_message_to_thread follow-up path, which bumps its generation. Reuse
+ * adds no child record, so the delegation budget counts it as a continuation.
+ * Returns no result when the brief should spawn, with a note when a warm
+ * sidekick was passed over for its context budget.
+ */
+async function reuseSidekickForBrief(
+  store: OrchestrationOwnerHost,
+  parentRef: SessionRef,
+  input: CreateChildThreadToolInput,
+  state: SidekickReuseState,
+  parallel: boolean,
+): Promise<{
+  readonly result?: AgentToolResult<CreateChildThreadToolDetails>;
+  readonly note?: string;
+}> {
+  if (input.fresh || parallel || (input.mode ?? "worker") !== "worker") return {};
+  if (!store.isOrchestratorSession(parentRef)) return {};
+  const parentChild = parentChildRecord(store, parentRef.workspaceId, parentRef.sessionId);
+  if (parentChild?.mode === "scout") return {};
+  const callKey = {
+    parentWorkspaceId: parentRef.workspaceId,
+    parentSessionId: parentRef.sessionId,
+    sourceToolCallId: input.toolCallId,
+  };
+  // A retried spawn keeps resolving to the child it created.
+  if (childForToolCall(store, callKey)) return {};
+  const windowMs = resolveSidekickReuseWindowMs();
+  if (windowMs <= 0) return {};
+
+  // Everything up to the claim below runs synchronously, so a parallel call
+  // entering during a later await already sees this child as an active writer.
+  const nowMs = Date.now();
+  const candidates = store
+    .orchestrationState()
+    .orchestrationChildren.filter(
+      (child) =>
+        child.parentWorkspaceId === parentRef.workspaceId &&
+        child.parentSessionId === parentRef.sessionId &&
+        child.mode !== "scout" &&
+        Boolean(child.childSessionId) &&
+        isTerminalChildStatus(child.status) &&
+        nowMs - Date.parse(child.updatedAt) <= windowMs,
+    )
+    .map((child): SidekickReuseCandidate => {
+      const childRef = childSessionRef(child);
+      const model = store.sessionModelFor(childRef);
+      const context = store.sessionUsageFor(childRef)?.context;
+      return {
+        child,
+        generation: generationForChildThread(child.id),
+        busy: state.claimed.has(child.id) || store.sessionFromState(childRef)?.status === "running",
+        ...(model ? { model } : {}),
+        ...(context ? { context } : {}),
+      };
+    });
+  // The model a fresh worker would get (see createChildThreadRecord).
+  const expectedModel =
+    store.sidekickModelFor(parentRef) ??
+    (parentChild ? store.sessionModelFor(parentRef) : undefined);
+  const decision = decideSidekickReuse({
+    parentWorkspaceId: parentRef.workspaceId,
+    parentSessionId: parentRef.sessionId,
+    candidates,
+    nowMs,
+    windowMs,
+    ...(expectedModel ? { expectedModel } : {}),
+  });
+  if (!decision.reuse) return decision.note ? { note: decision.note } : {};
+
+  // Same writer-scope check a fresh spawn faces. The candidate is idle, so it
+  // never blocks itself; on a conflict the spawn path returns the refusal.
+  const newScopes = parseWriteScope(input.scope);
+  if (
+    findConflictingWorker(
+      store.orchestrationState().orchestrationChildren,
+      parentRef.workspaceId,
+      parentRef.sessionId,
+      newScopes,
+    )
+  ) {
+    return {};
+  }
+
+  // Claim: the child holds the writer slot with the new brief's scope until
+  // its live status takes over. Released (and restored on a refusal) below.
+  const child = decision.child;
+  const previous = { status: child.status, writeScopes: child.writeScopes };
+  const updateRecord = (patch: Pick<OrchestrationChildThread, "status" | "writeScopes">) =>
+    store.replaceOrchestrationChildren(
+      store.orchestrationState().orchestrationChildren.map((entry) => {
+        if (entry.id !== child.id) return entry;
+        const { writeScopes: _replaced, ...rest } = entry;
+        return {
+          ...rest,
+          status: patch.status,
+          ...(patch.writeScopes ? { writeScopes: patch.writeScopes } : {}),
+        };
+      }),
+    );
+  state.claimed.add(child.id);
+  updateRecord({ status: "queued", writeScopes: [...newScopes] });
+  let delivered = false;
+  try {
+    // The decision already weighed context usage; compactions need the
+    // (async) session tree, read only for the chosen child.
+    const budgetNote = sidekickContextBudgetNote(
+      child.title || child.id,
+      undefined,
+      await countChildCompactions(store, childSessionRef(child)),
+    );
+    if (budgetNote) return { note: budgetNote };
+    const displayPrompt = (input.sourcePrompt ?? input.prompt).trim();
+    // Route straight to the claimed record: no thread re-listing, and its
+    // `queued` claim already holds the writer slot.
+    const claimedChild = childRecordById(store, child.id) ?? child;
+    const sent = await deliverMessageToThread(
+      store,
+      { sessionRef: childSessionRef(claimedChild), child: claimedChild },
+      { threadId: child.id, message: input.prompt },
+    );
+    if (sent.details.error !== undefined) {
+      return { result: createChildThreadErrorResult(displayPrompt, sent.details.error) };
+    }
+    delivered = true;
+    const details: CreateChildThreadToolDetails = {
+      action: createChildThreadAction,
+      prompt: displayPrompt,
+      mode: "worker",
+      ...(typeof child.depth === "number" ? { depth: child.depth } : {}),
+      childThreadId: child.id,
+      childWorkspaceId: child.childWorkspaceId,
+      childSessionId: child.childSessionId,
+      title: child.title,
+      reused: true,
+      delegationsRemaining: Math.max(
+        0,
+        resolveDelegationBudgetLimit() -
+          countChildrenForParent(
+            store.orchestrationState().orchestrationChildren,
+            parentRef.workspaceId,
+            parentRef.sessionId,
+          ),
+      ),
+      ...(sent.details.generation !== undefined ? { generation: sent.details.generation } : {}),
+    };
+    return {
+      result: {
+        content: [
+          {
+            type: "text",
+            text: formatReusedChildThreadResult(details, sent.details.status ?? "sent"),
+          },
+        ],
+        details,
+      },
+    };
+  } finally {
+    state.claimed.delete(child.id);
+    if (!delivered) {
+      updateRecord(previous);
+    } else {
+      // The run may have started (or even ended) while projection held the
+      // claim: converge the record on the live status now.
+      store.replaceOrchestrationChildren(
+        projectOrchestrationChildrenForSession(store, childSessionRef(child)),
+      );
+    }
+  }
+}
+
+/** Compactions recorded in a child session; undefined when the tree is unavailable. */
+async function countChildCompactions(
+  store: OrchestrationOwnerHost,
+  childRef: SessionRef,
+): Promise<number | undefined> {
+  try {
+    const tree = await store.driver.getSessionTree(childRef);
+    return tree.nodes.filter((node) => node.kind === "compaction").length;
+  } catch {
+    return undefined;
+  }
+}
+
+function formatReusedChildThreadResult(
+  result: CreateChildThreadToolDetails,
+  delivery: "queued" | "sent",
+): string {
+  return (
+    `Reused sidekick child thread: ${result.title ?? result.prompt}` +
+    (result.generation !== undefined ? ` (run ${result.generation})` : "") +
+    `\nchildThreadId: ${result.childThreadId ?? ""}` +
+    `\nchildWorkspaceId: ${result.childWorkspaceId ?? ""}` +
+    `\nchildSessionId: ${result.childSessionId ?? ""}` +
+    `\nmode: worker\nbrief: ${delivery}` +
+    (result.delegationsRemaining !== undefined
+      ? `\ndelegationsRemaining: ${result.delegationsRemaining}`
+      : "") +
+    "\nThe brief went to your idle sidekick as a follow-up, so its context and cache carry over; it reports back when this run ends. Pass fresh:true for a separate child."
+  );
+}
+
+async function spawnChildThreadToolResult(
+  store: OrchestrationOwnerHost,
+  parentRef: SessionRef,
+  input: CreateChildThreadToolInput,
+  reuseNote?: string,
 ): Promise<AgentToolResult<CreateChildThreadToolDetails>> {
   const displayPrompt = (input.sourcePrompt ?? input.prompt).trim();
   let child: OrchestrationChildThread;
@@ -796,13 +1058,16 @@ async function createChildThreadToolResult(
         ),
     ),
     generation: generationForChildThread(child.id),
+    ...(reuseNote ? { reuseNote } : {}),
   };
 
   return {
     content: [
       {
         type: "text",
-        text: formatCreateChildThreadResult(details, store.isOrchestratorSession(parentRef)),
+        text:
+          formatCreateChildThreadResult(details, store.isOrchestratorSession(parentRef)) +
+          (reuseNote ? `\n${reuseNote}` : ""),
       },
     ],
     details,
@@ -1113,7 +1378,14 @@ async function sendMessageToThreadToolResult(
       `Unknown thread: ${input.threadId}`,
     );
   }
+  return deliverMessageToThread(store, target, input);
+}
 
+async function deliverMessageToThread(
+  store: OrchestrationOwnerHost,
+  target: ResolvedThreadTarget,
+  input: { readonly threadId: string; readonly message: string; readonly interrupt?: boolean },
+): Promise<AgentToolResult<SendMessageToThreadToolDetails>> {
   // A running target steered without interrupt keeps its turn (deliverAs
   // "steer"); interrupt:true cancels first so the message starts a NEW
   // turn. An idle target submits normally either way. A rejected cancel never
@@ -1121,10 +1393,12 @@ async function sendMessageToThreadToolResult(
   const running = store.sessionFromState(target.sessionRef)?.status === "running";
 
   // Waking an idle worker re-acquires its writer slot, so it faces the same
-  // scope check as a fresh spawn. A running worker already holds the slot.
+  // scope check as a fresh spawn. A running (or reuse-claimed) worker already
+  // holds the slot. Read the record by id so the status is current.
+  const liveChild = target.child ? (childRecordById(store, target.child.id) ?? target.child) : undefined;
   const idleWorker =
-    target.child && target.child.mode !== "scout" && !isActiveWriterStatus(target.child.status)
-      ? target.child
+    liveChild && liveChild.mode !== "scout" && !isActiveWriterStatus(liveChild.status)
+      ? liveChild
       : undefined;
   if (idleWorker && !running) {
     const scopes = existingChildWriteScopes(idleWorker);
@@ -1815,10 +2089,15 @@ function projectOrchestrationChild(
   // background hydration pass loads the rest shortly after startup. A loaded
   // transcript is sufficient evidence on its own: even without a session
   // snapshot, hasStartedRun can tell a finished child from a never-started one.
-  const status =
+  const derivedStatus =
     transcriptLoaded
       ? toOrchestrationStatus(session?.status ?? "idle", childRef, store)
       : (liveChildStatus(session?.status, childRef, store) ?? child.status);
+  // A sidekick reuse in flight holds `queued` until its live status takes over.
+  const status =
+    sidekickClaimsByHost.get(store)?.has(child.id) && !isActiveWriterStatus(derivedStatus)
+      ? "queued"
+      : derivedStatus;
 
   return {
     ...child,
@@ -2126,7 +2405,7 @@ function detailFromThreadToolDetails(details: Readonly<Record<string, unknown>>)
         : typeof details.prompt === "string"
           ? details.prompt
           : "unknown";
-    return `Created child thread: ${title}`;
+    return `${details.reused === true ? "Reused" : "Created"} child thread: ${title}`;
   }
   if (details.action === readThreadAction) {
     const title =
@@ -2319,9 +2598,7 @@ function resolveThreadTarget(
   }
 
   const child = visibleThread.childThreadId
-    ? store
-        .orchestrationState()
-        .orchestrationChildren.find((entry) => entry.id === visibleThread.childThreadId)
+    ? childRecordById(store, visibleThread.childThreadId)
     : undefined;
   return {
     sessionRef: {

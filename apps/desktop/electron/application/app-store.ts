@@ -526,6 +526,8 @@ export class DesktopAppStore {
       sidekickModelFor: (sessionRef) => this.sidekickModelFor(sessionRef),
       defaultScoutModel: () => this.defaultScoutModel(),
       sessionModelFor: (sessionRef) => this.sessionModelFor(sessionRef),
+      sessionUsageFor: (sessionRef) =>
+        this.sessionState.sessionUsageBySession.get(sessionKey(sessionRef)),
       buildCreateSessionOptions: (workspaceId) => this.buildCreateSessionOptions(workspaceId),
       getQueuedComposerMessages: (sessionRef) => this.getQueuedComposerMessages(sessionRef),
       seedSession: (snapshot) => {
@@ -1378,6 +1380,9 @@ export class DesktopAppStore {
       readonly sourcePrompt?: string;
       readonly toolCallId: string;
       readonly mode?: "scout" | "worker";
+      readonly scope?: string;
+      readonly fresh?: boolean;
+      readonly firstInTurn?: boolean;
     },
   ) {
     await this.initialize();

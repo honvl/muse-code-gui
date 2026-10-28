@@ -351,3 +351,163 @@ test("read_thread wait_seconds times out on a running thread with back-off guida
     await server.close();
   }
 });
+
+/** OpenAI-completions SSE server that answers every request at once. */
+async function startAnsweringOpenAiServer(): Promise<{
+  readonly baseUrl: string;
+  readonly prompts: string[];
+  readonly close: () => Promise<void>;
+}> {
+  const prompts: string[] = [];
+  const sockets = new Set<import("node:net").Socket>();
+  const server = createServer((request, response) => {
+    let body = "";
+    request.on("data", (chunk: Buffer) => {
+      body += chunk.toString("utf8");
+    });
+    request.on("end", () => {
+      const payload = JSON.parse(body || "{}") as { model?: string; messages?: unknown };
+      prompts.push(JSON.stringify(payload.messages ?? []));
+      const base = { id: "chatcmpl-sidekick", object: "chat.completion.chunk", created: 0 };
+      response.writeHead(200, { "Content-Type": "text/event-stream" });
+      const write = (choices: unknown[], extra: Record<string, unknown> = {}) =>
+        response.write(
+          `data: ${JSON.stringify({ ...base, model: payload.model, choices, ...extra })}\n\n`,
+        );
+      write([{ index: 0, delta: { role: "assistant", content: "Done." }, finish_reason: null }]);
+      write([{ index: 0, delta: {}, finish_reason: "stop" }], {
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      });
+      response.end("data: [DONE]\n\n");
+    });
+  });
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  const address = server.address() as AddressInfo;
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    prompts,
+    close: async () => {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    },
+  };
+}
+
+test("a lead's sequential worker briefs share one sidekick; parallel briefs do not", async () => {
+  test.setTimeout(120_000);
+  const server = await startAnsweringOpenAiServer();
+  const userDataDir = await makeUserDataDir();
+  const agentDir = join(userDataDir, "agent");
+  const workspacePath = await makeWorkspace("orchestration-sidekick-reuse");
+  await seedAgentDir(agentDir, {
+    withOpenAiAuth: false,
+    withDefaultModel: false,
+    enabledModels: ["answer-test/answer"],
+  });
+  await writeFile(
+    join(agentDir, "settings.json"),
+    `${JSON.stringify({ defaultProvider: "answer-test", defaultModel: "answer", enabledModels: ["answer-test/answer"] }, null, 2)}\n`,
+  );
+  await writeFile(
+    join(agentDir, "models.json"),
+    `${JSON.stringify(
+      {
+        providers: {
+          "answer-test": {
+            baseUrl: server.baseUrl,
+            api: "openai-completions",
+            apiKey: "unused",
+            models: [{ id: "answer" }],
+          },
+        },
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  const harness = await launchDesktop(userDataDir, {
+    agentDir,
+    initialWorkspaces: [workspacePath],
+    scrubProviderEnv: true,
+    testMode: "background",
+  });
+
+  try {
+    const window = await harness.firstWindow();
+    await createNamedThread(window, "Lead with a sidekick");
+    const parentRef = await selectedSessionRef(window);
+    // Reuse is a Lead-mode behavior: switch the thread to Lead.
+    await window.getByRole("button", { name: "Solo", exact: true }).click();
+    await expect(window.getByRole("button", { name: "Lead", exact: true })).toBeVisible();
+    const children = async () => (await getDesktopState(window)).orchestrationChildren;
+    const statusOf = async (id: unknown) =>
+      (await children()).find((entry) => entry.id === id)?.status;
+
+    const first = await runOrchestrationRuntimeTool(harness, {
+      toolName: "create_child_thread",
+      toolCallId: "sidekick-brief-1",
+      sessionRef: parentRef,
+      params: { prompt: "Do SIDEKICK-ONE work.", scope: "apps/a" },
+    });
+    const sidekickId = first.details?.childThreadId;
+    expect(first.details?.reused).toBeUndefined();
+    await expect.poll(() => statusOf(sidekickId), { timeout: 30_000 }).toBe("complete");
+
+    const second = await test.step("a sequential brief continues the idle sidekick", () =>
+      runOrchestrationRuntimeTool(harness, {
+        toolName: "create_child_thread",
+        toolCallId: "sidekick-brief-2",
+        sessionRef: parentRef,
+        params: { prompt: "Do SIDEKICK-TWO work.", scope: "apps/a" },
+      }));
+    expect(second.details).toMatchObject({
+      reused: true,
+      childThreadId: sidekickId,
+      generation: 2,
+    });
+    expect(await children()).toHaveLength(1);
+    // The second request carries the first brief: one session, one warm context.
+    await expect
+      .poll(
+        () =>
+          server.prompts.some(
+            (prompt) => prompt.includes("SIDEKICK-ONE") && prompt.includes("SIDEKICK-TWO"),
+          ),
+        { timeout: 30_000 },
+      )
+      .toBe(true);
+    await expect.poll(() => statusOf(sidekickId), { timeout: 30_000 }).toBe("complete");
+
+    const parallel = await test.step("parallel briefs produce separate children", () =>
+      Promise.all(
+        ["apps/b", "apps/c"].map((scope, index) =>
+          runOrchestrationRuntimeTool(harness, {
+            toolName: "create_child_thread",
+            toolCallId: `sidekick-parallel-${index}`,
+            sessionRef: parentRef,
+            params: { prompt: `Parallel slice ${scope}.`, scope },
+          }),
+        ),
+      ));
+    const ids = parallel.map((result) => result.details?.childThreadId);
+    expect(parallel.map((result) => result.details?.error)).toEqual([undefined, undefined]);
+    expect(new Set(ids).size).toBe(2);
+    expect(parallel.filter((result) => result.details?.reused === true)).toHaveLength(1);
+    expect(await children()).toHaveLength(2);
+  } finally {
+    await harness.close();
+    await server.close();
+  }
+});

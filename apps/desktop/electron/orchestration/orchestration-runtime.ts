@@ -33,6 +33,10 @@ export interface CreateChildThreadToolDetails {
   readonly delegationsRemaining?: number;
   readonly briefWarnings?: readonly string[];
   readonly generation?: number;
+  /** The brief continued an existing idle sidekick instead of spawning one. */
+  readonly reused?: boolean;
+  /** Why a warm sidekick was passed over (context budget), when it was. */
+  readonly reuseNote?: string;
   readonly error?: string;
 }
 
@@ -103,6 +107,9 @@ export interface OrchestrationRuntimeBridge {
       readonly toolCallId: string;
       readonly mode?: OrchestrationChildMode;
       readonly scope?: string;
+      readonly fresh?: boolean;
+      /** False when an earlier create_child_thread call of the same assistant message exists. */
+      readonly firstInTurn?: boolean;
     },
   ) => Promise<AgentToolResult<CreateChildThreadToolDetails>>;
   readonly listThreads: (
@@ -175,6 +182,11 @@ function createCreateChildThreadTool(
           description:
             'Isolation mode: "scout" is read-only (search and review, plus read-only workspace-confined shell), "worker" may edit files and run shell commands. Defaults to "worker".',
         },
+        fresh: {
+          type: "boolean",
+          description:
+            "Start a new child. Without it, a lead's worker brief continues its most recent idle worker while that child's cache is warm. Pass true for parallel or unrelated slices.",
+        },
       },
       required: ["prompt"],
     },
@@ -186,12 +198,15 @@ function createCreateChildThreadTool(
       const sourcePrompt = createChildThreadPromptFromParams(params);
       const warnings = briefWarningsFromParams(params);
       const scope = createChildThreadScopeFromParams(params);
+      const firstInTurn = isFirstCreateChildThreadCallInTurn(ctx?.sessionManager, toolCallId);
       const result = await bridge.createChildThread(ctx, {
         prompt,
         ...(sourcePrompt ? { sourcePrompt } : {}),
         toolCallId,
         mode: createChildThreadModeFromParams(params),
         ...(scope ? { scope } : {}),
+        ...(isRecord(params) && params.fresh === true ? { fresh: true } : {}),
+        ...(firstInTurn !== undefined ? { firstInTurn } : {}),
       });
       return attachBriefWarnings(result, warnings);
     },
@@ -522,6 +537,46 @@ export function createChildThreadModeFromParams(
 export function createChildThreadScopeFromParams(params: unknown): string | undefined {
   if (!isRecord(params)) return undefined;
   return optionalBriefParam(params, "scope");
+}
+
+/** Steps walked back from the session leaf to find the calling assistant message. */
+const TURN_LOOKBACK_LIMIT = 64;
+
+/**
+ * Whether `toolCallId` is the first create_child_thread call of its assistant
+ * message. Pi persists the assistant message before executing its tools, so
+ * the message sits at (or just behind tool results before) the session leaf.
+ * Undefined when the session manager cannot say (tests, older hosts).
+ */
+export function isFirstCreateChildThreadCallInTurn(
+  sessionManager: Pick<ExtensionContext["sessionManager"], "getLeafEntry" | "getEntry"> | undefined,
+  toolCallId: string,
+): boolean | undefined {
+  if (
+    typeof sessionManager?.getLeafEntry !== "function" ||
+    typeof sessionManager.getEntry !== "function"
+  ) {
+    return undefined;
+  }
+  let entry: unknown = sessionManager.getLeafEntry();
+  for (let step = 0; isRecord(entry) && step < TURN_LOOKBACK_LIMIT; step += 1) {
+    const message = entry.type === "message" && isRecord(entry.message) ? entry.message : undefined;
+    if (message?.role === "assistant") {
+      const callIds = (Array.isArray(message.content) ? message.content : []).flatMap((part) =>
+        isRecord(part) &&
+        part.type === "toolCall" &&
+        part.name === createChildThreadToolName &&
+        typeof part.id === "string"
+          ? [part.id]
+          : [],
+      );
+      const index = callIds.indexOf(toolCallId);
+      return index === -1 ? undefined : index === 0;
+    }
+    entry =
+      typeof entry.parentId === "string" ? sessionManager.getEntry(entry.parentId) : undefined;
+  }
+  return undefined;
 }
 
 export function createChildThreadModeFromToolOutput(
