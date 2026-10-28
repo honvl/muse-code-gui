@@ -16,6 +16,8 @@ export const sendMessageToThreadToolName = "send_message_to_thread";
 export const sendMessageToThreadAction = "pi_gui_send_message_to_thread";
 
 export type OrchestrationChildMode = "scout" | "worker";
+/** `worktree`: the worker runs in its own repo-local Git worktree and branch. */
+export type OrchestrationChildIsolation = "worktree";
 
 /** Mirrors MAX_CHILD_DEPTH in pi-sdk-driver child isolation; kept local to avoid a runtime cross-package import. */
 export const ORCHESTRATION_MAX_CHILD_DEPTH = 3;
@@ -37,6 +39,9 @@ export interface CreateChildThreadToolDetails {
   readonly reused?: boolean;
   /** Why a warm sidekick was passed over (context budget), when it was. */
   readonly reuseNote?: string;
+  /** Worktree child: its checkout (the session cwd) and branch. */
+  readonly worktreePath?: string;
+  readonly branch?: string;
   readonly error?: string;
 }
 
@@ -108,6 +113,7 @@ export interface OrchestrationRuntimeBridge {
       readonly mode?: OrchestrationChildMode;
       readonly scope?: string;
       readonly fresh?: boolean;
+      readonly isolation?: OrchestrationChildIsolation;
       /** False when an earlier create_child_thread call of the same assistant message exists. */
       readonly firstInTurn?: boolean;
     },
@@ -151,6 +157,7 @@ function createCreateChildThreadTool(
       "create_child_thread takes a prompt plus optional scope, constraints, success_criteria and verify blocks; scope decides the single-writer rule, so parallel workers need disjoint scopes and an unscoped worker claims the whole workspace.",
       "Mode scout is read-only: it may run read-only, workspace-confined shell commands such as rg, grep, and ls, but cannot edit, write, or run mutating/background shell. Mode worker may edit files and run shell commands. Defaults to worker.",
       "Returns the child thread id, workspace id, and session id. A thin brief still spawns; a missing scope adds a hint to the result instead of blocking.",
+      'isolation:"worktree" (workers only) runs the child in <repo>/.worktrees/<id> on a new branch child/<id> from your current HEAD. Such a worker skips the single-writer rule, so overlapping workers can run in parallel; its report names the branch and diff --stat. The host never merges or removes it: land the branch yourself.',
       "Child threads are isolated: they cannot leave the workspace, write dotenv files, run destructive shell commands, or recurse past 3 levels. A scout cannot spawn a worker.",
     ],
     parameters: {
@@ -183,6 +190,12 @@ function createCreateChildThreadTool(
           description:
             'Isolation mode: "scout" is read-only (search and review, plus read-only workspace-confined shell), "worker" may edit files and run shell commands. Defaults to "worker".',
         },
+        isolation: {
+          type: "string",
+          enum: ["worktree"],
+          description:
+            'Workers only. "worktree" runs the child in its own Git worktree and branch from your current HEAD, outside the single-writer rule; you land the branch yourself.',
+        },
         fresh: {
           type: "boolean",
           description:
@@ -207,6 +220,9 @@ function createCreateChildThreadTool(
         mode: createChildThreadModeFromParams(params),
         ...(scope ? { scope } : {}),
         ...(isRecord(params) && params.fresh === true ? { fresh: true } : {}),
+        ...(isRecord(params) && params.isolation === "worktree"
+          ? { isolation: "worktree" as const }
+          : {}),
         ...(firstInTurn !== undefined ? { firstInTurn } : {}),
       });
       return attachBriefWarnings(result, warnings);

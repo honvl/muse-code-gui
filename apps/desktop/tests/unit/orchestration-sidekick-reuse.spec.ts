@@ -97,6 +97,31 @@ test("skips busy, active, scout, foreign, stale and exhausted children", () => {
   }
 });
 
+test("worktree and shared-checkout children never take each other's briefs", () => {
+  const worktreeChild = child(1, {
+    updatedAt: agoIso(10_000),
+    worktreePath: "/repo/.worktrees/child-1",
+    branch: "child/child-1",
+    baseCommit: "0123456789ab",
+  });
+  const sharedChild = child(2, { updatedAt: agoIso(60_000) });
+  // A shared-checkout brief passes over the newer worktree child.
+  expect(decide([candidate(worktreeChild), candidate(sharedChild)])).toEqual({
+    reuse: true,
+    child: sharedChild,
+  });
+  expect(decide([candidate(worktreeChild)])).toEqual({ reuse: false, reason: "no-candidate" });
+  // A worktree brief only continues a worktree child.
+  expect(decide([candidate(worktreeChild), candidate(sharedChild)], { worktree: true })).toEqual({
+    reuse: true,
+    child: worktreeChild,
+  });
+  expect(decide([candidate(sharedChild)], { worktree: true })).toEqual({
+    reuse: false,
+    reason: "no-candidate",
+  });
+});
+
 test("the window edge is inclusive and a workspace-default lead accepts any model", () => {
   const edge = child(1, { updatedAt: agoIso(WINDOW) });
   expect(decide([candidate(edge)]).reuse).toBe(true);

@@ -1,11 +1,14 @@
 import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isChildWorktreePath } from "./child-worktree";
 
 /**
  * Worktrees pi-gui creates live under the active profile's `<userData>/worktrees`
- * or the legacy shared `~/.pi/worktrees`. Only those nest under the folder that
- * created them; any other checkout the user opens is its own sidebar folder.
+ * or the legacy shared `~/.pi/worktrees`, plus the repo-local worktrees of
+ * `isolation: "worktree"` children (`<repo>/.worktrees/<name>` on
+ * `child/<name>`). Only those nest under the folder that created them; any
+ * other checkout the user opens is its own sidebar folder.
  */
 export function appWorktreeRootMatcher(profileRoot: string): (path: string) => Promise<boolean> {
   return async (path) => {
@@ -14,7 +17,10 @@ export function appWorktreeRootMatcher(profileRoot: string): (path: string) => P
     const roots = await Promise.all(
       [profileRoot, join(homedir(), ".pi", "worktrees")].map(canonicalize),
     );
-    return roots.some((root) => isStrictlyWithin(root, candidate));
+    return (
+      roots.some((root) => isStrictlyWithin(root, candidate)) ||
+      (await isChildWorktreePath(candidate))
+    );
   };
 }
 

@@ -147,6 +147,7 @@ import {
 } from "../extensions/extension-notices";
 import { appWorktreeRootMatcher } from "../platform/worktrees/app-worktree-roots";
 import { GitWorktreeManager } from "../platform/worktrees/worktree-manager";
+import { createChildWorktree as createRepoChildWorktree } from "../platform/worktrees/child-worktree";
 import { createWorkspaceOwner, type WorkspaceOwner } from "../workspace/app-store-workspace";
 import { resolveExtensionFlags, type ResolvedExtensionFlags } from "../workspace/extension-flags";
 import {
@@ -560,6 +561,8 @@ export class DesktopAppStore {
       sessionUsageFor: (sessionRef) =>
         this.sessionState.sessionUsageBySession.get(sessionKey(sessionRef)),
       buildCreateSessionOptions: (workspaceId) => this.buildCreateSessionOptions(workspaceId),
+      createChildWorktree: (parentWorkspaceId, name) =>
+        this.createChildWorktree(parentWorkspaceId, name),
       getQueuedComposerMessages: (sessionRef) => this.getQueuedComposerMessages(sessionRef),
       seedSession: (snapshot) => {
         const key = sessionKey(snapshot.ref);
@@ -1413,6 +1416,7 @@ export class DesktopAppStore {
       readonly mode?: "scout" | "worker";
       readonly scope?: string;
       readonly fresh?: boolean;
+      readonly isolation?: "worktree";
       readonly firstInTurn?: boolean;
     },
   ) {
@@ -3972,6 +3976,28 @@ export class DesktopAppStore {
         ? { initialThinkingLevel: effectiveSettings.defaultThinkingLevel }
         : {}),
     };
+  }
+
+  /**
+   * An `isolation: "worktree"` child's checkout: a repo-local worktree and
+   * branch from the parent's HEAD, registered as a workspace and nested under
+   * its folder like an app worktree. Nothing here ever removes it.
+   */
+  private async createChildWorktree(parentWorkspaceId: string, name: string) {
+    const parent = this.workspaceRefFromState(parentWorkspaceId);
+    if (!parent) {
+      throw new Error(`Unknown workspace: ${parentWorkspaceId}`);
+    }
+    const created = await createRepoChildWorktree(parent.path, name);
+    const { workspace } = await this.driver.syncWorkspace(created.path, created.branch);
+    const rootWorkspaceId =
+      this.state.workspaces.find((entry) => entry.id === parentWorkspaceId)?.rootWorkspaceId ??
+      parentWorkspaceId;
+    const owner = this.workspaceRefFromState(rootWorkspaceId) ?? parent;
+    await this.worktreeManager
+      .refreshWorktrees(owner, { claimPath: workspace.path })
+      .catch(() => undefined);
+    return { workspace, worktree: { ...created, path: workspace.path } };
   }
 
   private async resolveExtensionFlags(

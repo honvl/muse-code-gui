@@ -65,6 +65,11 @@ export interface SidekickReuseInput {
   readonly fresh?: boolean;
   /** Another create_child_thread call of the same assistant turn came first. */
   readonly parallel?: boolean;
+  /**
+   * The brief asks for `isolation: "worktree"`. Only a worktree child takes a
+   * worktree brief, and only a shared-checkout child takes the others.
+   */
+  readonly worktree?: boolean;
   readonly maxGeneration?: number;
 }
 
@@ -82,8 +87,9 @@ export type SidekickReuseDecision =
 
 /**
  * Decide whether a worker brief continues an existing sidekick. Picks the
- * parent's most recent idle worker on the expected model, under the generation
- * limit, whose last activity is inside the window; then refuses it when its
+ * parent's most recent idle worker on the expected model and of the same
+ * isolation (worktree or shared checkout), under the generation limit, whose
+ * last activity is inside the window; then refuses it when its
  * context is over budget. Only the first call of an assistant turn may reuse,
  * so parallel slices never collapse onto one child. Pure.
  */
@@ -103,6 +109,7 @@ export function decideSidekickReuse(input: SidekickReuseInput): SidekickReuseDec
       child.parentWorkspaceId !== input.parentWorkspaceId ||
       child.parentSessionId !== input.parentSessionId ||
       child.mode === "scout" ||
+      Boolean(child.worktreePath) !== Boolean(input.worktree) ||
       !child.childSessionId ||
       (child.status !== "complete" && child.status !== "failed") ||
       candidate.busy ||

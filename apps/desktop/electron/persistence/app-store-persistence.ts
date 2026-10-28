@@ -22,7 +22,7 @@ import { decodeTaskWorkbenchTemplate, type TaskWorkbenchTemplate } from "../../c
 
 export interface PersistedUiState {
   readonly version?:
-    2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20;
+    2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21;
   readonly taskWorkbenchTemplatesBySession?: Record<string, TaskWorkbenchTemplate>;
   readonly selectedWorkspaceId?: string;
   readonly selectedSessionId?: string;
@@ -73,9 +73,12 @@ export interface PersistedUiState {
 
 /**
  * Current UI-state format. v20 adds optional `writeScopes` on orchestration
- * children; a v19 child without it claims the whole workspace.
+ * children; a v19 child without it claims the whole workspace. v21 adds the
+ * optional worktree fields (`worktreePath`, `branch`, `baseCommit`) of an
+ * `isolation: "worktree"` child; an older child has none and shares the checkout.
  */
-const UI_STATE_VERSION = 20;
+const UI_STATE_VERSION = 21;
+const CHILD_WORKTREE_KEYS = ["worktreePath", "branch", "baseCommit"] as const;
 
 export interface LegacyPersistedUiState extends PersistedUiState {
   readonly composerAttachmentsBySession?: Record<string, readonly unknown[]>;
@@ -483,6 +486,7 @@ function validateUiState(value: unknown): Record<string, unknown> {
           "mode",
           "depth",
           "writeScopes",
+          ...CHILD_WORKTREE_KEYS,
           "status",
           "latestTranscript",
           "transcript",
@@ -533,6 +537,15 @@ function validateUiState(value: unknown): Record<string, unknown> {
       );
       if (record.writeScopes !== undefined && typeof root.version === "number" && root.version < 20)
         fail(`${path}.writeScopes before v20`);
+      const worktreeKeys = CHILD_WORKTREE_KEYS.filter((key) => record[key] !== undefined);
+      for (const key of worktreeKeys)
+        if (typeof record[key] !== "string" || record[key] === "") fail(`${path}.${key}`);
+      if (worktreeKeys.length > 0) {
+        if (worktreeKeys.length !== CHILD_WORKTREE_KEYS.length) fail(`${path}.worktree fields`);
+        if (!/^[0-9a-f]{7,64}$/.test(record.baseCommit as string)) fail(`${path}.baseCommit`);
+        if (typeof root.version === "number" && root.version < 21)
+          fail(`${path}.worktree fields before v21`);
+      }
       if (record.transcript !== undefined) {
         if (!Array.isArray(record.transcript)) fail(`${path}.transcript`);
         for (const message of record.transcript as unknown[]) {
@@ -704,6 +717,11 @@ function toPersistedOrchestrationChildren(value: unknown): OrchestrationChildThr
           (token): token is string => typeof token === "string" && token !== "",
         )
       : undefined;
+    const worktreePath = stringValue(candidate.worktreePath);
+    const branch = stringValue(candidate.branch);
+    const baseCommit = stringValue(candidate.baseCommit);
+    const worktree =
+      worktreePath && branch && baseCommit ? { worktreePath, branch, baseCommit } : undefined;
     return [
       {
         id,
@@ -717,6 +735,7 @@ function toPersistedOrchestrationChildren(value: unknown): OrchestrationChildThr
         ...(mode ? { mode } : {}),
         ...(depth !== undefined ? { depth } : {}),
         ...(writeScopes ? { writeScopes } : {}),
+        ...worktree,
         status,
         latestTranscript:
           stringValue(candidate.latestTranscript) || retainedTranscript.at(-1)?.text || goal,

@@ -15,6 +15,7 @@ import type {
 } from "@pi-gui/session-driver";
 import type { PiSdkDriver } from "@pi-gui/pi-sdk-driver";
 import { analyzeWriteScope, scopesOverlap } from "./writer-scope";
+import { childWorktreeSummary, type ChildWorktree } from "../platform/worktrees/child-worktree";
 import {
   decideSidekickReuse,
   resolveSidekickReuseWindowMs,
@@ -67,6 +68,7 @@ import {
 import type {
   CreateChildThreadToolDetails,
   ListThreadsToolDetails,
+  OrchestrationChildIsolation,
   OrchestrationChildMode,
   OrchestrationThreadListEntry,
   ReadThreadToolDetails,
@@ -199,6 +201,14 @@ interface OrchestrationOwnerHost {
   sessionThinkingLevelFor(sessionRef: SessionRef): string | undefined;
   sessionUsageFor(sessionRef: SessionRef): SessionUsageSnapshot | undefined;
   buildCreateSessionOptions(workspaceId: string): Promise<CreateSessionOptions | undefined>;
+  /**
+   * Create an `isolation: "worktree"` child's repo-local worktree and branch
+   * from the parent checkout's HEAD, and register it as a workspace.
+   */
+  createChildWorktree(
+    parentWorkspaceId: string,
+    name: string,
+  ): Promise<{ readonly workspace: WorkspaceRef; readonly worktree: ChildWorktree }>;
   getQueuedComposerMessages(
     sessionRef: SessionRef,
   ): readonly import("../../contracts/desktop-state").QueuedComposerMessage[];
@@ -245,6 +255,7 @@ export interface OrchestrationOwner {
       readonly mode?: OrchestrationChildMode;
       readonly scope?: string;
       readonly fresh?: boolean;
+      readonly isolation?: OrchestrationChildIsolation;
       readonly firstInTurn?: boolean;
     },
   ): Promise<AgentToolResult<CreateChildThreadToolDetails>>;
@@ -353,12 +364,14 @@ interface SpawnChildThreadInput {
   readonly sourcePrompt?: string;
   readonly mode?: OrchestrationChildMode;
   readonly scope?: string;
+  readonly isolation?: OrchestrationChildIsolation;
   readonly sourceToolCallId?: string;
   /** Host-started background child: leave the user's selection and view alone. */
   readonly keepSelection?: boolean;
 }
 
 class WriterScopeConflictError extends Error {}
+class ChildWorktreeError extends Error {}
 
 function writerScopeConflictMessage(blockerTitle: string, scopeDisplay: string): string {
   return (
@@ -386,10 +399,9 @@ function isActiveWriterStatus(status: OrchestrationChildThreadStatus): boolean {
 /**
  * The scope a worker claimed when it was spawned (or last reused). A record
  * without one (unscoped, or saved before ui-state v20) claims the whole
- * workspace: `[]` overlaps everything. Worktree-per-worker isolation (phase B)
- * would route disjoint scopes to separate checkouts; today they share one, so
- * scopes are advisory for shared artifacts (build outputs, lockfiles, the Git
- * index).
+ * workspace: `[]` overlaps everything. Workers in the shared checkout are
+ * advisory for shared artifacts (build outputs, lockfiles, the Git index);
+ * an `isolation: "worktree"` child has its own checkout and claims nothing.
  */
 function existingChildWriteScopes(child: OrchestrationChildThread): readonly string[] {
   return child.writeScopes ?? [];
@@ -406,6 +418,7 @@ function findConflictingWorker(
       child.parentWorkspaceId === parentWorkspaceId &&
       child.parentSessionId === parentSessionId &&
       child.mode !== "scout" &&
+      !child.worktreePath &&
       isActiveWriterStatus(child.status) &&
       scopesOverlap(newScopes, existingChildWriteScopes(child)),
   );
@@ -466,15 +479,24 @@ async function createChildThreadRecord(
     const childRef = childSessionRef(existing);
     store.driver.setChildIsolation(childRef, {
       mode: existing.mode ?? "worker",
-      workspacePath: workspace.path,
+      workspacePath: store.workspaceRefFromState(existing.childWorkspaceId)?.path ?? workspace.path,
       depth: existing.depth ?? 1,
     });
     await store.ensureSessionReady(childRef);
+    const existingWorktree = childWorktreeOf(existing);
     return {
       child: existing,
-      deliveryStatus: requireInitialPromptRun(store, childRef, prompt),
+      deliveryStatus: requireInitialPromptRun(
+        store,
+        childRef,
+        existingWorktree ? withWorktreeNote(prompt, existingWorktree) : prompt,
+      ),
     };
   }
+
+  // A worktree worker gets its own checkout, so it neither takes nor waits for
+  // the shared writer slot. Scouts never write, so they never get a worktree.
+  const isolatedWorktree = mode === "worker" && input.isolation === "worktree";
 
   // Single-writer rule (phase A): one active worker per overlapping scope.
   // Scouts never block and are never blocked; an idempotent retry above
@@ -485,7 +507,7 @@ async function createChildThreadRecord(
   // (`existingChildWriteScopes`), so disjoint scopes run concurrently.
   const analyzedScope = analyzeWriteScope(input.scope, workspace.path);
   const newScopes = analyzedScope.tokens;
-  if (mode !== "scout") {
+  if (mode !== "scout" && !isolatedWorktree) {
     if (analyzedScope.outsideWorkspace.length > 0) {
       throw new WriterScopeConflictError(
         scopeOutsideWorkspaceMessage(analyzedScope.outsideWorkspace, workspace.path),
@@ -537,8 +559,21 @@ async function createChildThreadRecord(
     const thinkingLevel =
       (mode === "scout" ? store.defaultScoutThinkingLevel() : undefined) ??
       store.sidekickThinkingLevelFor(parentRef);
+    const childId = randomUUID();
+    let sessionWorkspace = workspace;
+    let worktree: ChildWorktree | undefined;
+    if (isolatedWorktree) {
+      try {
+        ({ workspace: sessionWorkspace, worktree } = await store.createChildWorktree(
+          input.parentWorkspaceId,
+          childId.slice(0, 8),
+        ));
+      } catch (error) {
+        throw new ChildWorktreeError(`Could not create the child worktree: ${errorMessage(error)}`);
+      }
+    }
     const createOptions = await store.buildCreateSessionOptions(input.parentWorkspaceId);
-    const session = await store.driver.createSession(workspace, {
+    const session = await store.driver.createSession(sessionWorkspace, {
       ...createOptions,
       ...(sidekick ? { initialModel: sidekick } : {}),
       ...(thinkingLevel ? { initialThinkingLevel: thinkingLevel } : {}),
@@ -549,11 +584,15 @@ async function createChildThreadRecord(
     await store.ensureSessionSubscription(childRef);
 
     const now = new Date().toISOString();
-    const git = await workspaceGitRef(input.parentWorkspaceId, workspace.path);
+    const git = await workspaceGitRef(sessionWorkspace.workspaceId, sessionWorkspace.path);
     const status = toOrchestrationStatus(session.status, childRef, store);
-    store.driver.setChildIsolation(childRef, { mode, workspacePath: workspace.path, depth });
+    store.driver.setChildIsolation(childRef, {
+      mode,
+      workspacePath: sessionWorkspace.path,
+      depth,
+    });
     const child: OrchestrationChildThread = {
-      id: randomUUID(),
+      id: childId,
       ...(input.sourceToolCallId ? { sourceToolCallId: input.sourceToolCallId } : {}),
       parentWorkspaceId: input.parentWorkspaceId,
       parentSessionId: input.parentSessionId,
@@ -563,7 +602,14 @@ async function createChildThreadRecord(
       goal: displayPrompt,
       mode,
       depth,
-      ...(mode === "worker" ? { writeScopes: [...newScopes] } : {}),
+      ...(mode === "worker" && !worktree ? { writeScopes: [...newScopes] } : {}),
+      ...(worktree
+        ? {
+            worktreePath: worktree.path,
+            branch: worktree.branch,
+            baseCommit: worktree.baseCommit,
+          }
+        : {}),
       status,
       latestTranscript: session.preview || displayPrompt,
       transcript: [],
@@ -613,7 +659,11 @@ async function createChildThreadRecord(
 
     let deliveryStatus: CreatedChildThreadResult["deliveryStatus"];
     try {
-      deliveryStatus = await launchInitialChildPrompt(store, childRef, prompt);
+      deliveryStatus = await launchInitialChildPrompt(
+        store,
+        childRef,
+        worktree ? withWorktreeNote(prompt, worktree) : prompt,
+      );
     } catch (error) {
       markInitialPromptDeliveryFailed(store, child.id, error);
       await store.persistUiState();
@@ -811,6 +861,7 @@ interface CreateChildThreadToolInput {
   readonly mode?: OrchestrationChildMode;
   readonly scope?: string;
   readonly fresh?: boolean;
+  readonly isolation?: OrchestrationChildIsolation;
   readonly firstInTurn?: boolean;
 }
 
@@ -913,9 +964,11 @@ async function reuseSidekickForBrief(
   const expectedModel =
     store.sidekickModelFor(parentRef) ??
     (parentChild ? store.sessionModelFor(parentRef) : undefined);
+  const worktree = input.isolation === "worktree";
   const decision = decideSidekickReuse({
     parentWorkspaceId: parentRef.workspaceId,
     parentSessionId: parentRef.sessionId,
+    worktree,
     candidates,
     nowMs,
     windowMs,
@@ -926,17 +979,19 @@ async function reuseSidekickForBrief(
   // Same writer-scope check a fresh spawn faces. The candidate is idle, so it
   // never blocks itself; on a conflict the spawn path returns the refusal.
   // An outside-workspace path is refused by the spawn path, with its message.
+  // A worktree child has its own checkout and skips the check.
   const workspacePath = store.workspaceRefFromState(parentRef.workspaceId)?.path;
   const analyzedScope = analyzeWriteScope(input.scope, workspacePath);
   const newScopes = analyzedScope.tokens;
   if (
-    analyzedScope.outsideWorkspace.length > 0 ||
-    findConflictingWorker(
-      store.orchestrationState().orchestrationChildren,
-      parentRef.workspaceId,
-      parentRef.sessionId,
-      newScopes,
-    )
+    !worktree &&
+    (analyzedScope.outsideWorkspace.length > 0 ||
+      findConflictingWorker(
+        store.orchestrationState().orchestrationChildren,
+        parentRef.workspaceId,
+        parentRef.sessionId,
+        newScopes,
+      ))
   ) {
     return {};
   }
@@ -958,7 +1013,7 @@ async function reuseSidekickForBrief(
       }),
     );
   state.claimed.add(child.id);
-  updateRecord({ status: "queued", writeScopes: [...newScopes] });
+  updateRecord({ status: "queued", ...(worktree ? {} : { writeScopes: [...newScopes] }) });
   let delivered = false;
   try {
     // The decision already weighed context usage; compactions need the
@@ -1087,6 +1142,7 @@ async function spawnChildThreadToolResult(
       ...(input.sourcePrompt ? { sourcePrompt: input.sourcePrompt } : {}),
       ...(input.mode ? { mode: input.mode } : {}),
       ...(input.scope ? { scope: input.scope } : {}),
+      ...(input.isolation ? { isolation: input.isolation } : {}),
       sourceToolCallId: input.toolCallId,
     }));
   } catch (error) {
@@ -1099,7 +1155,7 @@ async function spawnChildThreadToolResult(
         details: { ...refused.details, delegationsRemaining: 0 },
       };
     }
-    if (error instanceof WriterScopeConflictError) {
+    if (error instanceof WriterScopeConflictError || error instanceof ChildWorktreeError) {
       return createChildThreadErrorResult(displayPrompt, errorMessage(error));
     }
     throw error;
@@ -1126,6 +1182,9 @@ async function spawnChildThreadToolResult(
     ),
     generation: generationForChildThread(child.id),
     ...(reuseNote ? { reuseNote } : {}),
+    ...(child.worktreePath && child.branch
+      ? { worktreePath: child.worktreePath, branch: child.branch }
+      : {}),
   };
 
   return {
@@ -1464,7 +1523,10 @@ async function deliverMessageToThread(
   // holds the slot. Read the record by id so the status is current.
   const liveChild = target.child ? (childRecordById(store, target.child.id) ?? target.child) : undefined;
   const idleWorker =
-    liveChild && liveChild.mode !== "scout" && !isActiveWriterStatus(liveChild.status)
+    liveChild &&
+    liveChild.mode !== "scout" &&
+    !liveChild.worktreePath &&
+    !isActiveWriterStatus(liveChild.status)
       ? liveChild
       : undefined;
   if (idleWorker && !running) {
@@ -1689,6 +1751,21 @@ function parentChildRecord(
     );
 }
 
+function childWorktreeOf(child: OrchestrationChildThread): ChildWorktree | undefined {
+  return child.worktreePath && child.branch && child.baseCommit
+    ? { path: child.worktreePath, branch: child.branch, baseCommit: child.baseCommit }
+    : undefined;
+}
+
+/** Tell a worktree worker where it runs, so it commits there and leaves landing to the lead. */
+function withWorktreeNote(prompt: string, worktree: ChildWorktree): string {
+  return (
+    `Worktree: you work in your own Git worktree ${worktree.path} on branch ${worktree.branch}, ` +
+    `started from ${worktree.baseCommit.slice(0, 12)}. Commit your changes on this branch; ` +
+    `do not merge, push, or remove the worktree. The lead lands it.\n\n${prompt}`
+  );
+}
+
 function registerChildIsolation(
   store: OrchestrationOwnerHost,
   child: OrchestrationChildThread,
@@ -1831,6 +1908,7 @@ async function reportChildCompletion(
   }
   reportedRuns.set(child.id, signature);
 
+  const worktree = childWorktreeOf(child);
   const reportText = childCompletionReportText(
     child,
     status,
@@ -1838,6 +1916,7 @@ async function reportChildCompletion(
     error,
     generationForChildThread(child.id),
     store.isOrchestratorSession(parentRef),
+    worktree ? await childWorktreeSummary(worktree) : undefined,
   );
 
   // A newer run of this worker (a lead follow-up or sidekick reuse) ends any
@@ -2042,6 +2121,7 @@ export function childCompletionReportText(
   error?: string,
   generation?: number,
   isLeadParent = false,
+  worktreeLines?: readonly string[],
 ): string {
   const trimmed = finalText?.trim();
   // The child's output is the expensive half of delegation: cap what the
@@ -2064,6 +2144,9 @@ export function childCompletionReportText(
       ? []
       : [`goal: ${truncateReadThreadText(child.goal, READ_THREAD_GOAL_LIMIT)}`]),
     ...(error ? [`error: ${truncateReadThreadText(error, READ_THREAD_GOAL_LIMIT)}`] : []),
+    ...(worktreeLines && worktreeLines.length > 0
+      ? [...worktreeLines, "Landing is yours: the host never merges or removes this worktree."]
+      : []),
     "",
     body,
     "",
@@ -2929,6 +3012,7 @@ function formatCreateChildThreadResult(
     `childWorkspaceId: ${result.childWorkspaceId ?? ""}\n` +
     `childSessionId: ${result.childSessionId ?? ""}` +
     (result.mode ? `\nmode: ${result.mode}` : "") +
+    (result.worktreePath ? `\nworktree: ${result.worktreePath}\nbranch: ${result.branch}` : "") +
     (result.deliveryStatus ? `\ninitialPrompt: ${result.deliveryStatus}` : "") +
     (result.delegationsRemaining !== undefined
       ? `\ndelegationsRemaining: ${result.delegationsRemaining}`

@@ -194,6 +194,15 @@ export interface OrchestrationChildThread {
    * artifacts every checkout shares (build outputs, lockfiles, the Git index).
    */
   readonly writeScopes?: readonly string[];
+  /**
+   * Set for an `isolation: "worktree"` child: its own repo-local worktree
+   * (the child session's cwd), the branch created for it, and the parent's
+   * HEAD it started from. Such a child never takes the shared writer slot.
+   * All three are present together or not at all.
+   */
+  readonly worktreePath?: string;
+  readonly branch?: string;
+  readonly baseCommit?: string;
   readonly status: OrchestrationChildThreadStatus;
   readonly latestTranscript: string;
   readonly transcript: readonly OrchestrationChildTranscriptMessage[];
