@@ -74,3 +74,57 @@ export function preLeadModelForSoloToggle(options: {
   }
   return preLead.previous;
 }
+
+/**
+ * The thinking level a thread had right before the Solo -> Lead toggle changed
+ * it, plus the effective level pi settled on after the change. Held in memory
+ * per session key, like {@link PreLeadModel}.
+ */
+export interface PreLeadThinking {
+  readonly previous: string;
+  readonly applied: string;
+}
+
+/**
+ * Which thinking level a new thread starts with. An explicit pick wins; a
+ * lead-mode thread otherwise starts at the default lead reasoning, and a
+ * solo thread keeps the workspace default.
+ */
+export function resolveInitialThinkingForLeadThread(options: {
+  readonly explicit?: string;
+  readonly orchestratorMode?: boolean;
+  readonly defaultLeadThinkingLevel: string;
+  readonly workspaceInitialThinkingLevel?: string;
+}): string | undefined {
+  if (options.explicit) {
+    return options.explicit;
+  }
+  return options.orchestratorMode
+    ? options.defaultLeadThinkingLevel
+    : options.workspaceInitialThinkingLevel;
+}
+
+/** Thinking level the Solo -> Lead toggle applies; already-there is a no-op. */
+export function defaultLeadThinkingForLeadToggle(options: {
+  readonly defaultLeadThinkingLevel: string;
+  readonly current?: string;
+}): string | undefined {
+  return options.defaultLeadThinkingLevel === options.current
+    ? undefined
+    : options.defaultLeadThinkingLevel;
+}
+
+/**
+ * Which thinking level Lead -> Solo restores: the pre-lead level, only while
+ * the thread is still on the level the toggle applied.
+ */
+export function preLeadThinkingForSoloToggle(options: {
+  readonly preLead: PreLeadThinking | undefined;
+  readonly current?: string;
+}): string | undefined {
+  const preLead = options.preLead;
+  if (!preLead || options.current === undefined || preLead.applied !== options.current) {
+    return undefined;
+  }
+  return preLead.previous === preLead.applied ? undefined : preLead.previous;
+}

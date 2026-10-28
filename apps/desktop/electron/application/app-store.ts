@@ -75,6 +75,8 @@ import {
   type WorkspaceSessionTarget,
   isThemeMode,
   isThemePresetId,
+  DEFAULT_LEAD_THINKING_LEVEL,
+  DEFAULT_SIDEKICK_THINKING_LEVEL,
   type CreateScheduledTaskInput,
   type ScheduledTaskRecord,
   type UpdateScheduledTaskInput,
@@ -463,6 +465,7 @@ export class DesktopAppStore {
       publishSelectedTranscriptFor: (sessionRef) => this.publishSelectedTranscriptFor(sessionRef),
       clearPendingAutoTitle: (sessionRef) => this.clearPendingAutoTitle(sessionRef),
       defaultLeadModel: () => this.state.defaultLeadModel,
+      defaultLeadThinkingLevel: () => this.defaultLeadThinkingLevel(),
     });
 
     this.workspaceOwner = createWorkspaceOwner({
@@ -528,6 +531,7 @@ export class DesktopAppStore {
       sendMessageToSession: (sessionRef, text, attachments, sendOptions) =>
         this.conversationOwner.sendMessageToSession(sessionRef, text, attachments, sendOptions),
       defaultLeadModel: () => this.state.defaultLeadModel,
+      defaultLeadThinkingLevel: () => this.defaultLeadThinkingLevel(),
     });
 
     this.orchestrationOwner = createOrchestrationOwner({
@@ -559,6 +563,8 @@ export class DesktopAppStore {
       sidekickThinkingLevelFor: (sessionRef) =>
         this.sessionState.sidekickThinkingBySession.get(sessionKey(sessionRef)),
       defaultScoutThinkingLevel: () => this.state.defaultScoutThinkingLevel,
+      defaultSidekickThinkingLevel: () =>
+        this.state.defaultSidekickThinkingLevel ?? DEFAULT_SIDEKICK_THINKING_LEVEL,
       sessionModelFor: (sessionRef) => this.sessionModelFor(sessionRef),
       sessionThinkingLevelFor: (sessionRef) =>
         this.sessionState.sessionConfigBySession.get(sessionKey(sessionRef))?.thinkingLevel,
@@ -1873,6 +1879,11 @@ export class DesktopAppStore {
     return this.state.defaultScoutModel;
   }
 
+  /** Reasoning effort lead-mode threads start with and the Solo -> Lead toggle applies. */
+  private defaultLeadThinkingLevel(): ThinkingLevel {
+    return this.state.defaultLeadThinkingLevel ?? DEFAULT_LEAD_THINKING_LEVEL;
+  }
+
   async setDefaultScoutModel(selection: SessionModelSelection | null): Promise<DesktopAppState> {
     await this.initialize();
     if (isDefaultScoutModelEqual(this.state.defaultScoutModel, selection)) {
@@ -1889,16 +1900,33 @@ export class DesktopAppStore {
   }
 
   /** App-global reasoning effort for scout children; `null` falls back to the sidekick's. */
-  async setDefaultScoutThinkingLevel(
+  setDefaultScoutThinkingLevel(thinkingLevel: ThinkingLevel | null): Promise<DesktopAppState> {
+    return this.setAppThinkingDefault("defaultScoutThinkingLevel", thinkingLevel);
+  }
+
+  /** App-global reasoning effort for lead-mode threads; `null` restores the built-in high. */
+  setDefaultLeadThinkingLevel(thinkingLevel: ThinkingLevel | null): Promise<DesktopAppState> {
+    return this.setAppThinkingDefault("defaultLeadThinkingLevel", thinkingLevel);
+  }
+
+  /** App-global reasoning effort for sidekick children; `null` restores the built-in xhigh. */
+  setDefaultSidekickThinkingLevel(thinkingLevel: ThinkingLevel | null): Promise<DesktopAppState> {
+    return this.setAppThinkingDefault("defaultSidekickThinkingLevel", thinkingLevel);
+  }
+
+  /** Stored only once chosen: absent means the field's fallback, `null` clears back to it. */
+  private async setAppThinkingDefault(
+    field:
+      "defaultScoutThinkingLevel" | "defaultLeadThinkingLevel" | "defaultSidekickThinkingLevel",
     thinkingLevel: ThinkingLevel | null,
   ): Promise<DesktopAppState> {
     await this.initialize();
-    if (this.state.defaultScoutThinkingLevel === (thinkingLevel ?? undefined)) {
+    if (this.state[field] === (thinkingLevel ?? undefined)) {
       return structuredClone(this.state);
     }
     this.state = {
       ...this.state,
-      defaultScoutThinkingLevel: thinkingLevel ?? undefined,
+      [field]: thinkingLevel ?? undefined,
       lastError: undefined,
       revision: this.state.revision + 1,
     };
@@ -2558,6 +2586,8 @@ export class DesktopAppStore {
       defaultLeadModel: persisted.defaultLeadModel ?? undefined,
       defaultScoutModel: persisted.defaultScoutModel ?? undefined,
       defaultScoutThinkingLevel: persisted.defaultScoutThinkingLevel ?? undefined,
+      defaultLeadThinkingLevel: persisted.defaultLeadThinkingLevel ?? undefined,
+      defaultSidekickThinkingLevel: persisted.defaultSidekickThinkingLevel ?? undefined,
       notificationPreferences: {
         ...this.state.notificationPreferences,
         ...persisted.notificationPreferences,
@@ -4423,6 +4453,8 @@ export class DesktopAppStore {
       defaultScoutModel: this.state.defaultScoutModel ?? undefined,
       sidekickThinkingBySession: mapToRecord(this.sessionState.sidekickThinkingBySession),
       defaultScoutThinkingLevel: this.state.defaultScoutThinkingLevel ?? undefined,
+      defaultLeadThinkingLevel: this.state.defaultLeadThinkingLevel ?? undefined,
+      defaultSidekickThinkingLevel: this.state.defaultSidekickThinkingLevel ?? undefined,
     };
 
     await writePersistedUiState(this.uiStateFilePath, payload);

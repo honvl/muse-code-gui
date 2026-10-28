@@ -13,7 +13,10 @@ import type {
 import type { CreateWorktreeOptions } from "../platform/worktrees/worktree-manager";
 import type { WorkspaceOwnerHost } from "./app-store-workspace";
 import { NEW_THREAD_PLACEHOLDER_TITLE } from "../conversation/thread-title-constants";
-import { resolveInitialModelForLeadThread } from "../application/default-lead-model";
+import {
+  resolveInitialModelForLeadThread,
+  resolveInitialThinkingForLeadThread,
+} from "../application/default-lead-model";
 
 /* ── Public methods ─────────────────────────────────────── */
 
@@ -150,7 +153,14 @@ export async function startThread(
           ? { workspaceInitialModel: createOptions.initialModel }
           : {}),
       });
-      initialThinkingLevel = input.thinkingLevel ?? createOptions.initialThinkingLevel;
+      initialThinkingLevel = resolveInitialThinkingForLeadThread({
+        ...(input.thinkingLevel ? { explicit: input.thinkingLevel } : {}),
+        ...(input.orchestratorMode ? { orchestratorMode: true as const } : {}),
+        defaultLeadThinkingLevel: store.defaultLeadThinkingLevel(),
+        ...(createOptions.initialThinkingLevel
+          ? { workspaceInitialThinkingLevel: createOptions.initialThinkingLevel }
+          : {}),
+      });
       session = await store.driver.createSession(targetWorkspace, {
         ...createOptions,
         title: NEW_THREAD_PLACEHOLDER_TITLE,

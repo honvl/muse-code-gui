@@ -197,6 +197,8 @@ interface OrchestrationOwnerHost {
   defaultScoutModel(): SessionModelSelection | undefined;
   sidekickThinkingLevelFor(sessionRef: SessionRef): ThinkingLevel | undefined;
   defaultScoutThinkingLevel(): ThinkingLevel | undefined;
+  /** App-global sidekick reasoning effort, the built-in default when unset. */
+  defaultSidekickThinkingLevel(): ThinkingLevel;
   sessionModelFor(sessionRef: SessionRef): SessionModelSelection | undefined;
   sessionThinkingLevelFor(sessionRef: SessionRef): string | undefined;
   sessionUsageFor(sessionRef: SessionRef): SessionUsageSnapshot | undefined;
@@ -429,6 +431,24 @@ interface CreatedChildThreadResult {
   readonly deliveryStatus: NonNullable<CreateChildThreadToolDetails["deliveryStatus"]>;
 }
 
+/**
+ * Reasoning effort a child starts with, most specific first: Scout reasoning
+ * for a read-only sweep, then the thread's sidekick badge, then the app-global
+ * sidekick default. The workspace default never applies to children. Pi clamps
+ * the level to what the child's model supports.
+ */
+function childThinkingLevel(
+  store: OrchestrationOwnerHost,
+  mode: OrchestrationChildMode,
+  parentRef: SessionRef,
+): ThinkingLevel {
+  return (
+    (mode === "scout" ? store.defaultScoutThinkingLevel() : undefined) ??
+    store.sidekickThinkingLevelFor(parentRef) ??
+    store.defaultSidekickThinkingLevel()
+  );
+}
+
 async function createChildThreadRecord(
   store: OrchestrationOwnerHost,
   input: SpawnChildThreadInput,
@@ -555,10 +575,7 @@ async function createChildThreadRecord(
       (mode === "scout" ? store.defaultScoutModel() : undefined) ??
       store.sidekickModelFor(parentRef) ??
       (parentChild ? store.sessionModelFor(parentRef) : undefined);
-    // Reasoning effort follows the same lanes; absent keeps the workspace default.
-    const thinkingLevel =
-      (mode === "scout" ? store.defaultScoutThinkingLevel() : undefined) ??
-      store.sidekickThinkingLevelFor(parentRef);
+    const thinkingLevel = childThinkingLevel(store, mode, parentRef);
     const childId = randomUUID();
     let sessionWorkspace = workspace;
     let worktree: ChildWorktree | undefined;
@@ -576,7 +593,7 @@ async function createChildThreadRecord(
     const session = await store.driver.createSession(sessionWorkspace, {
       ...createOptions,
       ...(sidekick ? { initialModel: sidekick } : {}),
-      ...(thinkingLevel ? { initialThinkingLevel: thinkingLevel } : {}),
+      initialThinkingLevel: thinkingLevel,
       title: titleFromPrompt(displayPrompt),
     });
     const childRef = session.ref;
@@ -1024,11 +1041,11 @@ async function reuseSidekickForBrief(
       await countChildCompactions(store, childSessionRef(child)),
     );
     if (budgetNote) return { note: budgetNote };
-    // The reused sidekick takes the thread's current reasoning effort, as a
-    // fresh one would. It is applied in place, keeping the warm context that
-    // reuse is for; if that fails, a fresh child spawns with the right effort.
-    const thinkingLevel = store.sidekickThinkingLevelFor(parentRef);
-    if (thinkingLevel && thinkingLevel !== store.sessionThinkingLevelFor(childSessionRef(child))) {
+    // The reused sidekick takes the effort a fresh worker would. It is applied
+    // in place, keeping the warm context that reuse is for; pi clamps it to the
+    // child's model. If that fails, a fresh child spawns with the right effort.
+    const thinkingLevel = childThinkingLevel(store, "worker", parentRef);
+    if (thinkingLevel !== store.sessionThinkingLevelFor(childSessionRef(child))) {
       try {
         await store.driver.setSessionThinkingLevel(childSessionRef(child), thinkingLevel);
       } catch {

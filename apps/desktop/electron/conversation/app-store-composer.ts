@@ -2,9 +2,13 @@ import { randomUUID } from "node:crypto";
 import { sessionKey } from "@pi-gui/session-driver";
 import {
   defaultLeadModelForLeadToggle,
+  defaultLeadThinkingForLeadToggle,
   preLeadModelForSoloToggle,
+  preLeadThinkingForSoloToggle,
   type PreLeadModel,
+  type PreLeadThinking,
 } from "../application/default-lead-model";
+import { effectiveThinkingLevel, modelThinkingLevels } from "../../contracts/thinking-levels";
 import type {
   SessionConfig,
   SessionModelSelection,
@@ -145,6 +149,14 @@ interface ConversationOwnerHost {
   clearPendingAutoTitle(sessionRef: SessionRef): void;
   /** App-global default model for lead-mode threads, when configured. */
   defaultLeadModel(): SessionModelSelection | undefined;
+  /** Reasoning effort the Solo -> Lead toggle applies. */
+  defaultLeadThinkingLevel(): string;
+}
+
+/** What Solo -> Lead changed on a thread, so Lead -> Solo can undo it. */
+interface PreLeadState {
+  readonly model?: PreLeadModel;
+  readonly thinking?: PreLeadThinking;
 }
 
 type ComposerStore = ConversationOwnerHost;
@@ -226,9 +238,9 @@ export interface ConversationOwner {
 }
 
 export function createConversationOwner(store: ConversationOwnerHost): ConversationOwner {
-  // Pre-lead models by session key. Memory only: after a restart Lead -> Solo
-  // leaves the model alone.
-  const preLeadModels = new Map<string, PreLeadModel>();
+  // Pre-lead model and thinking level by session key. Memory only: after a
+  // restart Lead -> Solo leaves both alone.
+  const preLeadStates = new Map<string, PreLeadState>();
   return {
     updateComposerDraft: (sessionRef, draft) => updateComposerDraft(store, sessionRef, draft),
     addComposerAttachments: (sessionRef, attachments) =>
@@ -259,7 +271,7 @@ export function createConversationOwner(store: ConversationOwnerHost): Conversat
     setSessionThinkingLevel: (sessionRef, thinkingLevel) =>
       setSessionThinkingLevel(store, sessionRef, thinkingLevel),
     setSessionOrchestratorMode: (sessionRef, enabled) =>
-      setSessionOrchestratorMode(store, preLeadModels, sessionRef, enabled),
+      setSessionOrchestratorMode(store, preLeadStates, sessionRef, enabled),
     setSessionSidekickModel: (sessionRef, selection) =>
       setSessionSidekickModel(store, sessionRef, selection),
     cancelCurrentRun: (sessionRef) => cancelCurrentRun(store, sessionRef),
@@ -770,7 +782,7 @@ async function setSessionSidekickModel(
 
 async function setSessionOrchestratorMode(
   store: ComposerStore,
-  preLeadModels: Map<string, PreLeadModel>,
+  preLeadStates: Map<string, PreLeadState>,
   sessionRef: SessionRef,
   enabled: boolean,
 ): Promise<DesktopAppState> {
@@ -787,39 +799,72 @@ async function setSessionOrchestratorMode(
       config?.provider && config.modelId
         ? { provider: config.provider, modelId: config.modelId }
         : undefined;
-    // Solo -> Lead moves to the app-global default lead model. Lead -> Solo
-    // restores the pre-lead model while the thread is still on the lead model
-    // the toggle applied. Thinking level follows the model setter: the driver
-    // keeps the thread's level, clamped to what the model supports.
+    const currentThinking = config?.thinkingLevel;
+    // Solo -> Lead moves to the app-global default lead model, then to the
+    // default lead reasoning. Lead -> Solo restores the pre-lead model and
+    // level, each only while the thread is still on what the toggle applied.
+    // The driver clamps a level to what the model supports.
     let modelSwitch: SessionModelSelection | undefined;
+    let thinkingSwitch: string | undefined;
+    const wasLead = config?.orchestratorMode === true;
     if (enabled) {
-      if (config?.orchestratorMode !== true) {
+      if (!wasLead) {
         modelSwitch = defaultLeadModelForLeadToggle({
           defaultLeadModel: store.defaultLeadModel(),
           ...(current ? { current } : {}),
         });
+        thinkingSwitch = defaultLeadThinkingForLeadToggle({
+          defaultLeadThinkingLevel: store.defaultLeadThinkingLevel(),
+          ...(currentThinking ? { current: currentThinking } : {}),
+        });
       }
     } else {
+      const preLead = preLeadStates.get(key);
       modelSwitch = preLeadModelForSoloToggle({
-        preLead: preLeadModels.get(key),
+        preLead: preLead?.model,
         ...(current ? { current } : {}),
       });
-      preLeadModels.delete(key);
+      thinkingSwitch = preLeadThinkingForSoloToggle({
+        preLead: preLead?.thinking,
+        ...(currentThinking ? { current: currentThinking } : {}),
+      });
+      preLeadStates.delete(key);
     }
+    // The level pi will settle on: the driver clamps it to the target model.
+    const targetModel = modelSwitch ?? current;
+    const appliedThinking = thinkingSwitch
+      ? effectiveThinkingLevel(
+          thinkingSwitch,
+          modelThinkingLevels(
+            store.runtimeForWorkspace(sessionRef.workspaceId),
+            targetModel?.provider,
+            targetModel?.modelId,
+          ),
+        )
+      : undefined;
     // Eager first: the driver's sessionUpdated is emitted inside setSessionOrchestratorMode,
     // before it resolves. For off, the snapshot omits the mode; without the eager false
     // already in place, updateSessionConfig would preserve the old true and push it back.
     syncSessionConfig(store, key, {
       orchestratorMode: enabled,
       ...(modelSwitch ? { provider: modelSwitch.provider, modelId: modelSwitch.modelId } : {}),
+      ...(appliedThinking ? { thinkingLevel: appliedThinking } : {}),
     });
     if (enabled) {
       if (modelSwitch) {
         await store.driver.setSessionModel(sessionRef, modelSwitch);
       }
+      if (thinkingSwitch) {
+        await store.driver.setSessionThinkingLevel(sessionRef, thinkingSwitch);
+      }
       await store.driver.setSessionOrchestratorMode(sessionRef, true);
-      if (modelSwitch && current) {
-        preLeadModels.set(key, { previous: current, applied: modelSwitch });
+      if (!wasLead) {
+        preLeadStates.set(key, {
+          ...(modelSwitch && current ? { model: { previous: current, applied: modelSwitch } } : {}),
+          ...(currentThinking && appliedThinking
+            ? { thinking: { previous: currentThinking, applied: appliedThinking } }
+            : {}),
+        });
       }
     } else {
       // Mode off before the model: a model snapshot taken while the driver still
@@ -827,6 +872,9 @@ async function setSessionOrchestratorMode(
       await store.driver.setSessionOrchestratorMode(sessionRef, false);
       if (modelSwitch) {
         await store.driver.setSessionModel(sessionRef, modelSwitch);
+      }
+      if (thinkingSwitch) {
+        await store.driver.setSessionThinkingLevel(sessionRef, thinkingSwitch);
       }
     }
     store.schedulePersistUiState();

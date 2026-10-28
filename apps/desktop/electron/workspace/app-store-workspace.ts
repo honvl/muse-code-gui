@@ -81,6 +81,8 @@ export interface WorkspaceOwnerHost {
   buildCreateSessionOptions(workspaceId: string): Promise<CreateSessionOptions | undefined>;
   /** App-global default model for new lead-mode threads, when configured. */
   defaultLeadModel(): SessionModelSelection | undefined;
+  /** Reasoning effort new lead-mode threads start with when none is picked. */
+  defaultLeadThinkingLevel(): string;
   /** Check a new thread's flag choices against the flags this workspace's extensions registered. */
   resolveExtensionFlags(
     workspaceId: string,
