@@ -1,7 +1,6 @@
 # Muse Code GUI
 
-Muse Code GUI is a free, open source desktop app for the
-[pi](https://github.com/earendil-works/pi) coding agent, where coding agents work as a team:
+Muse Code GUI is a free, open source desktop app where coding agents work as a team:
 a lead agent plans and hands work to cheaper sidekick threads, while you review every change,
 run the tests in a real terminal, and ship without leaving the window.
 Website: https://muse-code-gui.vercel.app
@@ -12,9 +11,9 @@ Website: https://muse-code-gui.vercel.app
 
 Run agents in parallel threads, each in its own git worktree if you want one. Review every
 change, run the tests in a real terminal, and ship without leaving the window. Muse Code GUI is a
-desktop shell around [`@earendil-works/pi-coding-agent`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent),
-not a separate agent: sessions, models, auth and tools all run through pi itself, so anything
-you set up with the pi CLI carries over.
+desktop shell around a local AI coding-agent runtime, not a separate agent: sessions, models,
+auth and tools all run through the runtime itself, so anything you set up in the app carries
+over between threads.
 
 [![An agent in Muse Code GUI fixing a bug, running the tests, then the change open in the review tab](./apps/website/public/media/hero.gif)](./apps/website/public/media/hero.mp4)
 
@@ -88,9 +87,9 @@ the review tab, your worktrees, and tabs from desktop extensions. Each task keep
 
 ### And the rest
 
-- **Scheduled tasks.** Have pi rerun a prompt on a schedule, such as a weekly dependency
+- **Scheduled tasks.** Have the app rerun a prompt on a schedule, such as a weekly dependency
   check, while the app is open.
-- **Skills and extensions.** Turn pi skills and extensions on and off, try them from the
+- **Skills and extensions.** Turn skills and extensions on and off, try them from the
   composer, and give desktop extensions their own workbench tabs.
 - **Any provider.** Sign in with OAuth, paste an API key, or point at a custom endpoint.
   Pick the model and thinking level per thread.
@@ -102,6 +101,31 @@ the review tab, your worktrees, and tabs from desktop extensions. Each task keep
 - **Notifications.** Get told when a background thread finishes, fails or needs you.
 - **Themes.** Light and dark, plus presets like Catppuccin, Tokyo Night, Nord, Dracula,
   Gruvbox and GitHub.
+
+## Recommended pairings
+
+A strong lead plans and reviews. A fast, cheap sidekick does the reading, searching and
+editing. In our measurements this cut costs about **64%**: Claude Opus 5.5 alone cost
+**$51.56** across 3 real lead threads, versus **$18.53** with Opus 5.5 leading and
+Muse Spark 1.3 Contributor sidekicks doing the delegated work (12 child tasks; per-thread
+savings ranged 37% to 79%).
+
+- **Hard bugs and large refactors** — lead Claude Opus 5.5 · high, sidekick Muse Spark 1.3
+  Contributor · xhigh. Best for work where planning quality matters. Measured: 64% lower
+  cost than Opus alone. *(Recommended)*
+- **Long-context work on big codebases** — lead Muse Wonder · high, sidekick Muse Spark 1.3
+  Contributor · xhigh. Best for 1M-token context. Estimated: similar savings, since Wonder
+  has the same list price as Opus 5.5.
+
+List prices per 1M tokens (input / output): Opus 5.5 $4 / $20, Wonder $4 / $20,
+Spark 1.3 Contributor $0.10 / $0.20 — 40× cheaper input, 100× cheaper output.
+Set it under Settings → Default lead model and Default scout model, or with the Lead toggle
+and Sidekick picker in the composer.
+
+<sub>Measured on the maintainer's own lead threads in October 2026: 3 threads led by Claude
+Opus 5.5 with 12 child tasks on Muse Spark 1.3 Contributor. The comparison prices the
+children's tokens at the lead model's list price, assuming the lead would have used the same
+number of tokens. Your savings depend on how much work the lead delegates.</sub>
 
 ## Install
 
@@ -132,13 +156,13 @@ Building from source is for contributors; see [Development](#development).
 3. Add a workspace: a local project folder.
 4. Click **New thread**, choose **Local** or **Worktree**, and send your first prompt.
 
-Muse Code GUI reads and writes pi's own session files and settings, so threads, credentials and
-skills are shared with the pi CLI.
+Muse Code GUI keeps your sessions as plain files on disk, so threads, credentials and
+skills carry over between threads.
 
 ## Architecture
 
-Muse Code GUI is an Electron app with a tight main, preload and renderer boundary, on top of the pi
-runtime:
+Muse Code GUI is an Electron app with a tight main, preload and renderer boundary, on top of a
+local agent runtime:
 
 - **Renderer** (`apps/desktop/src`): the React UI, including the timeline, composer,
   workbench and settings. It talks to the main process only through a typed IPC surface.
@@ -146,9 +170,9 @@ runtime:
   surface. The renderer gets no broad Node access.
 - **Main** (`apps/desktop/electron`): windows, session supervision, worktrees, terminal PTYs,
   scheduled tasks, notifications and persistence.
-- **`packages/pi-sdk-driver`**: a thin adapter over `@earendil-works/pi-coding-agent`. It stays
-  close to upstream pi and does not fork or reimplement runtime behavior.
-- **Session files are the source of truth.** pi stores each session as a JSONL transcript on
+- **`packages/pi-sdk-driver`**: a thin adapter over the coding-agent runtime. It stays
+  close to upstream and does not fork or reimplement runtime behavior.
+- **Session files are the source of truth.** The runtime stores each session as a JSONL transcript on
   disk, and Muse Code GUI reads those files rather than keeping its own copy.
 
 See [docs/architecture.md](docs/architecture.md) for ownership and boundaries.
@@ -193,7 +217,7 @@ platform, and how the product media is recorded.
 
 - `apps/desktop`: the Electron app (renderer, main and preload).
 - `apps/website`: [muse-code-gui.vercel.app](https://muse-code-gui.vercel.app).
-- `packages/pi-sdk-driver`: the adapter over `@earendil-works/pi-coding-agent`.
+- `packages/pi-sdk-driver`: the adapter over the coding-agent runtime.
 - `packages/session-driver`: shared session driver types.
 - `packages/catalogs`: workspace and session catalog state.
 - `packages/extension-ui`: helpers for building desktop extension views.
