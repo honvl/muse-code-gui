@@ -15,6 +15,7 @@ import type {
   SessionExtensionDialogRecord,
   SessionExtensionNoticeRecord,
   SessionExtensionUiStateRecord,
+  ThinkingLevel,
   TranscriptMessage,
 } from "../../contracts/desktop-state";
 import type { RunMetrics } from "./app-store-timeline";
@@ -54,6 +55,8 @@ export class SessionStateMap {
   readonly pinnedAtBySession = new Map<string, string>();
   /** Flag values each thread's pi session started with; re-applied when it reopens. */
   readonly extensionFlagsBySession = new Map<string, ExtensionFlagValues>();
+  /** Reasoning effort this thread's sidekick children start with. */
+  readonly sidekickThinkingBySession = new Map<string, ThinkingLevel>();
   pinnedSessionOrder: string[] = [];
   readonly sessionErrorsBySession = new Map<string, string>();
   readonly sessionSubscriptions = new Map<string, () => void>();
@@ -103,6 +106,7 @@ export class SessionStateMap {
       this.lastInteractedAtBySession,
       this.pinnedAtBySession,
       this.extensionFlagsBySession,
+      this.sidekickThinkingBySession,
       this.sessionErrorsBySession,
       this.sessionSubscriptions,
       this.activeAssistantMessageBySession,
@@ -139,6 +143,7 @@ export class SessionStateMap {
       this.lastInteractedAtBySession,
       this.pinnedAtBySession,
       this.extensionFlagsBySession,
+      this.sidekickThinkingBySession,
     ]) {
       for (const key of map.keys()) {
         if (!activeKeys.has(key)) {
@@ -173,6 +178,7 @@ export class SessionStateMap {
     this.lastInteractedAtBySession.delete(key);
     this.pinnedAtBySession.delete(key);
     this.extensionFlagsBySession.delete(key);
+    this.sidekickThinkingBySession.delete(key);
     this.pinnedSessionOrder = this.pinnedSessionOrder.filter((entry) => entry !== key);
     this.sessionErrorsBySession.delete(key);
     this.sessionCommandsBySession.delete(key);

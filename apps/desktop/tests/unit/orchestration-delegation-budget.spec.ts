@@ -111,6 +111,7 @@ function makeHost(state: BudgetHostState) {
     updateSessionConfig: () => {},
     isOrchestratorSession: (ref: SessionRef) => ref.sessionId === parentRef.sessionId,
     sidekickModelFor: () => undefined,
+    sidekickThinkingLevelFor: () => undefined,
     sessionModelFor: () => undefined,
     buildCreateSessionOptions: async () => undefined,
     getQueuedComposerMessages: () => [],

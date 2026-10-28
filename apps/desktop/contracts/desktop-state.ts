@@ -8,6 +8,7 @@ import type {
 import type {
   ModelSettingsSnapshot,
   RuntimeCommandRecord,
+  RuntimeSettingsSnapshot,
   RuntimeSnapshot,
 } from "@pi-gui/session-driver/runtime-types";
 import type { SessionSchemaInfo } from "@pi-gui/session-driver";
@@ -25,6 +26,9 @@ export type {
   ScheduledTaskTarget,
   UpdateScheduledTaskInput,
 } from "./scheduled-tasks";
+
+/** A reasoning effort pi accepts; pi clamps it to what the chosen model supports. */
+export type ThinkingLevel = NonNullable<RuntimeSettingsSnapshot["defaultThinkingLevel"]>;
 
 export type AppView = "threads" | "new-thread" | "scheduled" | "skills" | "extensions" | "settings";
 export type WorkspaceKind = "primary" | "worktree";
@@ -379,6 +383,10 @@ export interface DesktopAppState {
   readonly defaultLeadModel?: SessionModelSelection;
   /** App-global default model for read-only scout children; absent falls back to the thread sidekick. */
   readonly defaultScoutModel?: SessionModelSelection;
+  /** Per-thread reasoning effort for sidekick children, by session key; absent keeps the workspace default. */
+  readonly sidekickThinkingBySession?: Readonly<Record<string, ThinkingLevel>>;
+  /** App-global reasoning effort for scout children; absent falls back to the thread's sidekick effort. */
+  readonly defaultScoutThinkingLevel?: ThinkingLevel;
   readonly themeMode: ThemeMode;
   readonly themePresetId: ThemePresetId;
   readonly sidebarCollapsed: boolean;

@@ -28,6 +28,7 @@ import type {
   OrchestrationChildThreadStatus,
   OrchestrationChildTranscriptMessage,
   SendChildThreadFollowUpInput,
+  ThinkingLevel,
   TimelineToolCall,
   TranscriptMessage,
 } from "../../contracts/desktop-state";
@@ -179,6 +180,8 @@ interface OrchestrationOwnerHost {
   isOrchestratorSession(sessionRef: SessionRef): boolean;
   sidekickModelFor(sessionRef: SessionRef): SessionModelSelection | undefined;
   defaultScoutModel(): SessionModelSelection | undefined;
+  sidekickThinkingLevelFor(sessionRef: SessionRef): ThinkingLevel | undefined;
+  defaultScoutThinkingLevel(): ThinkingLevel | undefined;
   sessionModelFor(sessionRef: SessionRef): SessionModelSelection | undefined;
   sessionUsageFor(sessionRef: SessionRef): SessionUsageSnapshot | undefined;
   buildCreateSessionOptions(workspaceId: string): Promise<CreateSessionOptions | undefined>;
@@ -490,10 +493,15 @@ async function createChildThreadRecord(
       (mode === "scout" ? store.defaultScoutModel() : undefined) ??
       store.sidekickModelFor(parentRef) ??
       (parentChild ? store.sessionModelFor(parentRef) : undefined);
+    // Reasoning effort follows the same lanes; absent keeps the workspace default.
+    const thinkingLevel =
+      (mode === "scout" ? store.defaultScoutThinkingLevel() : undefined) ??
+      store.sidekickThinkingLevelFor(parentRef);
     const createOptions = await store.buildCreateSessionOptions(input.parentWorkspaceId);
     const session = await store.driver.createSession(workspace, {
       ...createOptions,
       ...(sidekick ? { initialModel: sidekick } : {}),
+      ...(thinkingLevel ? { initialThinkingLevel: thinkingLevel } : {}),
       title: titleFromPrompt(displayPrompt),
     });
     const childRef = session.ref;

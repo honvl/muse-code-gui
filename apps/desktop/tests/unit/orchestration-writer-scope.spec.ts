@@ -161,6 +161,8 @@ function makeHost(state: WriterHostState) {
     isOrchestratorSession: () => false,
     sidekickModelFor: () => undefined,
     defaultScoutModel: () => undefined,
+    sidekickThinkingLevelFor: () => undefined,
+    defaultScoutThinkingLevel: () => undefined,
     sessionModelFor: () => undefined,
     buildCreateSessionOptions: async () => undefined,
     getQueuedComposerMessages: () => [],

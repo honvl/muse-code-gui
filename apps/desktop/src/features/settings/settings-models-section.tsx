@@ -5,7 +5,7 @@ import type {
   RuntimeSnapshot,
 } from "@pi-gui/session-driver/runtime-types";
 import type { SessionModelSelection } from "@pi-gui/session-driver/types";
-import type { DesktopAppState } from "../../../contracts/desktop-state";
+import type { DesktopAppState, ThinkingLevel } from "../../../contracts/desktop-state";
 import type { PiDesktopApi } from "../../../contracts/ipc";
 import { SearchIcon } from "../../ui/icons";
 import { SettingsSelect, SettingsSwitch } from "./settings-controls";
@@ -177,6 +177,83 @@ export function commitLeadModelSelection(
   return commitDefaultModelSelection(value, DEFAULT_LEAD_MODEL_THREAD_VALUE, setDefaultLeadModel);
 }
 
+/**
+ * Value of the "Sidekick's reasoning" entry: no override, so scout children
+ * start with the thread's sidekick reasoning. Never collides with a level.
+ */
+export const DEFAULT_SCOUT_THINKING_SIDEKICK_VALUE = "__sidekick-thinking";
+
+export const DEFAULT_SCOUT_THINKING_TITLE = "Scout reasoning";
+
+export const DEFAULT_SCOUT_THINKING_DESCRIPTION =
+  "Reasoning effort read-only scout children start with. Set the sidekick's next to its model in a Lead thread.";
+
+export function scoutThinkingOptions(): readonly LeadModelOption[] {
+  return [
+    { value: DEFAULT_SCOUT_THINKING_SIDEKICK_VALUE, label: "Sidekick's reasoning" },
+    ...THINKING_OPTIONS,
+  ];
+}
+
+/** Picker value reflecting the stored setting; absent means "Sidekick's reasoning". */
+export function scoutThinkingSelectValue(level: ThinkingLevel | undefined): string {
+  return level ?? DEFAULT_SCOUT_THINKING_SIDEKICK_VALUE;
+}
+
+/** The sidekick entry resolves to null, which clears the app-global scout reasoning. */
+export function resolveScoutThinkingLevel(value: string): ThinkingLevel | null {
+  return value === DEFAULT_SCOUT_THINKING_SIDEKICK_VALUE ? null : (value as ThinkingLevel);
+}
+
+/** Same bridge pattern as the default-model rows: load once, then reflect each result. */
+function useDefaultScoutThinkingLevel(seed: ThinkingLevel | undefined): {
+  readonly level: ThinkingLevel | undefined;
+  readonly onChange: (value: string) => void;
+} {
+  const [level, setLevel] = useState<ThinkingLevel | undefined>(seed);
+  useEffect(() => {
+    if (seed !== undefined) {
+      return;
+    }
+    const api = window.piApp;
+    if (!api) {
+      return;
+    }
+    let cancelled = false;
+    void api
+      .getState()
+      .then((state) => {
+        if (!cancelled) {
+          setLevel(state.defaultScoutThinkingLevel);
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          console.error("[renderer] getState failed", error);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [seed]);
+
+  const onChange = (value: string) => {
+    const api = window.piApp;
+    if (!api) {
+      return;
+    }
+    void api
+      .setDefaultScoutThinkingLevel(resolveScoutThinkingLevel(value))
+      .then((state) => {
+        setLevel(state.defaultScoutThinkingLevel);
+      })
+      .catch((error: unknown) => {
+        console.error("[renderer] setDefaultScoutThinkingLevel failed", error);
+      });
+  };
+  return { level, onChange };
+}
+
 /** Bridge wiring for one default-model picker row; module-level so the loader effect fires once. */
 interface DefaultModelRowBridge {
   readonly threadValue: string;
@@ -278,6 +355,8 @@ interface SettingsModelsSectionProps {
    * reflects each bridge result.
    */
   readonly defaultScoutModel?: SessionModelSelection;
+  /** Seed for the app-global scout reasoning; loaded from the bridge like the scout model. */
+  readonly defaultScoutThinkingLevel?: ThinkingLevel;
   readonly onSetDefaultModel: (provider: string, modelId: string) => void;
   readonly onSetThinkingLevel: (
     thinkingLevel: RuntimeSettingsSnapshot["defaultThinkingLevel"],
@@ -300,6 +379,7 @@ export function SettingsModelsSection({
   runtime,
   defaultLeadModel,
   defaultScoutModel,
+  defaultScoutThinkingLevel,
   onSetDefaultModel,
   onSetThinkingLevel,
   onSetScopedModelPatterns,
@@ -331,6 +411,7 @@ export function SettingsModelsSection({
   // Loaded from the bridge because no parent threads these values through yet.
   const leadRow = useDefaultModelSelection({ seed: defaultLeadModel, ...LEAD_MODEL_ROW });
   const scoutRow = useDefaultModelSelection({ seed: defaultScoutModel, ...SCOUT_MODEL_ROW });
+  const scoutThinking = useDefaultScoutThinkingLevel(defaultScoutThinkingLevel);
 
   const searching = query.trim().length > 0;
   const visibleAvailable = filterModels(availableModels, query);
@@ -374,6 +455,17 @@ export function SettingsModelsSection({
             options={scoutModelOptions(enabledModels)}
             value={scoutModelSelectValue(scoutRow.selection)}
             onChange={scoutRow.onChange}
+          />
+        </SettingsRow>
+        <SettingsRow
+          title={DEFAULT_SCOUT_THINKING_TITLE}
+          description={DEFAULT_SCOUT_THINKING_DESCRIPTION}
+        >
+          <SettingsSelect
+            label={DEFAULT_SCOUT_THINKING_TITLE}
+            options={scoutThinkingOptions()}
+            value={scoutThinkingSelectValue(scoutThinking.level)}
+            onChange={scoutThinking.onChange}
           />
         </SettingsRow>
         <SettingsRow title="Reasoning" description="Default reasoning effort for new threads.">

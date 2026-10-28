@@ -2,7 +2,7 @@ import { useCallback, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import type { SessionModelSelection, SessionRef } from "@pi-gui/session-driver/types";
 import type { RuntimeSnapshot } from "@pi-gui/session-driver/runtime-types";
-import type { DesktopAppState } from "../../../../contracts/desktop-state";
+import type { DesktopAppState, ThinkingLevel } from "../../../../contracts/desktop-state";
 import type { PiDesktopApi } from "../../../../contracts/ipc";
 import { updateSnapshot } from "../../../app/desktop-app-state";
 
@@ -18,8 +18,8 @@ interface UseSidekickSelectionParams extends LeadModeHookParams {
 
 /**
  * Owns the lead-mode sidekick model: the current `config.sidekick` selection
- * plus a setter that applies immediately through the session bridge
- * (`null` clears back to the workspace default).
+ * plus setters for it and its reasoning effort that apply immediately through
+ * the session bridge (`null` clears back to the workspace default).
  */
 export function useSidekickSelection(params: UseSidekickSelectionParams) {
   const { api, setSnapshot, target, sidekick } = params;
@@ -42,7 +42,24 @@ export function useSidekickSelection(params: UseSidekickSelectionParams) {
     },
     [api, setSnapshot, target],
   );
-  return { sidekick, setSidekick, pending };
+  const setSidekickThinkingLevel = useCallback(
+    (level: string | null) => {
+      if (!api || !target) {
+        return;
+      }
+      void updateSnapshot(setSnapshot, () =>
+        api.setSessionSidekickThinkingLevel(
+          target.workspaceId,
+          target.sessionId,
+          level as ThinkingLevel | null,
+        ),
+      ).catch((error: unknown) => {
+        console.error("[renderer] updateSnapshot failed", error);
+      });
+    },
+    [api, setSnapshot, target],
+  );
+  return { sidekick, setSidekick, setSidekickThinkingLevel, pending };
 }
 
 interface UseSessionConfigControlsParams extends LeadModeHookParams {

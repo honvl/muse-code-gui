@@ -229,7 +229,7 @@ export default function App() {
     flushComposerDraft,
     flushComposerDraftAsync,
   } = useComposerDraftSync({ api, snapshot, selectedSession: workbenchTarget });
-  const { sidekick, setSidekick } = useSidekickSelection({
+  const { sidekick, setSidekick, setSidekickThinkingLevel } = useSidekickSelection({
     api,
     setSnapshot,
     target: workbenchTarget,
@@ -1240,6 +1240,8 @@ export default function App() {
                 sidekickModelId={sidekick?.modelId}
                 onSetSidekickModel={(provider, modelId) => setSidekick({ provider, modelId })}
                 onClearSidekickModel={() => setSidekick(null)}
+                sidekickThinkingLevel={snapshot.sidekickThinkingBySession?.[selectedSessionKey]}
+                onSetSidekickThinkingLevel={setSidekickThinkingLevel}
                 modelOnboarding={selectedSessionModelOnboarding}
                 onOpenModelSettings={(section) =>
                   openSettings(selectedWorkspace?.rootWorkspaceId ?? selectedWorkspace?.id, section)

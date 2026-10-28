@@ -4,7 +4,11 @@ import type {
   SessionModelSelection,
   SessionRef,
 } from "@pi-gui/session-driver";
-import type { OrchestrationChildThread, TranscriptMessage } from "../../contracts/desktop-state";
+import type {
+  OrchestrationChildThread,
+  ThinkingLevel,
+  TranscriptMessage,
+} from "../../contracts/desktop-state";
 import { createOrchestrationOwner } from "../../electron/orchestration/app-store-orchestration";
 
 const createdAt = "2026-10-27T20:00:00.000Z";
@@ -31,6 +35,8 @@ function makeHost(options: {
   parentSessionId?: string;
   parentIsChild?: boolean;
   scoutModel?: SessionModelSelection;
+  sidekickThinkingMap?: Record<string, ThinkingLevel>;
+  scoutThinkingLevel?: ThinkingLevel;
 }) {
   const parentSessionId = options.parentSessionId ?? "parent";
   const createSessionCalls: CreateSessionCall[] = [];
@@ -104,6 +110,8 @@ function makeHost(options: {
     isOrchestratorSession: () => false,
     sidekickModelFor: (ref: SessionRef) => options.sidekickMap[ref.sessionId],
     defaultScoutModel: () => options.scoutModel,
+    sidekickThinkingLevelFor: (ref: SessionRef) => options.sidekickThinkingMap?.[ref.sessionId],
+    defaultScoutThinkingLevel: () => options.scoutThinkingLevel,
     sessionModelFor: (ref: SessionRef) => options.sessionModelMap?.[ref.sessionId],
     buildCreateSessionOptions: async () => options.createOptions,
     getQueuedComposerMessages: () => [],
@@ -238,4 +246,71 @@ test("a non-child spawner does not pass its own model down", async () => {
 
   expect(createSessionCalls).toHaveLength(1);
   expect(createSessionCalls[0]?.options.initialModel).toEqual(workspaceDefault);
+});
+
+test("a sidekick reasoning effort becomes the child's initial thinking level", async () => {
+  const { owner, createSessionCalls } = makeHost({
+    sidekickMap: { parent: sidekick },
+    sidekickThinkingMap: { parent: "low" },
+    createOptions: { initialModel: workspaceDefault, initialThinkingLevel: "high" },
+  });
+
+  await owner.createChildThreadToolResult(
+    { workspaceId: "ws", sessionId: "parent" },
+    { prompt, toolCallId: "call-sidekick-thinking", mode: "worker" },
+  );
+
+  expect(createSessionCalls[0]?.options.initialModel).toEqual(sidekick);
+  expect(createSessionCalls[0]?.options.initialThinkingLevel).toBe("low");
+});
+
+test("a scout uses the scout reasoning effort and a worker ignores it", async () => {
+  const { owner, createSessionCalls } = makeHost({
+    sidekickMap: { parent: sidekick },
+    scoutModel,
+    sidekickThinkingMap: { parent: "medium" },
+    scoutThinkingLevel: "minimal",
+    createOptions: { initialModel: workspaceDefault },
+  });
+
+  await owner.createChildThreadToolResult(
+    { workspaceId: "ws", sessionId: "parent" },
+    { prompt, toolCallId: "call-scout-thinking", mode: "scout" },
+  );
+  await owner.createChildThreadToolResult(
+    { workspaceId: "ws", sessionId: "parent" },
+    { prompt, toolCallId: "call-worker-thinking", mode: "worker" },
+  );
+
+  expect(createSessionCalls[0]?.options.initialThinkingLevel).toBe("minimal");
+  expect(createSessionCalls[1]?.options.initialThinkingLevel).toBe("medium");
+});
+
+test("a scout falls back to the sidekick reasoning effort when no scout effort is set", async () => {
+  const { owner, createSessionCalls } = makeHost({
+    sidekickMap: {},
+    sidekickThinkingMap: { parent: "xhigh" },
+    createOptions: undefined,
+  });
+
+  await owner.createChildThreadToolResult(
+    { workspaceId: "ws", sessionId: "parent" },
+    { prompt, toolCallId: "call-scout-thinking-fallback", mode: "scout" },
+  );
+
+  expect(createSessionCalls[0]?.options.initialThinkingLevel).toBe("xhigh");
+});
+
+test("no reasoning override keeps the workspace default thinking level", async () => {
+  const { owner, createSessionCalls } = makeHost({
+    sidekickMap: { parent: sidekick },
+    createOptions: { initialModel: workspaceDefault, initialThinkingLevel: "high" },
+  });
+
+  await owner.createChildThreadToolResult(
+    { workspaceId: "ws", sessionId: "parent" },
+    { prompt, toolCallId: "call-thinking-default", mode: "scout" },
+  );
+
+  expect(createSessionCalls[0]?.options.initialThinkingLevel).toBe("high");
 });

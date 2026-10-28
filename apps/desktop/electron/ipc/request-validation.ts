@@ -202,6 +202,14 @@ export function expectOptionalThinkingLevel(
   return value === undefined ? undefined : expectThinkingLevel(value, name);
 }
 
+/** `null` clears a per-lane reasoning override back to its fallback. */
+export function expectNullableThinkingLevel(
+  value: unknown,
+  name = "thinkingLevel",
+): NonNullable<RuntimeSettingsSnapshot["defaultThinkingLevel"]> | null {
+  return value === null ? null : expectThinkingLevel(value, name);
+}
+
 export function expectCreateWorktreeInput(value: unknown): CreateWorktreeInput {
   const record = expectRecord(value, "input");
   return {

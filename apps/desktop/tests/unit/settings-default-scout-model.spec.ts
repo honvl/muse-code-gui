@@ -7,9 +7,13 @@ import {
   DEFAULT_SCOUT_MODEL_DESCRIPTION,
   DEFAULT_SCOUT_MODEL_THREAD_VALUE,
   DEFAULT_SCOUT_MODEL_TITLE,
+  DEFAULT_SCOUT_THINKING_SIDEKICK_VALUE,
   resolveScoutModelSelection,
+  resolveScoutThinkingLevel,
   scoutModelOptions,
   scoutModelSelectValue,
+  scoutThinkingOptions,
+  scoutThinkingSelectValue,
 } from "../../src/features/settings/settings-models-section";
 
 function modelRecord(
@@ -100,4 +104,17 @@ test("the helper text says workers keep the thread's sidekick model", () => {
   expect(DEFAULT_SCOUT_MODEL_DESCRIPTION).toContain(
     "Workers keep using the thread's sidekick model",
   );
+});
+
+test("scout reasoning row defaults to the sidekick's reasoning and maps levels through", () => {
+  const options = scoutThinkingOptions();
+  expect(options[0]).toEqual({
+    value: DEFAULT_SCOUT_THINKING_SIDEKICK_VALUE,
+    label: "Sidekick's reasoning",
+  });
+  expect(options.map((option) => option.value)).toContain("low");
+  expect(scoutThinkingSelectValue(undefined)).toBe(DEFAULT_SCOUT_THINKING_SIDEKICK_VALUE);
+  expect(scoutThinkingSelectValue("high")).toBe("high");
+  expect(resolveScoutThinkingLevel(DEFAULT_SCOUT_THINKING_SIDEKICK_VALUE)).toBeNull();
+  expect(resolveScoutThinkingLevel("low")).toBe("low");
 });

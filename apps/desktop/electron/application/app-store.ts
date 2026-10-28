@@ -66,6 +66,7 @@ import {
   type StartupDiagnostic,
   type ThemeMode,
   type ThemePresetId,
+  type ThinkingLevel,
   type ThreadGrouping,
   type TranscriptMessage,
   type WorkspaceRecord,
@@ -525,6 +526,9 @@ export class DesktopAppStore {
       isOrchestratorSession: (sessionRef) => this.isOrchestratorSession(sessionRef),
       sidekickModelFor: (sessionRef) => this.sidekickModelFor(sessionRef),
       defaultScoutModel: () => this.defaultScoutModel(),
+      sidekickThinkingLevelFor: (sessionRef) =>
+        this.sessionState.sidekickThinkingBySession.get(sessionKey(sessionRef)),
+      defaultScoutThinkingLevel: () => this.state.defaultScoutThinkingLevel,
       sessionModelFor: (sessionRef) => this.sessionModelFor(sessionRef),
       sessionUsageFor: (sessionRef) =>
         this.sessionState.sessionUsageBySession.get(sessionKey(sessionRef)),
@@ -1755,6 +1759,28 @@ export class DesktopAppStore {
     return this.conversationOwner.setSessionSidekickModel(sessionRef, selection);
   }
 
+  /** Reasoning effort this thread's sidekick children start with; `null` keeps the workspace default. */
+  async setSessionSidekickThinkingLevel(
+    sessionRef: SessionRef,
+    thinkingLevel: ThinkingLevel | null,
+  ): Promise<DesktopAppState> {
+    await this.initialize();
+    const key = sessionKey(sessionRef);
+    if (this.sessionState.sidekickThinkingBySession.get(key) === (thinkingLevel ?? undefined)) {
+      return structuredClone(this.state);
+    }
+    if (thinkingLevel) this.sessionState.sidekickThinkingBySession.set(key, thinkingLevel);
+    else this.sessionState.sidekickThinkingBySession.delete(key);
+    this.state = {
+      ...this.state,
+      sidekickThinkingBySession: mapToRecord(this.sessionState.sidekickThinkingBySession),
+      lastError: undefined,
+      revision: this.state.revision + 1,
+    };
+    await this.persistUiState();
+    return this.emit();
+  }
+
   async setDefaultLeadModel(selection: SessionModelSelection | null): Promise<DesktopAppState> {
     await this.initialize();
     const next = selection ?? undefined;
@@ -1789,6 +1815,24 @@ export class DesktopAppStore {
     this.state = {
       ...this.state,
       defaultScoutModel: selection ?? undefined,
+      lastError: undefined,
+      revision: this.state.revision + 1,
+    };
+    await this.persistUiState();
+    return this.emit();
+  }
+
+  /** App-global reasoning effort for scout children; `null` falls back to the sidekick's. */
+  async setDefaultScoutThinkingLevel(
+    thinkingLevel: ThinkingLevel | null,
+  ): Promise<DesktopAppState> {
+    await this.initialize();
+    if (this.state.defaultScoutThinkingLevel === (thinkingLevel ?? undefined)) {
+      return structuredClone(this.state);
+    }
+    this.state = {
+      ...this.state,
+      defaultScoutThinkingLevel: thinkingLevel ?? undefined,
       lastError: undefined,
       revision: this.state.revision + 1,
     };
@@ -2447,6 +2491,7 @@ export class DesktopAppStore {
       globalModelSettings: persisted.appGlobalModelSettings ?? this.state.globalModelSettings,
       defaultLeadModel: persisted.defaultLeadModel ?? undefined,
       defaultScoutModel: persisted.defaultScoutModel ?? undefined,
+      defaultScoutThinkingLevel: persisted.defaultScoutThinkingLevel ?? undefined,
       notificationPreferences: {
         ...this.state.notificationPreferences,
         ...persisted.notificationPreferences,
@@ -2499,6 +2544,10 @@ export class DesktopAppStore {
     this.sessionState.extensionFlagsBySession.clear();
     for (const [key, flags] of Object.entries(persisted.extensionFlagsBySession ?? {})) {
       this.sessionState.extensionFlagsBySession.set(key, flags);
+    }
+    this.sessionState.sidekickThinkingBySession.clear();
+    for (const [key, level] of Object.entries(persisted.sidekickThinkingBySession ?? {})) {
+      this.sessionState.sidekickThinkingBySession.set(key, level);
     }
     for (const [key, enabled] of Object.entries(persisted.orchestratorModeBySession ?? {})) {
       if (enabled) {
@@ -2771,6 +2820,7 @@ export class DesktopAppStore {
         ),
         extensionFlagsByWorkspace: mapToRecord(this.extensionFlagsByWorkspace),
         extensionFlagsBySession: mapToRecord(this.sessionState.extensionFlagsBySession),
+        sidekickThinkingBySession: mapToRecord(this.sessionState.sidekickThinkingBySession),
         orchestrationChildren: this.state.orchestrationChildren,
         lastViewedAtBySession: mapToRecord(this.sessionState.lastViewedAtBySession),
         lastInteractedAtBySession: mapToRecord(this.sessionState.lastInteractedAtBySession),
@@ -4283,6 +4333,8 @@ export class DesktopAppStore {
       sidekickBySession: this.sidekickRecord(),
       defaultLeadModel: this.state.defaultLeadModel ?? undefined,
       defaultScoutModel: this.state.defaultScoutModel ?? undefined,
+      sidekickThinkingBySession: mapToRecord(this.sessionState.sidekickThinkingBySession),
+      defaultScoutThinkingLevel: this.state.defaultScoutThinkingLevel ?? undefined,
     };
 
     await writePersistedUiState(this.uiStateFilePath, payload);

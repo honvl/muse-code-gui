@@ -64,6 +64,7 @@ import type {
   SelectedTranscriptRecord,
   StartThreadInput,
   ThemePresetId,
+  ThinkingLevel,
   ThreadGrouping,
   WorkspaceSessionTarget,
   CreateScheduledTaskInput,
@@ -355,10 +356,26 @@ contextBridge.exposeInMainWorld("piApp", {
       sessionId,
       selection,
     ) as Promise<DesktopAppState>,
+  setSessionSidekickThinkingLevel: (
+    workspaceId: string,
+    sessionId: string,
+    thinkingLevel: ThinkingLevel | null,
+  ) =>
+    ipcRenderer.invoke(
+      desktopIpc.setSessionSidekickThinkingLevel,
+      workspaceId,
+      sessionId,
+      thinkingLevel,
+    ) as Promise<DesktopAppState>,
   setDefaultLeadModel: (selection: SessionModelSelection | null) =>
     ipcRenderer.invoke(desktopIpc.setDefaultLeadModel, selection) as Promise<DesktopAppState>,
   setDefaultScoutModel: (selection: SessionModelSelection | null) =>
     ipcRenderer.invoke(desktopIpc.setDefaultScoutModel, selection) as Promise<DesktopAppState>,
+  setDefaultScoutThinkingLevel: (thinkingLevel: ThinkingLevel | null) =>
+    ipcRenderer.invoke(
+      desktopIpc.setDefaultScoutThinkingLevel,
+      thinkingLevel,
+    ) as Promise<DesktopAppState>,
   loginProvider: (workspaceId: string, providerId: string) =>
     ipcRenderer.invoke(
       desktopIpc.loginProvider,

@@ -4,7 +4,17 @@ import {
   isDefaultScoutModelEqual,
   type DefaultScoutModel,
 } from "../../electron/application/default-scout-model";
-import { expectDefaultScoutModelSelection } from "../../electron/ipc/request-validation";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  expectDefaultScoutModelSelection,
+  expectNullableThinkingLevel,
+} from "../../electron/ipc/request-validation";
+import {
+  readPersistedUiState,
+  writePersistedUiState,
+} from "../../electron/persistence/app-store-persistence";
 
 const scout: SessionModelSelection = {
   provider: "acme",
@@ -43,3 +53,47 @@ test("set and cleared states compare unequal", () => {
     false,
   );
 });
+
+test("scout and sidekick reasoning validation clears on null and rejects unknown levels", () => {
+  expect(expectNullableThinkingLevel(null)).toBeNull();
+  expect(expectNullableThinkingLevel("minimal")).toBe("minimal");
+  expect(expectNullableThinkingLevel("max")).toBe("max");
+  expect(() => expectNullableThinkingLevel(undefined)).toThrow();
+  expect(() => expectNullableThinkingLevel("extreme")).toThrow();
+});
+
+test("scout and sidekick reasoning round-trip through ui-state", async () => {
+  const path = join(await mkdtemp(join(tmpdir(), "ui-state-child-thinking-")), "ui-state.json");
+  await writePersistedUiState(path, {
+    defaultScoutThinkingLevel: "low",
+    sidekickThinkingBySession: { "ws:lead": "medium" },
+  });
+  const decoded = await readPersistedUiState(path);
+  expect(decoded.defaultScoutThinkingLevel).toBe("low");
+  expect(decoded.sidekickThinkingBySession).toEqual({ "ws:lead": "medium" });
+  const written = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+  expect(written.version).toBe(19);
+});
+
+test("ui-state without reasoning overrides loads as absent", async () => {
+  const path = join(await mkdtemp(join(tmpdir(), "ui-state-no-child-thinking-")), "ui-state.json");
+  await writeFile(path, JSON.stringify({ version: 19, composerDraft: "kept" }));
+  const decoded = await readPersistedUiState(path);
+  expect(decoded.defaultScoutThinkingLevel).toBeUndefined();
+  expect(decoded.sidekickThinkingBySession).toBeUndefined();
+});
+
+for (const invalid of [
+  { version: 19, defaultScoutThinkingLevel: "extreme" },
+  { version: 19, defaultScoutThinkingLevel: 3 },
+  { version: 19, sidekickThinkingBySession: { "ws:lead": "extreme" } },
+  { version: 19, sidekickThinkingBySession: "low" },
+]) {
+  test(`preserves ui-state with invalid reasoning ${JSON.stringify(invalid)}`, async () => {
+    const path = join(await mkdtemp(join(tmpdir(), "ui-state-bad-thinking-")), "ui-state.json");
+    const original = JSON.stringify(invalid);
+    await writeFile(path, original);
+    await expect(readPersistedUiState(path)).rejects.toThrow(/Invalid ui-state/);
+    expect(await readFile(path, "utf8")).toBe(original);
+  });
+}

@@ -50,6 +50,7 @@ import {
   expectOptionalDeliverOptions,
   expectOptionalNonNegativeInteger,
   expectOptionalString,
+  expectNullableThinkingLevel,
   expectOptionalThinkingLevel,
   expectRemoveWorktreeInput,
   expectSendChildThreadFollowUpInput,
@@ -132,6 +133,7 @@ type ConversationOwner = Pick<
   | "setSessionThinkingLevel"
   | "setSessionOrchestratorMode"
   | "setSessionSidekickModel"
+  | "setSessionSidekickThinkingLevel"
   | "withError"
 >;
 
@@ -152,6 +154,7 @@ type SettingsOwner = Pick<
   | "setDefaultModel"
   | "setDefaultLeadModel"
   | "setDefaultScoutModel"
+  | "setDefaultScoutThinkingLevel"
   | "setDefaultThinkingLevel"
   | "loginProvider"
   | "logoutProvider"
@@ -485,6 +488,11 @@ export function registerDesktopIpc({
       owners.settings.setDefaultScoutModel(expectDefaultScoutModelSelection(rawSelection)),
     ),
   );
+  ipcMain.handle(desktopIpc.setDefaultScoutThinkingLevel, (event, thinkingLevel: unknown) =>
+    run(event, () =>
+      owners.settings.setDefaultScoutThinkingLevel(expectNullableThinkingLevel(thinkingLevel)),
+    ),
+  );
   ipcMain.handle(
     desktopIpc.setSessionThinkingLevel,
     (event, rawWorkspaceId: unknown, rawSessionId: unknown, thinkingLevel: unknown) =>
@@ -521,6 +529,19 @@ export function registerDesktopIpc({
             sessionId: expectNonEmptyString(rawSessionId, "sessionId"),
           },
           expectSessionSidekickSelection(rawSelection),
+        ),
+      ),
+  );
+  ipcMain.handle(
+    desktopIpc.setSessionSidekickThinkingLevel,
+    (event, rawWorkspaceId: unknown, rawSessionId: unknown, thinkingLevel: unknown) =>
+      run(event, () =>
+        owners.conversation.setSessionSidekickThinkingLevel(
+          {
+            workspaceId: expectNonEmptyString(rawWorkspaceId, "workspaceId"),
+            sessionId: expectNonEmptyString(rawSessionId, "sessionId"),
+          },
+          expectNullableThinkingLevel(thinkingLevel),
         ),
       ),
   );

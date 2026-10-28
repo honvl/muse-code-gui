@@ -43,6 +43,7 @@ import type {
   SelectedTranscriptRecord,
   StartThreadInput,
   ThemePresetId,
+  ThinkingLevel,
   ThreadGrouping,
   WorkspaceSessionTarget,
   CreateScheduledTaskInput,
@@ -163,8 +164,10 @@ export const desktopIpc = {
   setSessionThinkingLevel: "pi-gui:set-session-thinking-level",
   setSessionOrchestratorMode: "pi-gui:set-session-orchestrator-mode",
   setSessionSidekickModel: "pi-gui:set-session-sidekick-model",
+  setSessionSidekickThinkingLevel: "pi-gui:set-session-sidekick-thinking-level",
   setDefaultLeadModel: "pi-gui:set-default-lead-model",
   setDefaultScoutModel: "pi-gui:set-default-scout-model",
+  setDefaultScoutThinkingLevel: "pi-gui:set-default-scout-thinking-level",
   loginProvider: "pi-gui:login-provider",
   logoutProvider: "pi-gui:logout-provider",
   setProviderApiKey: "pi-gui:set-provider-api-key",
@@ -784,8 +787,16 @@ export interface PiDesktopApi {
     sessionId: string,
     selection: SessionModelSelection | null,
   ): Promise<DesktopAppState>;
+  /** `null` clears back to the workspace default reasoning effort. */
+  setSessionSidekickThinkingLevel(
+    workspaceId: string,
+    sessionId: string,
+    thinkingLevel: ThinkingLevel | null,
+  ): Promise<DesktopAppState>;
   setDefaultLeadModel(selection: SessionModelSelection | null): Promise<DesktopAppState>;
   setDefaultScoutModel(selection: SessionModelSelection | null): Promise<DesktopAppState>;
+  /** `null` clears back to the thread's sidekick reasoning effort. */
+  setDefaultScoutThinkingLevel(thinkingLevel: ThinkingLevel | null): Promise<DesktopAppState>;
   loginProvider(workspaceId: string, providerId: string): Promise<DesktopAppState>;
   logoutProvider(workspaceId: string, providerId: string): Promise<DesktopAppState>;
   setProviderApiKey(

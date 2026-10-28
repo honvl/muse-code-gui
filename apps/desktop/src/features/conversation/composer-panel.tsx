@@ -59,6 +59,7 @@ interface ComposerPanelProps {
   readonly orchestratorMode?: boolean;
   readonly sidekickProvider?: string | undefined;
   readonly sidekickModelId?: string | undefined;
+  readonly sidekickThinkingLevel?: string | undefined;
   readonly slashSections: readonly ComposerSlashCommandSection[];
   readonly slashOptions: readonly ComposerSlashOption[];
   readonly selectedSlashCommand?: ComposerSlashCommand;
@@ -83,6 +84,7 @@ interface ComposerPanelProps {
   readonly onToggleOrchestrator?: (enabled: boolean) => void;
   readonly onSetSidekickModel?: (provider: string, modelId: string) => void;
   readonly onClearSidekickModel?: () => void;
+  readonly onSetSidekickThinkingLevel?: (level: string | null) => void;
   readonly modelOnboarding: ModelOnboardingState;
   readonly onOpenModelSettings: (section: ModelOnboardingSettingsSection) => void;
   readonly onSubmit: () => void;
@@ -146,8 +148,10 @@ export function ComposerPanel({
   onToggleOrchestrator,
   sidekickProvider,
   sidekickModelId,
+  sidekickThinkingLevel,
   onSetSidekickModel,
   onClearSidekickModel,
+  onSetSidekickThinkingLevel,
   modelOnboarding,
   onOpenModelSettings,
   onSubmit,
@@ -245,6 +249,7 @@ export function ComposerPanel({
                     orchestratorMode={orchestratorMode}
                     sidekickProvider={sidekickProvider}
                     sidekickModelId={sidekickModelId}
+                    sidekickThinkingLevel={sidekickThinkingLevel}
                     disabled={selectedSession.status === "running"}
                     unselectedModelLabel={modelOnboarding.unselectedModelLabel}
                     emptyModelTitle={modelOnboarding.emptyModelTitle}
@@ -253,6 +258,7 @@ export function ComposerPanel({
                     onToggleOrchestrator={onToggleOrchestrator}
                     onSetSidekickModel={onSetSidekickModel}
                     onClearSidekickModel={onClearSidekickModel}
+                    onSetSidekickThinkingLevel={onSetSidekickThinkingLevel}
                   />
                   <ExtensionFlagsBadge values={extensionFlags} />
                   <ContextMeter usage={usage} />

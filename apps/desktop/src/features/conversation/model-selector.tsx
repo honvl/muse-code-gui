@@ -4,6 +4,7 @@ import {
   buildModelOptions,
   filterThinkingOptionsForModelLevels,
   MODEL_OPTIONS_EMPTY_TITLE,
+  THINKING_OPTIONS,
   type ComposerModelOption,
 } from "./composer-commands";
 
@@ -15,6 +16,7 @@ interface ModelSelectorProps {
   readonly orchestratorMode?: boolean;
   readonly sidekickProvider?: string | undefined;
   readonly sidekickModelId?: string | undefined;
+  readonly sidekickThinkingLevel?: string | undefined;
   readonly disabled?: boolean;
   readonly dropdownPlacement?: "above" | "below";
   readonly showEmptyModelControl?: boolean;
@@ -26,9 +28,11 @@ interface ModelSelectorProps {
   readonly onToggleOrchestrator?: (enabled: boolean) => void;
   readonly onSetSidekickModel?: (provider: string, modelId: string) => void;
   readonly onClearSidekickModel?: () => void;
+  /** `null` clears the sidekick's reasoning back to the workspace default. */
+  readonly onSetSidekickThinkingLevel?: (level: string | null) => void;
 }
 
-type OpenDropdown = "none" | "model" | "thinking" | "sidekick";
+type OpenDropdown = "none" | "model" | "thinking" | "sidekick" | "sidekick-thinking";
 
 export function ModelSelector({
   runtime,
@@ -38,6 +42,7 @@ export function ModelSelector({
   orchestratorMode,
   sidekickProvider,
   sidekickModelId,
+  sidekickThinkingLevel,
   disabled,
   dropdownPlacement = "above",
   showEmptyModelControl = false,
@@ -49,6 +54,7 @@ export function ModelSelector({
   onToggleOrchestrator,
   onSetSidekickModel,
   onClearSidekickModel,
+  onSetSidekickThinkingLevel,
 }: ModelSelectorProps) {
   const [open, setOpen] = useState<OpenDropdown>("none");
   const [modelFilter, setModelFilter] = useState("");
@@ -75,6 +81,13 @@ export function ModelSelector({
   const visibleThinkingOptions = useMemo(
     () => filterThinkingOptionsForModelLevels(currentModelThinkingLevels),
     [currentModelThinkingLevels],
+  );
+  const sidekickModelThinkingLevels = runtime?.models.find(
+    (model) => model.providerId === sidekickProvider && model.modelId === sidekickModelId,
+  )?.thinkingLevels;
+  const visibleSidekickThinkingOptions = useMemo(
+    () => filterThinkingOptionsForModelLevels(sidekickModelThinkingLevels),
+    [sidekickModelThinkingLevels],
   );
   const hasAvailableModelOptions = modelOptions.length > 0;
   const hasModelControl = Boolean(provider && modelId) || hasAvailableModelOptions;
@@ -133,6 +146,12 @@ export function ModelSelector({
     sidekickProvider && sidekickModelId
       ? `Sidekick: ${sidekickOption ? sidekickOption.label : `${sidekickProvider}:${sidekickModelId}`}`
       : "Sidekick: workspace default";
+  const sidekickThinkingOption = THINKING_OPTIONS.find(
+    (option) => option.value === sidekickThinkingLevel,
+  );
+  const sidekickThinkingBadgeLabel = `Sidekick reasoning: ${
+    sidekickThinkingOption?.label ?? sidekickThinkingLevel ?? "default"
+  }`;
   if (
     !shouldRenderModelControl &&
     !thinkingLevel &&
@@ -302,6 +321,61 @@ export function ModelSelector({
                   ) : null}
                 </>
               ) : null}
+            </div>
+          ) : null}
+        </span>
+      ) : null}
+      {showSidekickSelector && onSetSidekickThinkingLevel ? (
+        <span className="model-selector__anchor">
+          <button
+            className="model-selector__badge"
+            type="button"
+            disabled={disabled}
+            title="Reasoning effort child threads start with"
+            onClick={() => setOpen(open === "sidekick-thinking" ? "none" : "sidekick-thinking")}
+          >
+            {sidekickThinkingBadgeLabel}
+          </button>
+          {open === "sidekick-thinking" ? (
+            <div
+              className={`model-selector__dropdown ${dropdownPlacement === "below" ? "model-selector__dropdown--below" : ""}`}
+              onWheel={(event) => event.stopPropagation()}
+            >
+              <div className="model-selector__group-title">Sidekick reasoning</div>
+              <button
+                className={`model-selector__item${sidekickThinkingLevel ? "" : " model-selector__item--active"}`}
+                type="button"
+                onClick={() => {
+                  if (sidekickThinkingLevel) {
+                    onSetSidekickThinkingLevel(null);
+                  }
+                  setOpen("none");
+                }}
+              >
+                <span className="model-selector__item-label">Workspace default</span>
+                {sidekickThinkingLevel ? null : (
+                  <span className="model-selector__item-meta">active</span>
+                )}
+              </button>
+              {visibleSidekickThinkingOptions.map((option) => {
+                const isActive = option.value === sidekickThinkingLevel;
+                return (
+                  <button
+                    className={`model-selector__item${isActive ? " model-selector__item--active" : ""}`}
+                    key={option.value}
+                    type="button"
+                    onClick={() => {
+                      if (!isActive) {
+                        onSetSidekickThinkingLevel(option.value);
+                      }
+                      setOpen("none");
+                    }}
+                  >
+                    <span className="model-selector__item-label">{option.label}</span>
+                    <span className="model-selector__item-meta">{option.description}</span>
+                  </button>
+                );
+              })}
             </div>
           ) : null}
         </span>

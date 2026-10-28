@@ -7,6 +7,7 @@ import type {
   OrchestrationChildThread,
   OrchestrationChildTranscriptMessage,
   ThemeMode,
+  ThinkingLevel,
   ThemePresetId,
   ThreadGrouping,
 } from "../../contracts/desktop-state";
@@ -64,6 +65,10 @@ export interface PersistedUiState {
   readonly defaultLeadModel?: SessionModelSelection;
   /** App-global default model for read-only scout children. */
   readonly defaultScoutModel?: SessionModelSelection;
+  /** Per-thread reasoning effort for sidekick children, by session key. */
+  readonly sidekickThinkingBySession?: Record<string, ThinkingLevel>;
+  /** App-global reasoning effort for read-only scout children. */
+  readonly defaultScoutThinkingLevel?: ThinkingLevel;
 }
 
 /**
@@ -156,6 +161,8 @@ export function decodePersistedUiState(parsed: unknown): LegacyPersistedUiState 
     sidekickBySession: toSidekickRecord(candidate.sidekickBySession),
     defaultLeadModel: toDefaultLeadModel(candidate.defaultLeadModel),
     defaultScoutModel: toDefaultScoutModel(candidate.defaultScoutModel),
+    sidekickThinkingBySession: toThinkingLevelRecord(candidate.sidekickThinkingBySession),
+    defaultScoutThinkingLevel: toThinkingLevel(candidate.defaultScoutThinkingLevel),
     composerAttachmentsBySession: toObjectArrayRecord(candidate.composerAttachmentsBySession),
     transcripts: toObjectArrayRecord(candidate.transcripts),
   };
@@ -257,6 +264,8 @@ function validateUiState(value: unknown): Record<string, unknown> {
       "sidekickBySession",
       "defaultLeadModel",
       "defaultScoutModel",
+      "sidekickThinkingBySession",
+      "defaultScoutThinkingLevel",
       "composerAttachmentsBySession",
       "transcripts",
     ],
@@ -359,6 +368,14 @@ function validateUiState(value: unknown): Record<string, unknown> {
     )
       fail("defaultScoutModel");
   }
+  if (root.sidekickThinkingBySession !== undefined) {
+    const records =
+      objectRecord(root.sidekickThinkingBySession) ?? fail("sidekickThinkingBySession");
+    for (const [id, value] of Object.entries(records)) {
+      if (!id || toThinkingLevel(value) === undefined) fail(`sidekickThinkingBySession.${id}`);
+    }
+  }
+  optional(root, "defaultScoutThinkingLevel", (v) => toThinkingLevel(v) !== undefined);
   optional(root, "activeView", (v) => toAppView(v) !== undefined);
   optional(root, "threadGrouping", isThreadGrouping);
   optional(root, "themeMode", isThemeMode);
@@ -899,6 +916,33 @@ function toDefaultScoutModel(value: unknown): SessionModelSelection | undefined 
 /** A cleared default persists as absent, like a cleared sidekick. */
 function toDefaultLeadModel(value: unknown): SessionModelSelection | undefined {
   return toModelSelection(value);
+}
+
+const THINKING_LEVELS: readonly ThinkingLevel[] = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+];
+
+function toThinkingLevel(value: unknown): ThinkingLevel | undefined {
+  return THINKING_LEVELS.find((level) => level === value);
+}
+
+/** Only set levels persist; a cleared override is dropped like a cleared sidekick. */
+function toThinkingLevelRecord(value: unknown): Record<string, ThinkingLevel> | undefined {
+  const candidate = objectRecord(value);
+  if (!candidate) {
+    return undefined;
+  }
+  const entries = Object.entries(candidate).flatMap(([id, level]) => {
+    const parsed = toThinkingLevel(level);
+    return id && parsed ? [[id, parsed] as const] : [];
+  });
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
 /** Only true entries persist; false/off is the default and is dropped. */
