@@ -151,6 +151,8 @@ interface OrchestrationOwnerHost {
   emit(): DesktopAppState;
   withError(error: unknown): Promise<DesktopAppState>;
   persistUiState(): Promise<void>;
+  /** Debounced UI-state write; quit flushes it. */
+  schedulePersistUiState(): void;
   workspaceRefFromState(workspaceId: string): WorkspaceRef | undefined;
   sessionFromState(
     sessionRef: SessionRef,
@@ -1147,7 +1149,8 @@ async function sendMessageToThreadToolResult(
     allowCommands: false,
   });
   if (target.child) {
-    await store.persistUiState();
+    // Coalesced: a lead often messages several children back to back.
+    store.schedulePersistUiState();
   }
 
   // Every continuation starts a new run of the same thread: bump its

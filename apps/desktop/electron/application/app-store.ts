@@ -98,6 +98,10 @@ import {
 } from "../persistence/app-store-persistence";
 import { AttachmentStore } from "../persistence/attachment-store";
 import {
+  createDebouncedPersist,
+  sessionEventPersistence,
+} from "../persistence/ui-state-persist-scheduler";
+import {
   type PendingRuntimeCommandExecution,
   getLearnedCommandCompatibility,
   pruneCompatibilityForRuntimeSnapshot,
@@ -280,7 +284,12 @@ export class DesktopAppStore {
   private readonly shouldKeepSessionDialogs: (sessionRef: SessionRef) => boolean;
   private composerDraftSyncTarget: SessionRef | undefined;
   private composerDraftProjectionNonce = 0;
-  private persistUiStateTimer: NodeJS.Timeout | undefined;
+  private readonly scheduledUiStatePersist = createDebouncedPersist(
+    () => this.persistUiState(),
+    (error: unknown) => {
+      console.error("[app-store] persistUiState failed", error);
+    },
+  );
   private persistenceReadiness: "pending" | "ready" | "blocked" = "pending";
   private scheduledTaskTimer: NodeJS.Timeout | undefined;
   private scheduledTaskWakeAt: string | undefined;
@@ -506,6 +515,7 @@ export class DesktopAppStore {
       emit: () => this.emit(),
       withError: (error) => this.withError(error),
       persistUiState: () => this.persistUiState(),
+      schedulePersistUiState: () => this.schedulePersistUiState(),
       workspaceRefFromState: (workspaceId) => this.workspaceRefFromState(workspaceId),
       sessionFromState: (sessionRef) => this.sessionFromState(sessionRef),
       ensureSessionReady: (sessionRef) => this.ensureSessionReady(sessionRef),
@@ -757,10 +767,7 @@ export class DesktopAppStore {
   async flushPersistence(): Promise<void> {
     this.streamingUiPublisher.clear();
     await this.initialize();
-    if (this.persistUiStateTimer) {
-      clearTimeout(this.persistUiStateTimer);
-      this.persistUiStateTimer = undefined;
-    }
+    this.scheduledUiStatePersist.cancel();
 
     await this.persistUiState();
     await this.persistScheduledTasks();
@@ -3799,13 +3806,12 @@ export class DesktopAppStore {
           this.startSelectedSessionHydration(event.sessionRef);
         }
       }
-      if (
-        event.type === "runCompleted" ||
-        event.type === "runFailed" ||
-        event.type === "sessionClosed"
-      ) {
+      // A child run's end is coalesced like any other event: several children
+      // often finish together. Quit flushes the pending write.
+      const persistence = sessionEventPersistence(event.type, isOrchestrationChild);
+      if (persistence === "immediate") {
         await this.persistUiState();
-      } else if (event.type !== "hostUiRequest") {
+      } else if (persistence === "debounced") {
         this.schedulePersistUiState();
       }
     } catch (error) {
@@ -4224,10 +4230,7 @@ export class DesktopAppStore {
 
   async persistUiState(): Promise<void> {
     const startedAt = Date.now();
-    if (this.persistUiStateTimer) {
-      clearTimeout(this.persistUiStateTimer);
-      this.persistUiStateTimer = undefined;
-    }
+    this.scheduledUiStatePersist.cancel();
     if (this.persistenceReadiness !== "ready") {
       return;
     }
@@ -4293,24 +4296,12 @@ export class DesktopAppStore {
     if (this.persistenceReadiness !== "ready") {
       return;
     }
-    if (this.persistUiStateTimer) {
-      clearTimeout(this.persistUiStateTimer);
-    }
-
-    this.persistUiStateTimer = setTimeout(() => {
-      this.persistUiStateTimer = undefined;
-      void this.persistUiState().catch((error: unknown) => {
-        console.error("[app-store] persistUiState failed", error);
-      });
-    }, 250);
+    this.scheduledUiStatePersist.schedule();
   }
 
   private blockPersistence(): void {
     this.persistenceReadiness = "blocked";
-    if (this.persistUiStateTimer) {
-      clearTimeout(this.persistUiStateTimer);
-      this.persistUiStateTimer = undefined;
-    }
+    this.scheduledUiStatePersist.cancel();
   }
 
   private currentSelectedSessionKey(): string {

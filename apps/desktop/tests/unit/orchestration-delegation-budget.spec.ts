@@ -94,6 +94,7 @@ function makeHost(state: BudgetHostState) {
     emit: () => ({}) as never,
     withError: async () => ({}) as never,
     persistUiState: async () => {},
+    schedulePersistUiState: () => {},
     workspaceRefFromState: () => ({ workspaceId: "ws", path: "/tmp/ws" }),
     sessionFromState: (ref: SessionRef) => {
       if (ref.sessionId === parentRef.sessionId) {
