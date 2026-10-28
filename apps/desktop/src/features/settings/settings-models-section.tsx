@@ -6,6 +6,7 @@ import type {
 } from "@pi-gui/session-driver/runtime-types";
 import type { SessionModelSelection } from "@pi-gui/session-driver/types";
 import type { DesktopAppState } from "../../../contracts/desktop-state";
+import type { PiDesktopApi } from "../../../contracts/ipc";
 import { SearchIcon } from "../../ui/icons";
 import { SettingsSelect, SettingsSwitch } from "./settings-controls";
 import {
@@ -41,6 +42,44 @@ function modelOption(model: RuntimeModelRecord): LeadModelOption {
 }
 
 /**
+ * Options for a default-model picker: the same enabled-model list the
+ * default-model control offers, plus a leading thread entry that clears the setting.
+ */
+function defaultModelOptions(
+  threadValue: string,
+  threadLabel: string,
+  enabledModels: readonly RuntimeModelRecord[],
+): readonly LeadModelOption[] {
+  return [{ value: threadValue, label: threadLabel }, ...enabledModels.map(modelOption)];
+}
+
+/** Picker value reflecting the stored setting; absent means the thread entry. */
+function defaultModelSelectValue(
+  threadValue: string,
+  selection: SessionModelSelection | undefined,
+): string {
+  if (!selection) {
+    return threadValue;
+  }
+  return `${selection.provider}:${selection.modelId}`;
+}
+
+/**
+ * Parse a picker value back into a bridge selection. The thread entry resolves
+ * to null, which clears the app-global default.
+ */
+function resolveDefaultModelSelection(
+  threadValue: string,
+  value: string,
+): SessionModelSelection | null {
+  if (value === threadValue) {
+    return null;
+  }
+  const [provider = "", ...modelParts] = value.split(":");
+  return { provider, modelId: modelParts.join(":") };
+}
+
+/**
  * Options for the default-lead-model picker: the same enabled-model list the
  * default-model control offers, plus a leading "Thread's own model" entry
  * that clears the setting.
@@ -48,18 +87,12 @@ function modelOption(model: RuntimeModelRecord): LeadModelOption {
 export function leadModelOptions(
   enabledModels: readonly RuntimeModelRecord[],
 ): readonly LeadModelOption[] {
-  return [
-    { value: DEFAULT_LEAD_MODEL_THREAD_VALUE, label: "Thread's own model" },
-    ...enabledModels.map(modelOption),
-  ];
+  return defaultModelOptions(DEFAULT_LEAD_MODEL_THREAD_VALUE, "Thread's own model", enabledModels);
 }
 
 /** Picker value reflecting the stored setting; absent means "Thread's own model". */
 export function leadModelSelectValue(selection: SessionModelSelection | undefined): string {
-  if (!selection) {
-    return DEFAULT_LEAD_MODEL_THREAD_VALUE;
-  }
-  return `${selection.provider}:${selection.modelId}`;
+  return defaultModelSelectValue(DEFAULT_LEAD_MODEL_THREAD_VALUE, selection);
 }
 
 /**
@@ -67,11 +100,7 @@ export function leadModelSelectValue(selection: SessionModelSelection | undefine
  * to null, which clears the app-global default lead model.
  */
 export function resolveLeadModelSelection(value: string): SessionModelSelection | null {
-  if (value === DEFAULT_LEAD_MODEL_THREAD_VALUE) {
-    return null;
-  }
-  const [provider = "", ...modelParts] = value.split(":");
-  return { provider, modelId: modelParts.join(":") };
+  return resolveDefaultModelSelection(DEFAULT_LEAD_MODEL_THREAD_VALUE, value);
 }
 
 /**
@@ -94,18 +123,16 @@ export const DEFAULT_SCOUT_MODEL_DESCRIPTION =
 export function scoutModelOptions(
   enabledModels: readonly RuntimeModelRecord[],
 ): readonly LeadModelOption[] {
-  return [
-    { value: DEFAULT_SCOUT_MODEL_THREAD_VALUE, label: "Thread's sidekick model" },
-    ...enabledModels.map(modelOption),
-  ];
+  return defaultModelOptions(
+    DEFAULT_SCOUT_MODEL_THREAD_VALUE,
+    "Thread's sidekick model",
+    enabledModels,
+  );
 }
 
 /** Picker value reflecting the stored setting; absent means "Thread's sidekick model". */
 export function scoutModelSelectValue(selection: SessionModelSelection | undefined): string {
-  if (!selection) {
-    return DEFAULT_SCOUT_MODEL_THREAD_VALUE;
-  }
-  return `${selection.provider}:${selection.modelId}`;
+  return defaultModelSelectValue(DEFAULT_SCOUT_MODEL_THREAD_VALUE, selection);
 }
 
 /**
@@ -113,11 +140,19 @@ export function scoutModelSelectValue(selection: SessionModelSelection | undefin
  * to null, which clears the app-global default scout model.
  */
 export function resolveScoutModelSelection(value: string): SessionModelSelection | null {
-  if (value === DEFAULT_SCOUT_MODEL_THREAD_VALUE) {
-    return null;
-  }
-  const [provider = "", ...modelParts] = value.split(":");
-  return { provider, modelId: modelParts.join(":") };
+  return resolveDefaultModelSelection(DEFAULT_SCOUT_MODEL_THREAD_VALUE, value);
+}
+
+/**
+ * Commit a picker value through the bridge. The component reflects the returned
+ * state; exported so unit tests can assert the selection mapping without a DOM.
+ */
+function commitDefaultModelSelection(
+  value: string,
+  threadValue: string,
+  setDefaultModel: (selection: SessionModelSelection | null) => Promise<DesktopAppState>,
+): Promise<DesktopAppState> {
+  return setDefaultModel(resolveDefaultModelSelection(threadValue, value));
 }
 
 /**
@@ -128,7 +163,7 @@ export function commitScoutModelSelection(
   value: string,
   setDefaultScoutModel: (selection: SessionModelSelection | null) => Promise<DesktopAppState>,
 ): Promise<DesktopAppState> {
-  return setDefaultScoutModel(resolveScoutModelSelection(value));
+  return commitDefaultModelSelection(value, DEFAULT_SCOUT_MODEL_THREAD_VALUE, setDefaultScoutModel);
 }
 
 /**
@@ -139,7 +174,94 @@ export function commitLeadModelSelection(
   value: string,
   setDefaultLeadModel: (selection: SessionModelSelection | null) => Promise<DesktopAppState>,
 ): Promise<DesktopAppState> {
-  return setDefaultLeadModel(resolveLeadModelSelection(value));
+  return commitDefaultModelSelection(value, DEFAULT_LEAD_MODEL_THREAD_VALUE, setDefaultLeadModel);
+}
+
+/** Bridge wiring for one default-model picker row; module-level so the loader effect fires once. */
+interface DefaultModelRowBridge {
+  readonly threadValue: string;
+  readonly committed: (state: DesktopAppState) => SessionModelSelection | undefined;
+  readonly setDefault: (
+    api: PiDesktopApi,
+    selection: SessionModelSelection | null,
+  ) => Promise<DesktopAppState>;
+  readonly failureLabel: string;
+}
+
+const LEAD_MODEL_ROW: DefaultModelRowBridge = {
+  threadValue: DEFAULT_LEAD_MODEL_THREAD_VALUE,
+  committed: (state) => state.defaultLeadModel,
+  setDefault: (api, selection) => api.setDefaultLeadModel(selection),
+  failureLabel: "setDefaultLeadModel",
+};
+
+const SCOUT_MODEL_ROW: DefaultModelRowBridge = {
+  threadValue: DEFAULT_SCOUT_MODEL_THREAD_VALUE,
+  committed: (state) => state.defaultScoutModel,
+  setDefault: (api, selection) => api.setDefaultScoutModel(selection),
+  failureLabel: "setDefaultScoutModel",
+};
+
+/**
+ * State backing one default-model picker row. The override is app-global and
+ * no parent threads the value through, so the row loads the live value from
+ * the bridge on mount and thereafter reflects each bridge result. Mirrors
+ * handleSetModelSettingsScopeMode in secondary-surfaces: fire the app-global
+ * bridge call and log failures, then reflect the returned state.
+ */
+function useDefaultModelSelection({
+  seed,
+  threadValue,
+  committed,
+  setDefault,
+  failureLabel,
+}: DefaultModelRowBridge & {
+  readonly seed: SessionModelSelection | undefined;
+}): {
+  readonly selection: SessionModelSelection | undefined;
+  readonly onChange: (value: string) => void;
+} {
+  const [selection, setSelection] = useState<SessionModelSelection | undefined>(seed);
+  useEffect(() => {
+    if (seed !== undefined) {
+      return;
+    }
+    const api = window.piApp;
+    if (!api) {
+      return;
+    }
+    let cancelled = false;
+    void api
+      .getState()
+      .then((state) => {
+        if (!cancelled) {
+          setSelection(committed(state));
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          console.error("[renderer] getState failed", error);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [seed, committed]);
+
+  const onChange = (value: string) => {
+    const api = window.piApp;
+    if (!api) {
+      return;
+    }
+    void commitDefaultModelSelection(value, threadValue, (next) => setDefault(api, next))
+      .then((state) => {
+        setSelection(committed(state));
+      })
+      .catch((error: unknown) => {
+        console.error(`[renderer] ${failureLabel} failed`, error);
+      });
+  };
+  return { selection, onChange };
 }
 
 interface SettingsModelsSectionProps {
@@ -205,98 +327,10 @@ export function SettingsModelsSection({
     (model) => model.providerId === defaultProvider && model.modelId === defaultModelId,
   );
 
-  // App-global override for new lead threads; absent means "Thread's own model".
-  // Loaded from the bridge because no parent threads this value through yet.
-  const [leadSelection, setLeadSelection] = useState<SessionModelSelection | undefined>(
-    defaultLeadModel,
-  );
-  useEffect(() => {
-    if (defaultLeadModel !== undefined) {
-      return;
-    }
-    const api = window.piApp;
-    if (!api) {
-      return;
-    }
-    let cancelled = false;
-    void api
-      .getState()
-      .then((state) => {
-        if (!cancelled) {
-          setLeadSelection(state.defaultLeadModel);
-        }
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) {
-          console.error("[renderer] getState failed", error);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [defaultLeadModel]);
-
-  // Mirrors handleSetModelSettingsScopeMode in secondary-surfaces: fire the
-  // app-global bridge call and log failures, then reflect the returned state.
-  const handleLeadModelChange = (value: string) => {
-    const api = window.piApp;
-    if (!api) {
-      return;
-    }
-    void commitLeadModelSelection(value, (selection) => api.setDefaultLeadModel(selection))
-      .then((state) => {
-        setLeadSelection(state.defaultLeadModel);
-      })
-      .catch((error: unknown) => {
-        console.error("[renderer] setDefaultLeadModel failed", error);
-      });
-  };
-
-  // App-global override for read-only scout children; absent means "Thread's
-  // sidekick model". Loaded from the bridge because no parent threads this
-  // value through yet.
-  const [scoutSelection, setScoutSelection] = useState<SessionModelSelection | undefined>(
-    defaultScoutModel,
-  );
-  useEffect(() => {
-    if (defaultScoutModel !== undefined) {
-      return;
-    }
-    const api = window.piApp;
-    if (!api) {
-      return;
-    }
-    let cancelled = false;
-    void api
-      .getState()
-      .then((state) => {
-        if (!cancelled) {
-          setScoutSelection(state.defaultScoutModel);
-        }
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) {
-          console.error("[renderer] getState failed", error);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [defaultScoutModel]);
-
-  const handleScoutModelChange = (value: string) => {
-    const api = window.piApp;
-    if (!api) {
-      return;
-    }
-    void commitScoutModelSelection(value, (selection) => api.setDefaultScoutModel(selection))
-      .then((state) => {
-        setScoutSelection(state.defaultScoutModel);
-      })
-      .catch((error: unknown) => {
-        console.error("[renderer] setDefaultScoutModel failed", error);
-      });
-  };
+  // App-global overrides for new threads; absent means the row's thread entry.
+  // Loaded from the bridge because no parent threads these values through yet.
+  const leadRow = useDefaultModelSelection({ seed: defaultLeadModel, ...LEAD_MODEL_ROW });
+  const scoutRow = useDefaultModelSelection({ seed: defaultScoutModel, ...SCOUT_MODEL_ROW });
 
   const searching = query.trim().length > 0;
   const visibleAvailable = filterModels(availableModels, query);
@@ -327,8 +361,8 @@ export function SettingsModelsSection({
           <SettingsSelect
             label={DEFAULT_LEAD_MODEL_TITLE}
             options={leadModelOptions(enabledModels)}
-            value={leadModelSelectValue(leadSelection)}
-            onChange={handleLeadModelChange}
+            value={leadModelSelectValue(leadRow.selection)}
+            onChange={leadRow.onChange}
           />
         </SettingsRow>
         <SettingsRow
@@ -338,8 +372,8 @@ export function SettingsModelsSection({
           <SettingsSelect
             label={DEFAULT_SCOUT_MODEL_TITLE}
             options={scoutModelOptions(enabledModels)}
-            value={scoutModelSelectValue(scoutSelection)}
-            onChange={handleScoutModelChange}
+            value={scoutModelSelectValue(scoutRow.selection)}
+            onChange={scoutRow.onChange}
           />
         </SettingsRow>
         <SettingsRow title="Reasoning" description="Default reasoning effort for new threads.">

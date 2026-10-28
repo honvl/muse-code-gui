@@ -13,7 +13,6 @@ service through Chord. It does not require a new app-specific IPC operation.
 | [Usage](./usage/README.md)         | Total token use and cost across the folder's saved threads; write a card after each reply with its time, cost and context used     | Compare threads, see what fills context, open a thread; read the card under each reply | `/usage`                                                                           |
 | [Trace](./trace/README.md)         | Listen to pi's agent events (turns, model calls, tools, compaction) and record each reply as spans with the context each call sent | Watch a live waterfall of the reply, pick an earlier reply, inspect a call or tool     | `/trace`                                                                           |
 | [Muse Usage](./muse-usage/README.md) | Track Muse plan usage and quota (subscription-aware, per-model) | Check quota from the desktop view | `/muse-usage` |
-| [Subagents](./subagents/README.md) | Run background subagents through pi-cc-subagent's `agent` tool | Start, inspect and resume subagents from the desktop view | `/subagents` |
 
 The test suites are actual `node:test` fixtures, including an intentional failure;
 they are not pi-gui's repository checks. PR Review needs a configured Pi model,

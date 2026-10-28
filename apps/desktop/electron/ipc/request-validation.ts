@@ -408,37 +408,31 @@ export function expectHostUiResponse(value: unknown): HostUiResponse {
   return { requestId, cancelled: true };
 }
 
-export function expectSessionSidekickSelection(value: unknown): SessionModelSelection | null {
+/** Nullable `{provider, modelId}` bridge selection; null clears, anything else must be a full record. */
+function expectNullableModelSelection(
+  value: unknown,
+  name = "selection",
+): SessionModelSelection | null {
   if (value === null) {
     return null;
   }
-  const record = expectRecord(value, "selection");
+  const record = expectRecord(value, name);
   return {
-    provider: expectNonEmptyString(record.provider, "selection.provider"),
-    modelId: expectNonEmptyString(record.modelId, "selection.modelId"),
+    provider: expectNonEmptyString(record.provider, `${name}.provider`),
+    modelId: expectNonEmptyString(record.modelId, `${name}.modelId`),
   };
+}
+
+export function expectSessionSidekickSelection(value: unknown): SessionModelSelection | null {
+  return expectNullableModelSelection(value);
 }
 
 export function expectDefaultLeadModelSelection(value: unknown): SessionModelSelection | null {
-  if (value === null) {
-    return null;
-  }
-  const record = expectRecord(value, "selection");
-  return {
-    provider: expectNonEmptyString(record.provider, "selection.provider"),
-    modelId: expectNonEmptyString(record.modelId, "selection.modelId"),
-  };
+  return expectNullableModelSelection(value);
 }
 
 export function expectDefaultScoutModelSelection(value: unknown): SessionModelSelection | null {
-  if (value === null) {
-    return null;
-  }
-  const record = expectRecord(value, "selection");
-  return {
-    provider: expectNonEmptyString(record.provider, "selection.provider"),
-    modelId: expectNonEmptyString(record.modelId, "selection.modelId"),
-  };
+  return expectNullableModelSelection(value);
 }
 
 export function expectNavigateSessionTreeOptions(value: unknown): NavigateSessionTreeOptions {

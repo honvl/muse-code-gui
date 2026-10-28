@@ -69,7 +69,7 @@ export function SettingsGeneralSection({
       <SettingsGroup title="Extension pack">
         <SettingsRow
           title="Muse Code GUI pack"
-          description="Keep computer use, memory, subagents, usage views and the chrome skill installed in pi's global setup. New entries are appended; your own entries are never removed."
+          description="Keep computer use, memory, usage views and the chrome skill installed in pi's global setup. New entries are appended; your own entries are never removed."
         >
           <SettingsSwitch
             checked={extensionPackEnabled}

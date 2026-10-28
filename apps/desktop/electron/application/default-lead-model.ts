@@ -4,18 +4,6 @@ import type { TranscriptMessage } from "../../contracts/desktop-state";
 /** App-global default selection, absent when cleared. */
 export type DefaultLeadModel = SessionModelSelection | undefined;
 
-/** Exact match, treating absent/cleared as equal. */
-export function isDefaultLeadModelEqual(
-  current: SessionModelSelection | undefined,
-  next: SessionModelSelection | null | undefined,
-): boolean {
-  const normalizedNext = next ?? undefined;
-  if (current === undefined || normalizedNext === undefined) {
-    return current === normalizedNext;
-  }
-  return current.provider === normalizedNext.provider && current.modelId === normalizedNext.modelId;
-}
-
 /**
  * True when the thread already has conversation history that a model switch
  * would invalidate. Only message/tool/custom/summary rows count: local

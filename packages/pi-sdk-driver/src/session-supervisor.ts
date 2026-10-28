@@ -335,7 +335,7 @@ export class SessionSupervisor {
   private readonly planLimitsByProvider = new Map<string, SessionPlanLimits>();
   /** Isolation enforced on orchestration child sessions, keyed by pi session id. */
   private readonly childIsolations = new Map<string, ChildIsolationInfo>();
-  /** Orchestrator (dispatcher-only) mode, keyed by pi session id. */
+  /** Lead mode (keeps all tools; delegates by policy), keyed by pi session id. */
   private readonly orchestratorModes = new Map<string, boolean>();
   /** Sidekick model child threads will run on, keyed by pi session id. */
   private readonly sidekickModels = new Map<string, SessionModelSelection>();
@@ -789,7 +789,7 @@ export class SessionSupervisor {
     this.childIsolations.set(sessionRef.sessionId, info);
   }
 
-  /** Enable/disable dispatcher-only orchestrator mode for a session. */
+  /** Enable/disable lead mode for a session. */
   /**
    * Wake the thread that owns a finished background task. Lead mode only: a solo
    * thread is the person's own conversation, and auto-continuing it would spend

@@ -1736,13 +1736,7 @@ export class DesktopAppStore {
     await this.initialize();
     const next = selection ?? undefined;
     const current = this.state.defaultLeadModel;
-    const unchanged =
-      (current === undefined && next === undefined) ||
-      (current !== undefined &&
-        next !== undefined &&
-        current.provider === next.provider &&
-        current.modelId === next.modelId);
-    if (unchanged) {
+    if (isDefaultScoutModelEqual(current, next)) {
       return structuredClone(this.state);
     }
     this.state = {
@@ -5063,8 +5057,7 @@ function sidekickSelectionsEqual(
   a: SessionModelSelection | undefined,
   b: SessionModelSelection | undefined,
 ): boolean {
-  if (a === undefined || b === undefined) return a === b;
-  return a.provider === b.provider && a.modelId === b.modelId;
+  return isDefaultScoutModelEqual(a, b);
 }
 
 function updateRecordValue<T>(

@@ -4,9 +4,9 @@ import type { TranscriptMessage } from "../../contracts/desktop-state";
 import {
   defaultLeadModelForLeadToggle,
   hasThreadHistory,
-  isDefaultLeadModelEqual,
   resolveInitialModelForLeadThread,
 } from "../../electron/application/default-lead-model";
+import { isDefaultScoutModelEqual } from "../../electron/application/default-scout-model";
 import { startThread } from "../../electron/workspace/app-store-worktree";
 import { createConversationOwner } from "../../electron/conversation/app-store-composer";
 import { expectDefaultLeadModelSelection } from "../../electron/ipc/request-validation";
@@ -182,9 +182,9 @@ test("setting cleared is a no-op", async () => {
       transcript: [],
     }),
   ).toBeUndefined();
-  expect(isDefaultLeadModelEqual(undefined, null)).toBe(true);
-  expect(isDefaultLeadModelEqual(defaultLead, null)).toBe(false);
-  expect(isDefaultLeadModelEqual(defaultLead, defaultLead)).toBe(true);
+  expect(isDefaultScoutModelEqual(undefined, null)).toBe(true);
+  expect(isDefaultScoutModelEqual(defaultLead, null)).toBe(false);
+  expect(isDefaultScoutModelEqual(defaultLead, defaultLead)).toBe(true);
 });
 
 function toggleHost(options: {
