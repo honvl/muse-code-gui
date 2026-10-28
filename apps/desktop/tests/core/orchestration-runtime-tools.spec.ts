@@ -638,12 +638,14 @@ test("two worktree workers with overlapping scopes run concurrently, each on its
     harness = await launch();
     const restartedWindow = await harness.firstWindow();
     await expect
-      .poll(async () =>
-        (await getDesktopState(restartedWindow)).orchestrationChildren
-          .filter((entry) => ids.includes(entry.id))
-          .map((entry) => [entry.status, entry.branch]),
-      )
-      .toEqual(children.map((child) => ["complete", child.branch]));
+      .poll(async () => {
+        const restored = (await getDesktopState(restartedWindow)).orchestrationChildren;
+        return ids.map((id) => {
+          const entry = restored.find((candidate) => candidate.id === id);
+          return [entry?.status, entry?.branch, entry?.worktreePath];
+        });
+      })
+      .toEqual(children.map((child) => ["complete", child.branch, child.worktreePath]));
     const followUp = await runOrchestrationRuntimeTool(harness, {
       toolName: "send_message_to_thread",
       toolCallId: "worktree-follow-up",

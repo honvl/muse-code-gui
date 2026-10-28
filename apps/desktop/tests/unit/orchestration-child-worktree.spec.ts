@@ -231,7 +231,10 @@ function makeHost(repo: string, children: OrchestrationChildThread[] = []) {
     isOrchestratorSession: (ref: SessionRef) => ref.sessionId === parentRef.sessionId,
     sidekickModelFor: () => undefined,
     defaultScoutModel: () => undefined,
+    sidekickThinkingLevelFor: () => undefined,
+    defaultScoutThinkingLevel: () => undefined,
     sessionModelFor: () => undefined,
+    sessionThinkingLevelFor: () => undefined,
     sessionUsageFor: () => undefined,
     buildCreateSessionOptions: async () => undefined,
     getQueuedComposerMessages: () => [],
@@ -291,7 +294,8 @@ test("two overlapping worktree workers run past an unscoped writer, each in its 
     });
     // A worktree child claims no shared scope.
     expect(child.writeScopes).toBeUndefined();
-    expect(createSessionCalls[index]?.path).toBe(child.worktreePath);
+    // The two spawns run in parallel, so their sessions open in either order.
+    expect(createSessionCalls.map((workspace) => workspace.path)).toContain(child.worktreePath);
     expect(isolation.find((entry) => entry.sessionId === child.childSessionId)?.workspacePath).toBe(
       child.worktreePath,
     );
