@@ -7,6 +7,7 @@ import {
   writePersistedUiState,
 } from "../../electron/persistence/app-store-persistence";
 import type { OrchestrationChildThread } from "../../contracts/desktop-state";
+import { toPersistedOrchestrationChildren } from "../../electron/orchestration/app-store-orchestration";
 import { AttachmentStore } from "../../electron/persistence/attachment-store";
 
 for (const invalid of [
@@ -322,4 +323,90 @@ test("unknown attachment fields survive rejected replacement and pruning", async
   await expect(store.write("session", [])).rejects.toThrow(/unsupported field/);
   await expect(store.remove("session")).rejects.toThrow(/unsupported field/);
   expect(await readFile(path, "utf8")).toBe(original);
+});
+
+function evidenceRow(
+  id: string,
+  source: OrchestrationChildThread["evidence"][number]["source"] = "worker-reported",
+) {
+  return {
+    id,
+    childThreadId: "child-1",
+    kind: "worker_report" as const,
+    source,
+    status: "reported" as const,
+    title: "Worker reported output",
+    detail: "x".repeat(4_000),
+    parentSessionId: "parent",
+    childSessionId: "child",
+    createdAt: "2026-10-27T00:00:00.000Z",
+  };
+}
+
+test("derived evidence is not persisted; only the creation record survives", () => {
+  // The projection to a saved shape lives in toPersistedOrchestrationChildren;
+  // writePersistedUiState stores whatever it is handed.
+  const persisted = toPersistedOrchestrationChildren([
+    childThread({
+      evidence: [
+        evidenceRow("derived-1"),
+        evidenceRow("derived-2", "orchestrator-observed"),
+        evidenceRow("creation-1", "orchestrator-accepted"),
+      ],
+    }),
+  ]);
+  // Evidence re-derives from transcripts on load, so only the creation record
+  // (git context that no transcript can reproduce) is kept on disk.
+  expect(persisted?.[0]?.evidence.map((row) => row.id)).toEqual(["creation-1"]);
+  expect(persisted?.[0]?.evidence[0]?.childThreadId).toBe("child-1");
+});
+
+test("a child with a session does not persist its goal twice", () => {
+  const persisted = toPersistedOrchestrationChildren([
+    childThread({ goal: "g".repeat(5_000), latestTranscript: "g".repeat(5_000) }),
+  ]);
+  expect(persisted?.[0]?.latestTranscript).toBe("");
+  expect(persisted?.[0]?.transcript).toEqual([]);
+  // The goal itself is display text and stays.
+  expect(persisted?.[0]?.goal).toHaveLength(5_000);
+});
+
+test("a saved child record round-trips once projected", async () => {
+  const path = join(await mkdtemp(join(tmpdir(), "ui-state-child-projected-")), "ui-state.json");
+  const projected = toPersistedOrchestrationChildren([
+    childThread({
+      evidence: [evidenceRow("derived-1"), evidenceRow("creation-1", "orchestrator-accepted")],
+    }),
+  ]);
+  await writePersistedUiState(path, { orchestrationChildren: projected });
+  const decoded = await readPersistedUiState(path);
+  expect(decoded.orchestrationChildren?.[0]?.id).toBe("child-1");
+  expect(decoded.orchestrationChildren?.[0]?.evidence.map((row) => row.id)).toEqual(["creation-1"]);
+});
+
+test("the saved child list is capped, keeping unfinished work first", () => {
+  const running = Array.from({ length: 3 }, (_unused, index) =>
+    childThread({
+      id: `running-${index}`,
+      status: "running",
+      updatedAt: "2026-10-20T00:00:00.000Z",
+    }),
+  );
+  const settled = Array.from({ length: 45 }, (_unused, index) =>
+    childThread({
+      id: `settled-${index}`,
+      status: "complete",
+      updatedAt: `2026-10-27T00:${String(index).padStart(2, "0")}:00.000Z`,
+    }),
+  );
+  const persisted = toPersistedOrchestrationChildren([...settled, ...running]);
+  const ids = persisted?.map((child) => child.id) ?? [];
+  expect(ids).toHaveLength(40);
+  // Dropping a running child would lose its record while its session continues.
+  for (const child of running) {
+    expect(ids).toContain(child.id);
+  }
+  // The newest settled records survive; the oldest age out.
+  expect(ids).toContain("settled-44");
+  expect(ids).not.toContain("settled-0");
 });

@@ -159,14 +159,15 @@ export async function writePersistedUiState(
   uiStateFilePath: string,
   payload: PersistedUiState,
 ): Promise<void> {
-  const serialized = `${JSON.stringify(
-    {
-      ...payload,
-      version: 19,
-    } satisfies PersistedUiState,
-    null,
-    2,
-  )}\n`;
+  // Compact, not pretty-printed: this is a machine-owned state file, and the
+  // indentation made it roughly twice the size for no reader. The payload was
+  // also ~1.9MB of re-derivable orchestration evidence (see
+  // toPersistedOrchestrationChildren), so every save serialized and wrote
+  // megabytes synchronously on the main thread while threads were streaming.
+  const serialized = `${JSON.stringify({
+    ...payload,
+    version: 19,
+  } satisfies PersistedUiState)}\n`;
   decodePersistedUiState(payload);
   await writeFileAtomicQueued(uiStateFilePath, serialized, decodePersistedUiState, {
     preserveExistingAs: (validated) => {

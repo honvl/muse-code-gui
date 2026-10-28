@@ -76,32 +76,125 @@ test("Stop then Send treats the next runningRunId as a first tick", () => {
   expect(publisher.shouldDefer(runningUpdated("run-2"))).toBe(false);
 });
 
-test("throttles publishes to one trailing flush per session", async () => {
-  const published: string[] = [];
-  const publisher = new StreamingUiPublisher((ref) => {
-    published.push(ref.sessionId);
+test("coalesces every streaming session into one trailing flush", async () => {
+  const flushes: string[][] = [];
+  const publisher = new StreamingUiPublisher((refs) => {
+    flushes.push(refs.map((ref) => ref.sessionId));
   }, 25);
 
   publisher.schedule(sessionRef);
   publisher.schedule(sessionRef);
   publisher.schedule({ workspaceId: "ws", sessionId: "other" });
-  expect(published).toEqual([]);
+  expect(flushes).toEqual([]);
+  expect(publisher.pendingCount()).toBe(2);
 
-  await expect.poll(() => published.slice().sort()).toEqual(["other", "sess"]);
+  // Both sessions publish in a single flush: the rate no longer scales with
+  // how many threads are streaming.
+  await expect.poll(() => flushes).toHaveLength(1);
+  expect(flushes[0]?.slice().sort()).toEqual(["other", "sess"]);
+
   publisher.schedule(sessionRef);
-  await expect.poll(() => published.filter((id) => id === "sess")).toHaveLength(2);
+  await expect.poll(() => flushes).toHaveLength(2);
+  expect(flushes[1]).toEqual(["sess"]);
+});
+
+test("a burst of sessions still publishes once per interval", async () => {
+  let flushes = 0;
+  const publisher = new StreamingUiPublisher(() => {
+    flushes += 1;
+  }, 25);
+  for (let index = 0; index < 8; index += 1) {
+    publisher.schedule({ workspaceId: "ws", sessionId: `s${index}` });
+  }
+  await expect.poll(() => flushes).toBe(1);
+  // Give any stray per-session timers a chance to fire; there must be none.
+  await new Promise((resolve) => {
+    setTimeout(resolve, 60);
+  });
+  expect(flushes).toBe(1);
 });
 
 test("cancel drops a pending flush so a discrete emit can publish itself", async () => {
-  const published: string[] = [];
-  const publisher = new StreamingUiPublisher((ref) => {
-    published.push(ref.sessionId);
+  const flushes: string[][] = [];
+  const publisher = new StreamingUiPublisher((refs) => {
+    flushes.push(refs.map((ref) => ref.sessionId));
   }, 20);
   publisher.schedule(sessionRef);
   publisher.cancel(sessionRef);
   await new Promise((resolve) => {
     setTimeout(resolve, 40);
   });
-  expect(published).toEqual([]);
+  expect(flushes).toEqual([]);
   expect(STREAMING_UI_PUBLISH_INTERVAL_MS).toBe(50);
+});
+
+test("cancelling one session keeps the other sessions' pending flush", async () => {
+  const flushes: string[][] = [];
+  const publisher = new StreamingUiPublisher((refs) => {
+    flushes.push(refs.map((ref) => ref.sessionId));
+  }, 25);
+  publisher.schedule(sessionRef);
+  publisher.schedule({ workspaceId: "ws", sessionId: "other" });
+  publisher.cancel(sessionRef);
+  await expect.poll(() => flushes).toHaveLength(1);
+  expect(flushes[0]).toEqual(["other"]);
+});
+
+test("a closed session stops contributing to flushes", async () => {
+  let flushes = 0;
+  const publisher = new StreamingUiPublisher(() => {
+    flushes += 1;
+  }, 20);
+  publisher.schedule(sessionRef);
+  publisher.observe({
+    type: "sessionClosed",
+    sessionRef,
+    timestamp: "2026-09-18T00:00:02.000Z",
+    reason: "closed",
+  } as unknown as SessionDriverEvent);
+  expect(publisher.pendingCount()).toBe(0);
+  await new Promise((resolve) => {
+    setTimeout(resolve, 40);
+  });
+  expect(flushes).toBe(0);
+});
+
+test("a busy tool's progress reports coalesce instead of publishing per update", async () => {
+  const sessionRefForTool: SessionRef = { workspaceId: "ws", sessionId: "busy-tool" };
+  const publisher = new StreamingUiPublisher(() => {}, 50);
+
+  // A long-running bash/code tool reports partial output repeatedly; each of
+  // these used to be an immediate full state publish.
+  for (let index = 0; index < 50; index += 1) {
+    const event = {
+      type: "toolUpdated",
+      sessionRef: sessionRefForTool,
+      timestamp: "2026-09-18T00:00:00.000Z",
+      callId: "call-1",
+      text: `chunk ${index}`,
+    } as unknown as SessionDriverEvent;
+    expect(publisher.shouldDefer(event)).toBe(true);
+  }
+
+  // toolStarted / toolFinished stay immediate: a row appearing or settling is
+  // what the reader is waiting on.
+  expect(
+    publisher.shouldDefer({
+      type: "toolStarted",
+      sessionRef: sessionRefForTool,
+      timestamp: "2026-09-18T00:00:00.000Z",
+      toolName: "bash",
+      callId: "call-1",
+      input: {},
+    } as unknown as SessionDriverEvent),
+  ).toBe(false);
+  expect(
+    publisher.shouldDefer({
+      type: "toolFinished",
+      sessionRef: sessionRefForTool,
+      timestamp: "2026-09-18T00:00:00.000Z",
+      callId: "call-1",
+      success: true,
+    } as unknown as SessionDriverEvent),
+  ).toBe(false);
 });

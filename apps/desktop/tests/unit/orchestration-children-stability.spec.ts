@@ -76,6 +76,13 @@ test("only token-level ticks are exempt from orchestration projection", () => {
   ).toBe(true);
   expect(isTokenLevel(runningTick("run-1"), "run-1")).toBe(true);
 
+  // A busy tool reporting partial output is token-level: coalesced, and it cannot
+  // change a child record either. This was the burst behind the CPU spikes —
+  // every tool progress report used to publish full state immediately.
+  expect(isTokenLevel({ type: "toolUpdated", sessionRef, timestamp: createdAt } as never)).toBe(
+    true,
+  );
+
   // Structural: must still project.
   expect(isTokenLevel({ type: "toolFinished", sessionRef, timestamp: createdAt } as never)).toBe(
     false,

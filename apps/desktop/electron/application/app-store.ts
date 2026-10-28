@@ -149,6 +149,7 @@ import {
   type ConversationOwner,
 } from "../conversation/app-store-composer";
 import * as orchestration from "../orchestration/app-store-orchestration";
+import { noteSlowOperation } from "../platform/slow-operation-log";
 import {
   createOrchestrationOwner,
   type OrchestrationOwner,
@@ -221,9 +222,14 @@ export class DesktopAppStore {
    * Coalesce token-level assistantDelta / redundant sessionUpdated publishes so
    * the renderer does not apply a full DesktopAppState snapshot per token.
    */
-  private readonly streamingUiPublisher = new StreamingUiPublisher((sessionRef) => {
+  private readonly streamingUiPublisher = new StreamingUiPublisher((sessionRefs) => {
+    // One state publish per flush for every session that ticked. Emitting once
+    // per session made the publish rate scale with concurrency, which is what
+    // pinned a core with several threads streaming at the same time.
     this.emit();
-    this.publishSelectedTranscriptFor(sessionRef);
+    for (const sessionRef of sessionRefs) {
+      this.publishSelectedTranscriptFor(sessionRef);
+    }
   });
   /** Per-workspace serial queue so focus reconciles never overlap or race. */
   private readonly externalChangeQueues = new Map<string, Promise<void>>();
@@ -3611,6 +3617,7 @@ export class DesktopAppStore {
     event: SessionDriverEvent,
     subscriptionKey = sessionKey(event.sessionRef),
   ): Promise<void> {
+    const startedAt = Date.now();
     const key = sessionKey(event.sessionRef);
     if (subscriptionKey !== key) {
       this.migrateSessionSubscriptionKey(subscriptionKey, key);
@@ -3799,6 +3806,7 @@ export class DesktopAppStore {
     } catch (error) {
       console.error(`[app-store] failed to apply session event ${event.type} for ${key}`, error);
     } finally {
+      noteSlowOperation(`session event ${event.type}`, startedAt);
       if (this.streamingUiPublisher.shouldDefer(event)) {
         this.streamingUiPublisher.schedule(event.sessionRef);
         await this.emitSessionEvent(event, this.state);
@@ -4210,6 +4218,7 @@ export class DesktopAppStore {
   }
 
   async persistUiState(): Promise<void> {
+    const startedAt = Date.now();
     if (this.persistUiStateTimer) {
       clearTimeout(this.persistUiStateTimer);
       this.persistUiStateTimer = undefined;
@@ -4264,6 +4273,7 @@ export class DesktopAppStore {
     };
 
     await writePersistedUiState(this.uiStateFilePath, payload);
+    noteSlowOperation("persistUiState", startedAt);
   }
 
   async persistComposerAttachments(
