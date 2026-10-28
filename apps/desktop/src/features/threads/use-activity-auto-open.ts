@@ -1,7 +1,5 @@
 import type { TranscriptMessage } from "../../../contracts/timeline-types";
-
-/** Tool calls that count as subagent delegations for first-class follow. */
-const SUBAGENT_TOOL_NAMES = new Set(["agent"]);
+import { SUBAGENT_TOOL_NAMES } from "./subagent-lanes";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
