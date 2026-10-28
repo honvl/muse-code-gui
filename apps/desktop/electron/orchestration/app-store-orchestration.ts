@@ -83,7 +83,7 @@ const CHILD_REPORT_MESSAGE_LIMIT = 2_000;
 /** Trailing marker on a host-truncated child report so the lead knows content is missing. */
 const REPORT_TRUNCATED_NOTE = "…(report truncated; call read_thread for detail)";
 /** Default cap on child records per parent session (unbounded-spawn protection). */
-export const DEFAULT_DELEGATION_BUDGET = 12;
+export const DEFAULT_DELEGATION_BUDGET = 30;
 export const DELEGATION_BUDGET_ENV_VAR = "PI_APP_ORCHESTRATION_MAX_CHILDREN";
 
 /**

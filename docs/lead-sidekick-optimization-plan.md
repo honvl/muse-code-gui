@@ -162,7 +162,7 @@ In this deployment the child (sidekick or scout) is **almost free**; only lead t
 - **5a.** Persist `writeScopes: string[]` on `OrchestrationChildThread` (a desktop contract plus UI-state field; bump the UI-state version with a migration where a missing value means `[]`, the whole workspace). This follows the existing UI-state migration rules in [architecture](architecture.md#persistent-data).
 - **5b.** `existingChildWriteScopes(child)` returns `child.writeScopes ?? []`. `scopesOverlap` (`writer-scope.ts`) already handles the rest.
 - **5c.** Run the same check for `send_message_to_thread` to an idle worker (it re-acquires the writer slot) and for sidekick reuse (Priority 3, persistent sidekick).
-- **5d.** Relax the per-parent child budget (`DEFAULT_DELEGATION_BUDGET`, currently 12). With near-free children it only needs to stop runaway spawning, so a cap around 30 is enough. The real limits are the writer lock and machine or rate limits.
+- **5d.** Relax the per-parent child budget (`DEFAULT_DELEGATION_BUDGET`, now 30; was 12). With near-free children it only needs to stop runaway spawning, so a cap around 30 is enough. The real limits are the writer lock and machine or rate limits.
 - Keep the strict rule that an unscoped worker claims the whole workspace.
 
 ### Acceptance criteria

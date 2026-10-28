@@ -138,7 +138,7 @@ function resultText(result: { content: Array<{ type: string; text?: string }> })
 }
 
 test("create_child_thread refuses with actionable text at the delegation budget", async () => {
-  const children = Array.from({ length: 12 }, (_, index) => seedChild(index + 1));
+  const children = Array.from({ length: 30 }, (_, index) => seedChild(index + 1));
   const { owner, createSessionCalls } = makeHost({
     children,
     childStatus: "running",
@@ -154,14 +154,14 @@ test("create_child_thread refuses with actionable text at the delegation budget"
   expect(result.details.action).toBe(createChildThreadAction);
   expect(result.details.childThreadId).toBeUndefined();
   expect(result.details.error).toContain(
-    "Delegation budget exhausted (12 children on this thread).",
+    "Delegation budget exhausted (30 children on this thread).",
   );
   expect(resultText(result)).toContain("continue an existing child with send_message_to_thread");
   expect(result.details.delegationsRemaining).toBe(0);
 });
 
 test("delegationsRemaining decrements with each spawn", async () => {
-  const children = Array.from({ length: 10 }, (_, index) => seedChild(index + 1));
+  const children = Array.from({ length: 28 }, (_, index) => seedChild(index + 1));
   const { owner, createSessionCalls } = makeHost({
     children,
     childStatus: "running",
@@ -192,13 +192,13 @@ test("delegationsRemaining decrements with each spawn", async () => {
 });
 
 test("PI_APP_ORCHESTRATION_MAX_CHILDREN overrides the budget; junk is ignored", async () => {
-  expect(resolveDelegationBudgetLimit({})).toBe(12);
+  expect(resolveDelegationBudgetLimit({})).toBe(30);
   expect(resolveDelegationBudgetLimit({ PI_APP_ORCHESTRATION_MAX_CHILDREN: "3" })).toBe(3);
   expect(resolveDelegationBudgetLimit({ PI_APP_ORCHESTRATION_MAX_CHILDREN: " 4 " })).toBe(4);
-  expect(resolveDelegationBudgetLimit({ PI_APP_ORCHESTRATION_MAX_CHILDREN: "0" })).toBe(12);
-  expect(resolveDelegationBudgetLimit({ PI_APP_ORCHESTRATION_MAX_CHILDREN: "-2" })).toBe(12);
-  expect(resolveDelegationBudgetLimit({ PI_APP_ORCHESTRATION_MAX_CHILDREN: "junk" })).toBe(12);
-  expect(resolveDelegationBudgetLimit({ PI_APP_ORCHESTRATION_MAX_CHILDREN: "2.5" })).toBe(12);
+  expect(resolveDelegationBudgetLimit({ PI_APP_ORCHESTRATION_MAX_CHILDREN: "0" })).toBe(30);
+  expect(resolveDelegationBudgetLimit({ PI_APP_ORCHESTRATION_MAX_CHILDREN: "-2" })).toBe(30);
+  expect(resolveDelegationBudgetLimit({ PI_APP_ORCHESTRATION_MAX_CHILDREN: "junk" })).toBe(30);
+  expect(resolveDelegationBudgetLimit({ PI_APP_ORCHESTRATION_MAX_CHILDREN: "2.5" })).toBe(30);
   expect(countChildrenForParent([seedChild(1), seedChild(2)], "ws", "parent")).toBe(2);
   expect(countChildrenForParent([seedChild(1)], "ws", "other")).toBe(0);
   expect(delegationBudgetExceededMessage(2)).toContain("send_message_to_thread");
