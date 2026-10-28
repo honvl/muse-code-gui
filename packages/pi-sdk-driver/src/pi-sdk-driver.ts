@@ -19,6 +19,8 @@ import type {
   SessionModelSelection,
   SessionRef,
   SessionSnapshot,
+  SessionCustomMessageInput,
+  SendCustomMessageOptions,
   SessionMessageInput,
   Unsubscribe,
   WorkspaceRef,
@@ -83,6 +85,14 @@ export class PiSdkDriver implements SessionDriver {
     return this.supervisor.sendUserMessage(sessionRef, input);
   }
 
+  sendCustomMessage(
+    sessionRef: SessionRef,
+    input: SessionCustomMessageInput,
+    options?: SendCustomMessageOptions,
+  ): Promise<void> {
+    return this.supervisor.sendCustomMessage(sessionRef, input, options);
+  }
+
   replaceQueuedMessages(
     sessionRef: SessionRef,
     messages: readonly SessionQueuedMessage[],
@@ -104,6 +114,17 @@ export class PiSdkDriver implements SessionDriver {
 
   setSessionThinkingLevel(sessionRef: SessionRef, thinkingLevel: string): Promise<void> {
     return this.supervisor.setSessionThinkingLevel(sessionRef, thinkingLevel);
+  }
+
+  setSessionOrchestratorMode(sessionRef: SessionRef, enabled: boolean): Promise<void> {
+    return this.supervisor.setSessionOrchestratorMode(sessionRef, enabled);
+  }
+
+  setSessionSidekickModel(
+    sessionRef: SessionRef,
+    selection: SessionModelSelection | undefined,
+  ): Promise<void> {
+    return this.supervisor.setSessionSidekickModel(sessionRef, selection);
   }
 
   renameSession(sessionRef: SessionRef, title: string): Promise<void> {

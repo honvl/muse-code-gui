@@ -38,6 +38,11 @@ export {
 } from "./child-isolation.js";
 export type { ChildIsolationInfo, ChildThreadMode, ChildToolDecision } from "./child-isolation.js";
 export {
+  ORCHESTRATOR_ALLOWED_TOOLS,
+  ORCHESTRATOR_SYSTEM_PROMPT,
+  createOrchestratorModeExtension,
+} from "./orchestrator-mode.js";
+export {
   PACK_EXTENSION_RELATIVE_PATHS,
   PACK_MCP_SERVERS,
   PACK_PACKAGES,

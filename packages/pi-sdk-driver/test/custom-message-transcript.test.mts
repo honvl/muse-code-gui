@@ -231,3 +231,54 @@ await test("custom messages sent during a run keep their persisted entry ids", a
   const run = h.events.find((event) => event.type === "transcriptItemAppended");
   assert.ok(run?.runId, "live rows carry the run they arrived in");
 });
+
+await test("host sendCustomMessage wakes an idle session without impersonating the user", async (t) => {
+  const h = await fixture(t, (model) => reply(model, "report acknowledged"));
+
+  await h.driver.sendCustomMessage(
+    h.ref,
+    { customType: "pi-gui.child-report", text: 'Child thread "probe" finished.' },
+    { triggerTurn: true, deliverAs: "followUp" },
+  );
+  await h.settled();
+
+  const transcript = await h.driver.getTranscript(h.ref);
+  assert.deepEqual(
+    transcript
+      .filter((item) => item.kind === "custom")
+      .map(({ customType, text }) => ({ customType, text })),
+    [{ customType: "pi-gui.child-report", text: 'Child thread "probe" finished.' }],
+  );
+  assert.ok(
+    !transcript.some((item) => item.kind === "message" && item.role === "user"),
+    "the report must not look like a typed prompt",
+  );
+  assert.ok(
+    transcript.some(
+      (item) =>
+        item.kind === "message" && item.role === "assistant" && item.text === "report acknowledged",
+    ),
+    "triggerTurn runs the model on the report",
+  );
+});
+
+await test("host sendCustomMessage without triggerTurn only records the note", async (t) => {
+  const h = await fixture(t, (model) => reply(model, "unused"));
+
+  await h.driver.sendCustomMessage(h.ref, {
+    customType: "pi-gui.child-report",
+    text: "quiet note",
+    display: true,
+  });
+
+  for (let attempt = 0; attempt < 200 && h.appended().length === 0; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(h.appended().length, 1);
+  assert.ok(!h.events.some((event) => event.type === "runCompleted" || event.type === "agent"));
+  assert.equal(
+    h.events.filter((event) => event.type === "assistantMessageEnded").length,
+    0,
+    "no turn was started",
+  );
+});

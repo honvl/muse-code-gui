@@ -21,6 +21,8 @@ import type { SessionCatalogSnapshot, WorkspaceCatalogSnapshot } from "@pi-gui/c
 import type {
   NavigateSessionTreeOptions,
   NavigateSessionTreeResult,
+  SendCustomMessageOptions,
+  SessionCustomMessageInput,
   SessionMessageDeliveryMode,
   SessionMessageInput,
   SessionQueuedMessage,
@@ -129,6 +131,7 @@ import {
 } from "./session-supervisor-utils.js";
 import { forcePersistPiSession } from "./compat/pi-session-persistence.js";
 import { createChildIsolationExtension, type ChildIsolationInfo } from "./child-isolation.js";
+import { createOrchestratorModeExtension } from "./orchestrator-mode.js";
 import { createInvalidToolCallGuardExtension } from "./invalid-tool-call-guard.js";
 import { createTurnCaptureExtension } from "./turn-capture.js";
 import { createTranscriptIdentityExtension } from "./transcript-identity.js";
@@ -327,6 +330,10 @@ export class SessionSupervisor {
   private readonly planLimitsByProvider = new Map<string, SessionPlanLimits>();
   /** Isolation enforced on orchestration child sessions, keyed by pi session id. */
   private readonly childIsolations = new Map<string, ChildIsolationInfo>();
+  /** Orchestrator (dispatcher-only) mode, keyed by pi session id. */
+  private readonly orchestratorModes = new Map<string, boolean>();
+  /** Sidekick model child threads will run on, keyed by pi session id. */
+  private readonly sidekickModels = new Map<string, SessionModelSelection>();
   private readonly ensureRecordInFlight = new Map<string, Promise<ManagedSessionRecord>>();
   /** Preserve invocation order so stale touches cannot undo a later rename or removal. */
   private readonly workspaceMutationQueues = new Map<WorkspaceId, Promise<void>>();
@@ -422,6 +429,17 @@ export class SessionSupervisor {
                 return this.childIsolations.get(ctx.sessionManager.getSessionId());
               } catch {
                 return undefined;
+              }
+            }),
+          },
+          {
+            name: "pi-gui-orchestrator-mode",
+            hidden: true,
+            factory: createOrchestratorModeExtension((ctx) => {
+              try {
+                return this.orchestratorModes.get(ctx.sessionManager.getSessionId()) === true;
+              } catch {
+                return false;
               }
             }),
           },
@@ -760,6 +778,95 @@ export class SessionSupervisor {
     this.childIsolations.set(sessionRef.sessionId, info);
   }
 
+  /** Enable/disable dispatcher-only orchestrator mode for a session. */
+  async setSessionOrchestratorMode(sessionRef: SessionRef, enabled: boolean): Promise<void> {
+    const record = await this.ensureRecord(sessionRef);
+    const session = this.requireSession(record);
+    const piSessionId = session.sessionManager.getSessionId();
+    const current = this.orchestratorModes.get(piSessionId) === true;
+    const configHasMode = record.config?.orchestratorMode === true;
+    if (current === enabled && configHasMode === enabled) {
+      return;
+    }
+    if (enabled) {
+      this.orchestratorModes.set(piSessionId, true);
+    } else {
+      this.orchestratorModes.delete(piSessionId);
+    }
+    record.config = this.configWithSessionFlags(
+      deriveSessionConfig(session.sessionManager),
+      piSessionId,
+    );
+    await this.persistSnapshot(record);
+    await this.emit(record, sessionUpdatedEvent(record));
+  }
+
+  private configWithSessionFlags(
+    base: SessionConfig | undefined,
+    piSessionId: string,
+  ): SessionConfig | undefined {
+    return this.configWithSidekick(this.configWithOrchestratorMode(base, piSessionId), piSessionId);
+  }
+
+  private configWithOrchestratorMode(
+    base: SessionConfig | undefined,
+    piSessionId: string,
+  ): SessionConfig | undefined {
+    const enabled = this.orchestratorModes.get(piSessionId) === true;
+    if (!enabled) {
+      if (!base) return base;
+      if (base.orchestratorMode === undefined) return base;
+      const { orchestratorMode: _dropped, ...rest } = base;
+      return Object.keys(rest).length > 0 ? (rest as SessionConfig) : undefined;
+    }
+    return { ...(base ?? {}), orchestratorMode: true };
+  }
+
+  private configWithSidekick(
+    base: SessionConfig | undefined,
+    piSessionId: string,
+  ): SessionConfig | undefined {
+    const selection = this.sidekickModels.get(piSessionId);
+    if (!selection) {
+      if (!base) return base;
+      if (base.sidekick === undefined) return base;
+      const { sidekick: _dropped, ...rest } = base;
+      return Object.keys(rest).length > 0 ? (rest as SessionConfig) : undefined;
+    }
+    return { ...(base ?? {}), sidekick: { ...selection } };
+  }
+
+  /** Pin the model child threads will run on. `undefined` clears it. */
+  async setSessionSidekickModel(
+    sessionRef: SessionRef,
+    selection: SessionModelSelection | undefined,
+  ): Promise<void> {
+    const record = await this.ensureRecord(sessionRef);
+    const session = this.requireSession(record);
+    const piSessionId = session.sessionManager.getSessionId();
+    const current = this.sidekickModels.get(piSessionId);
+    if (
+      sidekickSelectionsEqual(current, selection) &&
+      sidekickSelectionsEqual(record.config?.sidekick, selection)
+    ) {
+      return;
+    }
+    if (selection) {
+      this.sidekickModels.set(piSessionId, {
+        provider: selection.provider,
+        modelId: selection.modelId,
+      });
+    } else {
+      this.sidekickModels.delete(piSessionId);
+    }
+    record.config = this.configWithSessionFlags(
+      deriveSessionConfig(session.sessionManager),
+      piSessionId,
+    );
+    await this.persistSnapshot(record);
+    await this.emit(record, sessionUpdatedEvent(record));
+  }
+
   /** Background bash tasks for one thread (newest last). Includes finished tasks. */
   async listBackgroundTasks(sessionRef: SessionRef) {
     await this.ensureRecord(sessionRef);
@@ -947,7 +1054,13 @@ export class SessionSupervisor {
     );
     session.sessionManager.appendSessionInfo(record.title);
     forcePersistPiSession(session.sessionManager);
-    record.config = deriveSessionConfig(session.sessionManager);
+    if (options?.initialOrchestratorMode) {
+      this.orchestratorModes.set(session.sessionManager.getSessionId(), true);
+    }
+    record.config = this.configWithSessionFlags(
+      deriveSessionConfig(session.sessionManager),
+      session.sessionManager.getSessionId(),
+    );
     const sessionFile = record.sessionFile ?? session.sessionManager.getSessionFile();
     if (sessionFile) {
       record.sessionFile = sessionFile;
@@ -1081,7 +1194,20 @@ export class SessionSupervisor {
     const title = options.title ?? sourceRecord.title;
     const record = this.createRecord(targetWorkspace, runtime, title);
     forcePersistPiSession(session.sessionManager);
-    record.config = deriveSessionConfig(session.sessionManager);
+    try {
+      const sourceMode = this.orchestratorModes.get(
+        sourceRecord.session?.sessionManager.getSessionId() ?? sourceRef.sessionId,
+      );
+      if (sourceMode) {
+        this.orchestratorModes.set(session.sessionManager.getSessionId(), true);
+      }
+    } catch {
+      // Fork inherits no orchestrator mode when source state is unavailable.
+    }
+    record.config = this.configWithSessionFlags(
+      deriveSessionConfig(session.sessionManager),
+      session.sessionManager.getSessionId(),
+    );
     const sessionFile = record.sessionFile ?? session.sessionManager.getSessionFile();
     if (sessionFile) {
       record.sessionFile = sessionFile;
@@ -1168,6 +1294,57 @@ export class SessionSupervisor {
     return this.sendReadyMessage(record, input);
   }
 
+  /**
+   * Append a host-authored note without impersonating a typed message. With
+   * `triggerTurn`, an idle session starts a turn from the note ("the child
+   * finished" wakes an orchestrator); a streaming session queues it as a
+   * follow-up. A started turn outlives this call, so its lifetime is published
+   * through the normal driver events and only a failed start is reported here.
+   */
+  async sendCustomMessage(
+    sessionRef: SessionRef,
+    input: SessionCustomMessageInput,
+    options: SendCustomMessageOptions = {},
+  ): Promise<void> {
+    const record = await this.ensureRecord(sessionRef);
+    await this.settleReloadsBeforeSend(record);
+    const session = this.requireSession(record);
+    const text = input.text.trim();
+    if (!text) {
+      throw new Error("Custom message text cannot be empty.");
+    }
+    const triggerTurn = options.triggerTurn === true;
+    const streaming = session.isStreaming;
+    const pending = session.sendCustomMessage(
+      { customType: input.customType, content: text, display: input.display ?? true },
+      triggerTurn
+        ? {
+            triggerTurn: true,
+            ...(streaming ? { deliverAs: options.deliverAs ?? "followUp" } : {}),
+          }
+        : {},
+    );
+    if (!triggerTurn || streaming) {
+      await pending;
+      return;
+    }
+    void pending.catch((error: unknown) => {
+      record.updatedAt = nowIso();
+      void (async () => {
+        await this.persistSnapshot(record);
+        await this.emit(record, {
+          type: "runFailed",
+          sessionRef: record.ref,
+          timestamp: record.updatedAt,
+          error: toSessionErrorInfo(error, "CUSTOM_MESSAGE_FAILED"),
+        });
+        await this.emit(record, sessionUpdatedEvent(record));
+      })().catch((emitError: unknown) => {
+        console.warn("[pi-sdk-driver] failed to report a custom message start failure", emitError);
+      });
+    });
+  }
+
   /** Synchronous until the session counts as busy (promptStarting, or a command running). */
   private async sendReadyMessage(
     record: ManagedSessionRecord,
@@ -1214,7 +1391,10 @@ export class SessionSupervisor {
     record.runningRunId = runId ?? record.runningRunId;
     record.status = isQueuedMessage || isExtensionCommand ? record.status : "running";
     record.updatedAt = nowIso();
-    record.config = deriveSessionConfig(session.sessionManager);
+    record.config = this.configWithSessionFlags(
+      deriveSessionConfig(session.sessionManager),
+      session.sessionManager.getSessionId(),
+    );
     // A card button's command is not something the user said, so it leaves the preview.
     if (!input.extensionCommandOnly) record.preview = truncate(input.text);
     try {
@@ -1417,7 +1597,10 @@ export class SessionSupervisor {
     }
     session.refreshContext();
     forcePersistPiSession(session.sessionManager);
-    record.config = deriveSessionConfig(session.sessionManager);
+    record.config = this.configWithSessionFlags(
+      deriveSessionConfig(session.sessionManager),
+      session.sessionManager.getSessionId(),
+    );
 
     const tokens = estimateProjectionTokens();
     if (tokens >= contextWindow) {
@@ -1677,7 +1860,10 @@ export class SessionSupervisor {
     this.applySessionThinkingLevel(session, previousThinkingLevel);
     await this.emitModelSelection(session, model, previousModel);
     forcePersistPiSession(session.sessionManager);
-    record.config = deriveSessionConfig(session.sessionManager);
+    record.config = this.configWithSessionFlags(
+      deriveSessionConfig(session.sessionManager),
+      session.sessionManager.getSessionId(),
+    );
     this.refreshUsage(record);
     await this.persistSnapshot(record);
     await this.emit(record, sessionUpdatedEvent(record));
@@ -1688,7 +1874,10 @@ export class SessionSupervisor {
     const session = this.requireSession(record);
     this.applySessionThinkingLevel(session, thinkingLevel);
     forcePersistPiSession(session.sessionManager);
-    record.config = deriveSessionConfig(session.sessionManager);
+    record.config = this.configWithSessionFlags(
+      deriveSessionConfig(session.sessionManager),
+      session.sessionManager.getSessionId(),
+    );
     await this.persistSnapshot(record);
     await this.emit(record, sessionUpdatedEvent(record));
   }
@@ -1717,7 +1906,10 @@ export class SessionSupervisor {
     await record.session.compact(customInstructions);
     record.runningRunId = undefined;
     record.status = "idle";
-    record.config = deriveSessionConfig(record.session.sessionManager);
+    record.config = this.configWithSessionFlags(
+      deriveSessionConfig(record.session.sessionManager),
+      record.session.sessionManager.getSessionId(),
+    );
     record.preview = extractPreview(record.session.messages) ?? record.preview;
     this.refreshUsage(record);
     await this.persistSnapshot(record);
@@ -1953,7 +2145,10 @@ export class SessionSupervisor {
     record.updatedAt = sessionEntry.updatedAt;
     record.archivedAt = sessionEntry.archivedAt;
     record.preview = sessionEntry.previewSnippet ?? undefined;
-    record.config = deriveSessionConfig(session.sessionManager);
+    record.config = this.configWithSessionFlags(
+      deriveSessionConfig(session.sessionManager),
+      session.sessionManager.getSessionId(),
+    );
     record.closed = false;
     record.leasePath = leasePath;
 
@@ -1986,7 +2181,10 @@ export class SessionSupervisor {
       updatedAt: nowIso(),
       archivedAt: undefined,
       preview: undefined,
-      config: deriveSessionConfig(session.sessionManager),
+      config: this.configWithSessionFlags(
+        deriveSessionConfig(session.sessionManager),
+        session.sessionManager.getSessionId(),
+      ),
       runningRunId: undefined,
       cancellationRequested: false,
       promptStarting: false,
@@ -2811,7 +3009,10 @@ export class SessionSupervisor {
     record.runningRunId = session.isStreaming
       ? (record.runningRunId ?? crypto.randomUUID())
       : undefined;
-    record.config = deriveSessionConfig(session.sessionManager);
+    record.config = this.configWithSessionFlags(
+      deriveSessionConfig(session.sessionManager),
+      session.sessionManager.getSessionId(),
+    );
     const displayMessages = displayMessagesFromSession(session.sessionManager);
     record.preview = extractPreview(
       displayMessages.filter((message) => !isHiddenCustomMessage(message)).at(-1),
@@ -4055,6 +4256,14 @@ function findCustomMessageEntryId(
     }
   }
   return undefined;
+}
+
+function sidekickSelectionsEqual(
+  a: SessionModelSelection | undefined,
+  b: SessionModelSelection | undefined,
+): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  return a.provider === b.provider && a.modelId === b.modelId;
 }
 
 function sessionUpdatedEvent(record: ManagedSessionRecord): SessionDriverEvent {

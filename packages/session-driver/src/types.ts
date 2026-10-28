@@ -69,6 +69,8 @@ export interface SessionConfig {
   readonly provider?: string;
   readonly modelId?: string;
   readonly thinkingLevel?: string;
+  readonly orchestratorMode?: boolean;
+  readonly sidekick?: SessionModelSelection;
 }
 
 export type SessionTreeNodeKind =
@@ -135,10 +137,30 @@ export interface SessionMessageInput {
   readonly extensionCommandOnly?: boolean;
 }
 
+/**
+ * A note the host authors, not something the person typed. pi renders it with
+ * `customType` as a label instead of a user bubble, so synthetic orchestration
+ * traffic can be told apart from real prompts.
+ */
+export interface SessionCustomMessageInput {
+  readonly customType: string;
+  readonly text: string;
+  /** Draw the note in the transcript. False keeps it model-context only. */
+  readonly display?: boolean;
+}
+
+export interface SendCustomMessageOptions {
+  /** Start a turn from the note when the session is idle. */
+  readonly triggerTurn?: boolean;
+  /** How a note arriving mid-run is queued. Defaults to "followUp". */
+  readonly deliverAs?: SessionMessageDeliveryMode;
+}
+
 export interface CreateSessionOptions {
   readonly title?: string;
   readonly initialModel?: SessionModelSelection;
   readonly initialThinkingLevel?: string;
+  readonly initialOrchestratorMode?: boolean;
   /** Values for flags the session's extensions registered, applied when pi loads them. */
   readonly extensionFlagValues?: ExtensionFlagValues;
 }
@@ -404,6 +426,15 @@ export interface SessionDriver {
   archiveSession(sessionRef: SessionRef): Promise<void>;
   unarchiveSession(sessionRef: SessionRef): Promise<void>;
   sendUserMessage(sessionRef: SessionRef, input: SessionMessageInput): Promise<void>;
+  /**
+   * Append a host-authored custom message, optionally starting or queueing a turn.
+   * Resolves once the note is accepted; a turn it starts settles through driver events.
+   */
+  sendCustomMessage(
+    sessionRef: SessionRef,
+    input: SessionCustomMessageInput,
+    options?: SendCustomMessageOptions,
+  ): Promise<void>;
   replaceQueuedMessages(
     sessionRef: SessionRef,
     messages: readonly SessionQueuedMessage[],
@@ -411,6 +442,11 @@ export interface SessionDriver {
   cancelCurrentRun(sessionRef: SessionRef): Promise<void>;
   setSessionModel(sessionRef: SessionRef, selection: SessionModelSelection): Promise<void>;
   setSessionThinkingLevel(sessionRef: SessionRef, thinkingLevel: string): Promise<void>;
+  setSessionOrchestratorMode(sessionRef: SessionRef, enabled: boolean): Promise<void>;
+  setSessionSidekickModel(
+    sessionRef: SessionRef,
+    selection: SessionModelSelection | undefined,
+  ): Promise<void>;
   renameSession(sessionRef: SessionRef, title: string): Promise<void>;
   compactSession(sessionRef: SessionRef, customInstructions?: string): Promise<void>;
   reloadSession(sessionRef: SessionRef): Promise<void>;
