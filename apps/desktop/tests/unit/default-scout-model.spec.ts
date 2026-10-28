@@ -72,7 +72,7 @@ test("scout and sidekick reasoning round-trip through ui-state", async () => {
   expect(decoded.defaultScoutThinkingLevel).toBe("low");
   expect(decoded.sidekickThinkingBySession).toEqual({ "ws:lead": "medium" });
   const written = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
-  expect(written.version).toBe(19);
+  expect(written.version).toBe(20);
 });
 
 test("ui-state without reasoning overrides loads as absent", async () => {
@@ -84,10 +84,10 @@ test("ui-state without reasoning overrides loads as absent", async () => {
 });
 
 for (const invalid of [
-  { version: 19, defaultScoutThinkingLevel: "extreme" },
-  { version: 19, defaultScoutThinkingLevel: 3 },
-  { version: 19, sidekickThinkingBySession: { "ws:lead": "extreme" } },
-  { version: 19, sidekickThinkingBySession: "low" },
+  { version: 20, defaultScoutThinkingLevel: "extreme" },
+  { version: 20, defaultScoutThinkingLevel: 3 },
+  { version: 20, sidekickThinkingBySession: { "ws:lead": "extreme" } },
+  { version: 20, sidekickThinkingBySession: "low" },
 ]) {
   test(`preserves ui-state with invalid reasoning ${JSON.stringify(invalid)}`, async () => {
     const path = join(await mkdtemp(join(tmpdir(), "ui-state-bad-thinking-")), "ui-state.json");

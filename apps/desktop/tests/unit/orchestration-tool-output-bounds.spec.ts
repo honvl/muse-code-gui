@@ -214,6 +214,8 @@ function makeHost(state: BoundsHostState) {
     subscribeToSessionEvents: () => () => {},
     updateSessionConfig: () => {},
     defaultScoutModel: () => undefined,
+    sidekickThinkingLevelFor: () => undefined,
+    defaultScoutThinkingLevel: () => undefined,
     seedSession: () => {},
     refreshState: async () => ({}) as never,
     isOrchestratorSession: () => lead,

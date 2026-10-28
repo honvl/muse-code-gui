@@ -110,6 +110,8 @@ function makeHost(options: {
     isOrchestratorSession: () => false,
     sidekickModelFor: () => undefined,
     defaultScoutModel: () => undefined,
+    sidekickThinkingLevelFor: () => undefined,
+    defaultScoutThinkingLevel: () => undefined,
     sessionModelFor: () => undefined,
     buildCreateSessionOptions: async () => undefined,
     getQueuedComposerMessages: (ref: SessionRef) => options.queued?.[ref.sessionId] ?? [],

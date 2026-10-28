@@ -104,6 +104,8 @@ function makeHarness() {
     isOrchestratorSession: () => true,
     sidekickModelFor: () => undefined,
     defaultScoutModel: () => undefined,
+    sidekickThinkingLevelFor: () => undefined,
+    defaultScoutThinkingLevel: () => undefined,
     sessionModelFor: () => undefined,
     buildCreateSessionOptions: async () => undefined,
     getQueuedComposerMessages: () => [],
