@@ -133,6 +133,7 @@ import {
   cloneComposerAttachments,
   latestSessionActivityAt,
   mergeQueuedComposerMessages,
+  mergeSessionListings,
   mapToRecord,
   previewFromTranscript,
   toSessionQueuedMessages,
@@ -2793,12 +2794,21 @@ export class DesktopAppStore {
         this.driver.listWorkspaces(),
         this.driver.listSessions(),
       ]);
+      // Muse children have no pi session file, so pi's listing alone drops
+      // them: status events no-op, prune() wipes their subscription and
+      // transcript cache, and the child projects `complete` mid-run. Merge
+      // the Muse driver's listing (live records plus restart markers) with
+      // the Muse side winning per session key.
+      const museSessions = await this.sessionRouter.listMuseSessions().catch(() => ({
+        sessions: [] as SessionCatalogEntry[],
+      }));
+      const sessions = mergeSessionListings(sessionsSnapshot.sessions, museSessions.sessions);
       const worktreeEntries = options.refreshWorktrees
         ? await this.workspaceOwner.syncAndListWorktrees(workspacesSnapshot.workspaces)
         : (await this.catalogStore.worktrees.listWorktrees()).worktrees;
 
-      await this.pruneStaleSessionSubscriptions(sessionsSnapshot.sessions);
-      await this.ensureSubscriptionsForSessions(sessionsSnapshot.sessions);
+      await this.pruneStaleSessionSubscriptions(sessions);
+      await this.ensureSubscriptionsForSessions(sessions);
 
       const selectedWorkspaceId = resolveSelectedWorkspaceIdFromCatalog(
         options.selectedWorkspaceId ?? this.state.selectedWorkspaceId,
@@ -2807,7 +2817,7 @@ export class DesktopAppStore {
       const selectedSessionId = resolveSelectedSessionIdFromCatalog(
         selectedWorkspaceId,
         options.selectedSessionId ?? this.state.selectedSessionId,
-        sessionsSnapshot.sessions,
+        sessions,
       );
 
       if (selectedWorkspaceId && selectedSessionId && options.hydrateSelectedSession !== false) {
@@ -2822,7 +2832,7 @@ export class DesktopAppStore {
       const workspaces = buildWorkspaceRecords(
         workspacesSnapshot.workspaces,
         worktreeEntries,
-        sessionsSnapshot.sessions,
+        sessions,
         this.sessionState.transcriptCache,
         this.sessionState.runningSinceBySession,
         this.sessionState.sessionConfigBySession,

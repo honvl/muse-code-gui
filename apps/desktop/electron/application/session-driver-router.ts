@@ -1,3 +1,4 @@
+import type { SessionCatalogSnapshot } from "@pi-gui/catalogs";
 import type { MuseCliDriver } from "@pi-gui/muse-cli-driver";
 import type { ChildIsolationInfo, PiSdkDriver } from "@pi-gui/pi-sdk-driver";
 import type {
@@ -44,6 +45,15 @@ export class SessionDriverRouter {
   /** Remember a muse-cli session before its child record exists in state. */
   noteMuseSession(sessionRef: SessionRef): void {
     this.notedMuseKeys.add(sessionKeyOf(sessionRef));
+  }
+
+  /**
+   * Sessions the Muse CLI driver knows about (live records plus restart
+   * markers). The store merges these over pi's listing so a Muse child
+   * survives refreshState with authoritative running status.
+   */
+  listMuseSessions(workspaceId?: string): Promise<SessionCatalogSnapshot> {
+    return this.muse.listSessions(workspaceId);
   }
 
   private targetFor(sessionRef: SessionRef): SessionDriver {

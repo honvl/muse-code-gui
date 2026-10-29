@@ -27,6 +27,30 @@ export function mapToRecord<V>(map: Map<string, V>): Record<string, V> {
   return Object.fromEntries(map.entries());
 }
 
+/**
+ * Union pi's session listing with the Muse driver's. The Muse side wins per
+ * session key: its live records carry authoritative running status, while
+ * pi's catalog copy goes stale the moment a turn starts. Without this merge
+ * a Muse child falls out of state on refresh — status events then no-op,
+ * prune() drops its subscription and transcript cache, and the child
+ * projects `complete` while its run is still going.
+ */
+export function mergeSessionListings(
+  piSessions: readonly SessionCatalogEntry[],
+  museSessions: readonly SessionCatalogEntry[],
+): SessionCatalogEntry[] {
+  if (museSessions.length === 0) {
+    return [...piSessions];
+  }
+  const merged = new Map(
+    piSessions.map((session) => [sessionKey(session.sessionRef), session] as const),
+  );
+  for (const session of museSessions) {
+    merged.set(sessionKey(session.sessionRef), session);
+  }
+  return [...merged.values()];
+}
+
 export function buildWorkspaceRecords(
   workspaces: readonly WorkspaceCatalogEntry[],
   worktrees: readonly WorktreeCatalogEntry[],
