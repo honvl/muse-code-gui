@@ -54,13 +54,19 @@ export function classifyLeadBashCommand(command: string | undefined): LeadAction
   }
   let verification: LeadAction | undefined;
   let cwdIsTemp = false;
+  let cwdIsWorktree = false;
   for (const segment of segments) {
     const [head, target] = segment.split(/\s+/);
     if (head === "cd") {
+      if (target && isWorktreePath(target)) {
+        cwdIsWorktree = true;
+      } else if (target?.startsWith("/") || target?.startsWith("~")) {
+        cwdIsWorktree = false;
+      }
       if (target?.startsWith("/") || target?.startsWith("~")) cwdIsTemp = isTempPath(target);
       continue;
     }
-    const action = classifySegment(segment, cwdIsTemp);
+    const action = classifySegment(segment, cwdIsTemp, cwdIsWorktree);
     if (action.kind === "mutation") return action;
     if (action.kind === "verification") verification ??= action;
   }
@@ -243,7 +249,7 @@ function action(kind: LeadActionKind, argv: readonly string[]): LeadAction {
  * In a temp working directory only an absolute non-temp path can touch the
  * project; everything relative (redirects, file ops, git, formatters) is scratch.
  */
-function classifySegment(segment: string, cwdIsTemp: boolean): LeadAction {
+function classifySegment(segment: string, cwdIsTemp: boolean, cwdIsWorktree = false): LeadAction {
   const { tokens, redirectTargets } = parseSegment(segment);
   const argv = effectiveCommand(tokens);
   const isAbsolute = (path: string) => path.startsWith("/") || path.startsWith("~");
@@ -252,7 +258,7 @@ function classifySegment(segment: string, cwdIsTemp: boolean): LeadAction {
   if (fileTarget) {
     return { kind: "mutation", label: `write to ${fileTarget}` };
   }
-  const result = classifyArgv(argv);
+  const result = classifyArgv(argv, cwdIsWorktree);
   if (cwdIsTemp && result.kind === "mutation") {
     const reachesProject = argv
       .slice(1)
@@ -307,7 +313,7 @@ const DIRECT_VERIFIERS = new Set([
   "playwright",
 ]);
 
-function classifyArgv(argv: readonly string[]): LeadAction {
+function classifyArgv(argv: readonly string[], inWorktree = false): LeadAction {
   const head = argv[0];
   if (!head) return READ;
   const cmd = baseName(head);
@@ -323,15 +329,22 @@ function classifyArgv(argv: readonly string[]): LeadAction {
         ? operands.slice(-1)
         : operands;
     if (cmd === "tee" && paths.length === 0) return READ;
+    // Landing bookkeeping: moving an installed *.app bundle into or out of
+    // /Applications (back up the old build, install the new one) touches no
+    // project files. Deleting a bundle (rm) still counts below.
+    if (cmd === "mv" && isAppBundleLanding(operands)) return READ;
     return paths.length > 0 && paths.every(isTempPath) ? READ : action("mutation", argv);
   }
+  // ditto copies (e.g. installing a built *.app into /Applications) are
+  // landing bookkeeping, like the mv above; ditto never edits in place.
+  if (cmd === "ditto") return READ;
   if (cmd === "dd") {
     const out = args.find((arg) => arg.startsWith("of="));
     return out && !isTempPath(out.slice(3)) ? action("mutation", argv) : READ;
   }
   if (cmd === "perl" && args[0] === "-e" && /exec_@ARGV/.test(args[1] ?? "")) {
     // `perl -e 'alarm N; exec @ARGV' cmd …` is the macOS timeout idiom: classify the wrapped command.
-    return classifyArgv(args.slice(2));
+    return classifyArgv(args.slice(2), inWorktree);
   }
   if (cmd === "sed" || cmd === "perl" || cmd === "ruby") {
     const inPlace = args.some((arg) => /^-[A-Za-z0-9]*i/.test(arg) || arg.startsWith("--in-place"));
@@ -348,9 +361,9 @@ function classifyArgv(argv: readonly string[]): LeadAction {
       ? action("mutation", argv)
       : READ;
   }
-  if (cmd === "git") return classifyGit(argv);
-  if (["npm", "pnpm", "yarn", "bun"].includes(cmd)) return classifyPackageManager(argv);
-  if (["npx", "pnpx", "bunx"].includes(cmd)) return classifyArgv(stripLeadingFlags(args));
+  if (cmd === "git") return classifyGit(argv, inWorktree);
+  if (["npm", "pnpm", "yarn", "bun"].includes(cmd)) return classifyPackageManager(argv, inWorktree);
+  if (["npx", "pnpx", "bunx"].includes(cmd)) return classifyArgv(stripLeadingFlags(args), inWorktree);
   if (DIRECT_VERIFIERS.has(cmd)) return action("verification", argv);
   if (cmd === "make") {
     return args.some((arg) => /^(install|format|fmt)$/.test(arg))
@@ -366,7 +379,7 @@ function classifyArgv(argv: readonly string[]): LeadAction {
     if (module === "pip") {
       return /^(install|uninstall)$/.test(args[2] ?? "") ? action("mutation", argv) : READ;
     }
-    return classifyArgv(args.slice(1));
+    return classifyArgv(args.slice(1), inWorktree);
   }
   if (cmd === "pip" || cmd === "pip3" || cmd === "brew") {
     return /^(install|uninstall|upgrade|reinstall)$/.test(args[0] ?? "")
@@ -450,6 +463,28 @@ function classifyFormatter(cmd: string, argv: readonly string[]): LeadAction | u
   }
 }
 
+/** A checkout path under a linked `.worktrees/` directory (absolute or relative). */
+const WORKTREE_SEGMENT = /\.worktrees(\/|$)/;
+
+function isWorktreePath(path: string): boolean {
+  return WORKTREE_SEGMENT.test(path);
+}
+
+const APPLICATIONS_PREFIXES = ["/Applications", "~/Applications"];
+
+function isApplicationsPath(path: string): boolean {
+  return APPLICATIONS_PREFIXES.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
+}
+
+/** An app-bundle path: `X.app`, `X.app/…`, or a versioned backup like `X.app.backup-*`. */
+const APP_BUNDLE_SEGMENT = /\.app(?:[./]|$)/;
+
+function isAppBundleLanding(paths: readonly string[]): boolean {
+  return (
+    paths.some((path) => APP_BUNDLE_SEGMENT.test(path)) && paths.some(isApplicationsPath)
+  );
+}
+
 /* ── git and package managers ───────────────────────────────── */
 
 /** git operations that rewrite working-tree files. Bookkeeping (add, commit, push, branch, tag) stays free. */
@@ -471,11 +506,16 @@ const GIT_WORKTREE_WRITERS = new Set([
 ]);
 const GIT_OPTIONS_WITH_VALUE = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace"]);
 
-function classifyGit(argv: readonly string[]): LeadAction {
+function classifyGit(argv: readonly string[], inWorktree = false): LeadAction {
   let index = 1;
+  const dirTargets: string[] = [];
   while (index < argv.length) {
     const token = argv[index] ?? "";
-    if (GIT_OPTIONS_WITH_VALUE.has(token)) {
+    if (token === "-C" || token === "--git-dir" || token === "--work-tree") {
+      const value = argv[index + 1];
+      if (value) dirTargets.push(value);
+      index += 2;
+    } else if (GIT_OPTIONS_WITH_VALUE.has(token)) {
       index += 2;
     } else if (token.startsWith("-")) {
       index += 1;
@@ -485,6 +525,14 @@ function classifyGit(argv: readonly string[]): LeadAction {
   }
   const sub = argv[index];
   if (!sub) return READ;
+  const worktreeCheckout = inWorktree || dirTargets.some(isWorktreePath);
+  // Landing bookkeeping: fast-forward merges, cherry-picks, and worktree
+  // add/remove move finished work between branches; they never edit files.
+  // A rebase is only bookkeeping inside a linked worktree checkout.
+  if (sub === "worktree") return READ;
+  if (sub === "merge" && argv.includes("--ff-only")) return READ;
+  if (sub === "cherry-pick") return READ;
+  if (sub === "rebase" && worktreeCheckout) return READ;
   // These forms move HEAD or the index only; working-tree files are untouched.
   if (sub === "reset" && argv.includes("--soft")) return READ;
   if (sub === "restore" && argv.includes("--staged") && !argv.includes("--worktree")) return READ;
@@ -533,11 +581,22 @@ function stripLeadingFlags(args: readonly string[]): readonly string[] {
   return args.slice(index);
 }
 
-function classifyPackageManager(argv: readonly string[]): LeadAction {
+function classifyPackageManager(argv: readonly string[], inWorktree = false): LeadAction {
   let index = 1;
+  const dirTargets: string[] = [];
   while (index < argv.length) {
     const token = argv[index] ?? "";
-    if (PM_OPTIONS_WITH_VALUE.has(token)) {
+    if (
+      token === "-C" ||
+      token === "--dir" ||
+      token === "--prefix" ||
+      token === "--workspace" ||
+      token === "--cwd"
+    ) {
+      const value = argv[index + 1];
+      if (value) dirTargets.push(value);
+      index += 2;
+    } else if (PM_OPTIONS_WITH_VALUE.has(token)) {
       index += 2;
     } else if (token.startsWith("-")) {
       index += 1;
@@ -547,9 +606,20 @@ function classifyPackageManager(argv: readonly string[]): LeadAction {
   }
   const sub = argv[index];
   if (!sub) return READ;
-  if (PM_MUTATING.has(sub)) return action("mutation", argv);
+  if (PM_MUTATING.has(sub)) {
+    // Preparing a linked worktree for a check is landing bookkeeping; the
+    // same install in the main checkout still counts.
+    if (
+      (sub === "install" || sub === "i") &&
+      argv.includes("--frozen-lockfile") &&
+      (inWorktree || dirTargets.some(isWorktreePath))
+    ) {
+      return READ;
+    }
+    return action("mutation", argv);
+  }
   if (sub === "exec" || sub === "dlx" || sub === "x") {
-    return classifyArgv(stripLeadingFlags(argv.slice(index + 1)));
+    return classifyArgv(stripLeadingFlags(argv.slice(index + 1)), inWorktree);
   }
   const script = sub === "run" ? argv[index + 1] : sub;
   if (!script) return READ;
