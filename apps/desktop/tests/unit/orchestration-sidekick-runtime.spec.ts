@@ -543,7 +543,7 @@ test("an app-global pi default meta model with no sidekick routes to muse-cli", 
   expect(seenModel()).toEqual(metaSidekick);
   expect(createChildSessionCalls).toHaveLength(1);
   expect(createChildSessionCalls[0]?.runtime).toBe("muse-cli");
-  expect(createChildSessionCalls[0]?.options?.initialModel).toBeUndefined();
+  expect(createChildSessionCalls[0]?.options?.initialModel).toEqual(metaSidekick);
   expect(children()).toHaveLength(1);
   expect(children()[0]?.runtime).toBe("muse-cli");
 });
