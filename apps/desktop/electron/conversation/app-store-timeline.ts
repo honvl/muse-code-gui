@@ -320,6 +320,11 @@ export function applyTimelineEvent(
         "running",
         undefined,
         event.text ?? progressLabel(event.progress),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        event.timestamp,
       );
       break;
     case "toolFinished":
@@ -450,6 +455,7 @@ function upsertToolRow(
   output?: unknown,
   startedAt?: string,
   finishedAt?: string,
+  updatedAt?: string,
 ) {
   const index = transcript.findIndex((item) => item.kind === "tool" && item.callId === callId);
   const existing = index >= 0 ? transcript[index] : undefined;
@@ -472,6 +478,7 @@ function upsertToolRow(
       ...next,
       createdAt: existing?.createdAt ?? startedAt ?? next.createdAt,
       ...(finishedAt ? { finishedAt } : {}),
+      ...(updatedAt ? { updatedAt } : {}),
     };
     return;
   }

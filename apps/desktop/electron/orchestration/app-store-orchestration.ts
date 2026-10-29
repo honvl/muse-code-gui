@@ -34,6 +34,7 @@ import type {
   TranscriptMessage,
 } from "../../contracts/desktop-state";
 import { latestSessionActivityAt, previewFromTranscript } from "../application/app-store-utils";
+import { toolInputSummary, truncate } from "../../contracts/tool-labels";
 import type { RefreshStateOptions } from "../application/refresh-state-options";
 import {
   CHILD_REPORT_SUFFIX,
@@ -162,6 +163,7 @@ interface OrchestrationStateView {
 type OrchestrationDriver = Pick<
   PiSdkDriver,
   | "cancelCurrentRun"
+  | "rescueCurrentRun"
   | "createSession"
   | "getSessionTree"
   | "sendCustomMessage"
@@ -276,7 +278,12 @@ export interface OrchestrationOwner {
   ): Promise<AgentToolResult<ReadThreadToolDetails>>;
   sendMessageToThreadToolResult(
     parentRef: SessionRef,
-    input: { readonly threadId: string; readonly message: string; readonly interrupt?: boolean },
+    input: {
+      readonly threadId: string;
+      readonly message: string;
+      readonly interrupt?: boolean;
+      readonly rescue?: boolean;
+    },
   ): Promise<AgentToolResult<SendMessageToThreadToolDetails>>;
 }
 
@@ -304,6 +311,9 @@ export function createOrchestrationOwner(
   // Completed runs already reported to a parent, keyed by child thread id.
   // Cleared when the child starts running again so a follow-up run reports too.
   const reportedChildRuns = new Map<string, string>();
+  // Stuck-tool notices already sent to a lead parent, keyed by
+  // `${childThreadId}:${toolCallId}`: one notice per stuck tool call.
+  const notifiedStuckTools = new Set<string>();
   const sidekickReuse: SidekickReuseState = { claimed: new Set(), inFlightByParent: new Map() };
   sidekickClaimsByHost.set(store, sidekickReuse.claimed);
   // Worker reports held for a scout pre-review, keyed by the review scout's
@@ -322,6 +332,9 @@ export function createOrchestrationOwner(
         ) {
           childGenerationByThreadId.delete(child.id);
           reportedChildRuns.delete(child.id);
+          for (const key of [...notifiedStuckTools]) {
+            if (key.startsWith(`${child.id}:`)) notifiedStuckTools.delete(key);
+          }
         }
       }
       for (const key of [...readThreadCursors.keys()]) {
@@ -353,7 +366,7 @@ export function createOrchestrationOwner(
       createChildThreadToolResult(store, parentRef, input, sidekickReuse),
     listThreadsToolResult: (parentRef, options) => listThreadsToolResult(store, parentRef, options),
     readThreadToolResult: (parentRef, threadId, options) =>
-      readThreadToolResult(store, parentRef, threadId, options, readThreadCursors),
+      readThreadToolResult(store, parentRef, threadId, options, readThreadCursors, notifiedStuckTools),
     sendMessageToThreadToolResult: (parentRef, input) =>
       sendMessageToThreadToolResult(store, parentRef, input),
   };
@@ -1363,6 +1376,180 @@ export async function waitForChildSettled(options: {
   });
 }
 
+/**
+ * Stuck-child detection over a child's transcript tool rows. Pure in the
+ * rows plus `nowMs`: a running tool counts as stuck when its last output
+ * activity (its last toolUpdated stamp, else its start) is older than the
+ * threshold. The host exposes this to the lead through list_threads /
+ * read_thread and fires one lead notification per stuck tool call.
+ */
+export const DEFAULT_STUCK_TOOL_MS = 10 * 60 * 1000;
+export const STUCK_TOOL_MS_ENV_VAR = "PI_APP_CHILD_STUCK_TOOL_MS";
+
+export function resolveStuckToolThresholdMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env[STUCK_TOOL_MS_ENV_VAR]?.trim();
+  if (raw !== undefined && raw !== "" && /^\d+$/.test(raw)) {
+    const value = Number.parseInt(raw, 10);
+    if (Number.isSafeInteger(value) && value > 0) {
+      return value;
+    }
+  }
+  return DEFAULT_STUCK_TOOL_MS;
+}
+
+export function runningToolCalls(transcript: readonly TranscriptMessage[]): TimelineToolCall[] {
+  return transcript
+    .filter(
+      (item): item is TimelineToolCall => item.kind === "tool" && item.status === "running",
+    )
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+}
+
+function toolRowTimestampMs(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+/** Last output activity of a running row: its last update, else its start. */
+export function toolLastActivityMs(row: TimelineToolCall, nowMs: number): number {
+  const started = toolRowTimestampMs(row.createdAt, nowMs);
+  return Math.max(started, toolRowTimestampMs(row.updatedAt, started));
+}
+
+export function isStuckToolCall(
+  row: TimelineToolCall,
+  nowMs: number,
+  thresholdMs: number,
+): boolean {
+  return nowMs - toolLastActivityMs(row, nowMs) > thresholdMs;
+}
+
+/** The oldest running tool past the threshold, if any. */
+export function stuckToolCall(
+  transcript: readonly TranscriptMessage[],
+  nowMs: number,
+  thresholdMs: number,
+): TimelineToolCall | undefined {
+  return runningToolCalls(transcript).find((row) => isStuckToolCall(row, nowMs, thresholdMs));
+}
+
+export function formatToolElapsedMs(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  return `${Math.floor(minutes / 60)}h${minutes % 60}m`;
+}
+
+/** `bash "sleep 120" for 14m`: what a running child is in, for the lead. */
+export function describeRunningToolCall(row: TimelineToolCall, nowMs: number): string {
+  const summary = toolInputSummary(row.input);
+  const what = summary ? `${row.toolName} "${truncate(summary, 60)}"` : row.toolName;
+  return `${what} for ${formatToolElapsedMs(nowMs - toolRowTimestampMs(row.createdAt, nowMs))}`;
+}
+
+export interface RunningToolHint {
+  readonly description: string;
+  readonly stuck: boolean;
+  readonly idleFor: string;
+}
+
+/**
+ * What to show the lead for a child's transcript: the stuck tool when one
+ * exists (the actionable row), else the oldest running tool. Undefined when
+ * nothing is in flight.
+ */
+export function runningToolHint(
+  transcript: readonly TranscriptMessage[],
+  nowMs = Date.now(),
+  thresholdMs = resolveStuckToolThresholdMs(),
+): RunningToolHint | undefined {
+  const rows = runningToolCalls(transcript);
+  if (rows.length === 0) return undefined;
+  const stuck = rows.find((row) => isStuckToolCall(row, nowMs, thresholdMs));
+  const row = stuck ?? rows[0];
+  if (!row) return undefined;
+  const idleMs = Math.max(0, nowMs - toolLastActivityMs(row, nowMs));
+  return {
+    description: describeRunningToolCall(row, nowMs),
+    stuck: stuck !== undefined,
+    idleFor: formatToolElapsedMs(idleMs),
+  };
+}
+
+const CHILD_STUCK_CUSTOM_TYPE = "pi-gui.child-stuck";
+
+export function childStuckReportText(options: {
+  readonly childTitle: string;
+  readonly childThreadId: string;
+  readonly toolDescription: string;
+  readonly idleFor: string;
+  readonly threshold: string;
+}): string {
+  return (
+    `Child "${options.childTitle}" (${options.childThreadId}) looks stuck: ` +
+    `${options.toolDescription} with no tool output for ${options.idleFor} ` +
+    `(stuck threshold ${options.threshold}). ` +
+    `Rescue it with send_message_to_thread rescue:true plus guidance for a bounded retry, ` +
+    `or read the thread for detail. This notice fires once per tool call.`
+  );
+}
+
+async function notifyStuckChildTool(
+  store: OrchestrationOwnerHost,
+  parentRef: SessionRef,
+  child: OrchestrationChildThread,
+  row: TimelineToolCall,
+  hint: RunningToolHint,
+  thresholdMs: number,
+  notified: Set<string>,
+): Promise<void> {
+  const key = `${child.id}:${row.callId}`;
+  if (notified.has(key)) return;
+  const text = childStuckReportText({
+    childTitle: child.title,
+    childThreadId: child.id,
+    toolDescription: hint.description,
+    idleFor: hint.idleFor,
+    threshold: formatToolElapsedMs(thresholdMs),
+  });
+  try {
+    await store.driver.sendCustomMessage(
+      parentRef,
+      { customType: CHILD_STUCK_CUSTOM_TYPE, text, display: true },
+      { triggerTurn: true, deliverAs: "followUp" },
+    );
+    notified.add(key);
+  } catch (error) {
+    // Best-effort: the inline list/read hints still show the stuck tool.
+    console.warn(`[orchestration] stuck-child notice failed for ${child.id}:`, error);
+  }
+}
+
+/**
+ * One lead-only stuck notice per tool call, through the same custom-message
+ * path as completion reports. Called from read_thread: the lead investigating
+ * a stuck child learns it is stuck without polling for it.
+ */
+async function maybeNotifyStuckChild(
+  store: OrchestrationOwnerHost,
+  parentRef: SessionRef,
+  target: ResolvedThreadTarget,
+  notified: Set<string>,
+  nowMs = Date.now(),
+): Promise<void> {
+  if (!target.child) return;
+  if (!store.isOrchestratorSession(parentRef)) return;
+  const thresholdMs = resolveStuckToolThresholdMs();
+  const transcript = store.transcriptFor(target.sessionRef);
+  const row = stuckToolCall(transcript, nowMs, thresholdMs);
+  if (!row) return;
+  const hint = runningToolHint(transcript, nowMs, thresholdMs);
+  if (!hint) return;
+  await notifyStuckChildTool(store, parentRef, target.child, row, hint, thresholdMs, notified);
+}
+
 async function readThreadToolResult(
   store: OrchestrationOwnerHost,
   parentRef: SessionRef,
@@ -1373,6 +1560,7 @@ async function readThreadToolResult(
     readonly full?: boolean;
   } = {},
   cursors: Map<string, number>,
+  notifiedStuckTools?: Set<string>,
 ): Promise<AgentToolResult<ReadThreadToolDetails>> {
   const target = resolveThreadTarget(store, parentRef, threadId);
   if (!target) {
@@ -1437,6 +1625,21 @@ async function readThreadToolResult(
   let messages = toReadThreadMessages(transcript.slice(rawStart));
   const title = session?.title ?? fresh.child?.title ?? fresh.sessionRef.sessionId;
   const status = fresh.child?.status ?? session?.status ?? "unknown";
+  // What the child is in right now, for the lead: the in-flight tool and how
+  // long it ran, plus a stuck flag past the threshold. The tool rows in the
+  // transcript carry the same [running] rows; this line survives truncation.
+  const hint = runningToolHint(transcript);
+  const displayStatus =
+    hint && (status === "running" || status === "queued" || status === "waiting")
+      ? `${status} — in flight: ${hint.description}${
+          hint.stuck
+            ? `; STUCK (no output for ${hint.idleFor}; rescue with send_message_to_thread rescue:true)`
+            : ""
+        }`
+      : status;
+  if (notifiedStuckTools) {
+    await maybeNotifyStuckChild(store, parentRef, fresh, notifiedStuckTools);
+  }
   const stillRunning = status === "running" || status === "queued" || status === "waiting";
   // A timeout that missed its settle event must not report "still running"
   // once the fresh state shows idle.
@@ -1501,7 +1704,7 @@ async function readThreadToolResult(
     content: [
       {
         type: "text",
-        text: formatThreadReadResult({ ...details, title, status, messages, notice }),
+        text: formatThreadReadResult({ ...details, title, status: displayStatus, messages, notice }),
       },
     ],
     details,
@@ -1511,7 +1714,12 @@ async function readThreadToolResult(
 async function sendMessageToThreadToolResult(
   store: OrchestrationOwnerHost,
   parentRef: SessionRef,
-  input: { readonly threadId: string; readonly message: string; readonly interrupt?: boolean },
+  input: {
+    readonly threadId: string;
+    readonly message: string;
+    readonly interrupt?: boolean;
+    readonly rescue?: boolean;
+  },
 ): Promise<AgentToolResult<SendMessageToThreadToolDetails>> {
   const target = resolveThreadTarget(store, parentRef, input.threadId);
   if (!target) {
@@ -1527,7 +1735,12 @@ async function sendMessageToThreadToolResult(
 async function deliverMessageToThread(
   store: OrchestrationOwnerHost,
   target: ResolvedThreadTarget,
-  input: { readonly threadId: string; readonly message: string; readonly interrupt?: boolean },
+  input: {
+    readonly threadId: string;
+    readonly message: string;
+    readonly interrupt?: boolean;
+    readonly rescue?: boolean;
+  },
 ): Promise<AgentToolResult<SendMessageToThreadToolDetails>> {
   // A running target steered without interrupt keeps its turn (deliverAs
   // "steer"); interrupt:true cancels first so the message starts a NEW
@@ -1565,8 +1778,20 @@ async function deliverMessageToThread(
     }
   }
   let interrupted = false;
+  let rescued = false;
+  let forced = false;
   let deliverAs: "steer" | "followUp" = "followUp";
-  if (running && input.interrupt === true) {
+  if (running && input.rescue === true) {
+    // Rescue unsticks a child whose tool call never finishes: the driver
+    // aborts the run and force-stops a tool that ignores the abort, leaving
+    // the session idle so the message below starts a NEW turn. Unlike the
+    // interrupt path no settle wait follows: the rescue already waited out
+    // the abort, and a still-wedged pi queues the message as the next turn,
+    // which starts once the tool settles.
+    const outcome = await store.driver.rescueCurrentRun(target.sessionRef);
+    rescued = true;
+    forced = outcome.forced;
+  } else if (running && input.interrupt === true) {
     try {
       await store.driver.cancelCurrentRun(target.sessionRef);
       interrupted = true;
@@ -1614,6 +1839,8 @@ async function deliverMessageToThread(
     status,
     queuedMessageCount: queuedMessages.length,
     ...(interrupted ? { interrupted: true as const } : {}),
+    ...(rescued ? { rescued: true as const } : {}),
+    ...(forced ? { forced: true as const } : {}),
     ...(generation !== undefined ? { generation } : {}),
     message: input.message,
   };
@@ -2864,16 +3091,39 @@ function listThreadsForContext(
     });
   }
 
-  return [...entries.values()].sort((left, right) => {
-    const rank = relationshipRank(left.relationship) - relationshipRank(right.relationship);
-    if (rank !== 0) {
-      return rank;
-    }
-    if (left.updatedAt !== right.updatedAt) {
-      return right.updatedAt.localeCompare(left.updatedAt);
-    }
-    return left.title.localeCompare(right.title);
-  });
+  return [...entries.values()]
+    .sort((left, right) => {
+      const rank = relationshipRank(left.relationship) - relationshipRank(right.relationship);
+      if (rank !== 0) {
+        return rank;
+      }
+      if (left.updatedAt !== right.updatedAt) {
+        return right.updatedAt.localeCompare(left.updatedAt);
+      }
+      return left.title.localeCompare(right.title);
+    })
+    .map((thread) => withRunningToolHint(store, thread));
+}
+
+/**
+ * What a running thread is in right now, for the lead: the in-flight tool
+ * and how long it ran, plus a stuck flag past the threshold. Only running
+ * threads get the hint so the line never contradicts the thread's status.
+ */
+function withRunningToolHint(
+  store: OrchestrationOwnerHost,
+  thread: ThreadListEntry,
+): ThreadListEntry {
+  if (thread.status !== "running") return thread;
+  const hint = runningToolHint(
+    store.transcriptFor({ workspaceId: thread.workspaceId, sessionId: thread.sessionId }),
+  );
+  if (!hint) return thread;
+  return {
+    ...thread,
+    runningTool: hint.description,
+    ...(hint.stuck ? { stuck: true as const } : {}),
+  };
 }
 
 /**
@@ -2972,7 +3222,10 @@ function formatThreadList(threads: readonly ThreadListEntry[], omitted: number):
     ...threads.map(
       (thread) =>
         `- ${thread.threadId} (${thread.relationship}, ${thread.status}): ${thread.title}` +
-        (thread.preview ? ` - ${thread.preview}` : ""),
+        (thread.preview ? ` - ${thread.preview}` : "") +
+        (thread.runningTool
+          ? ` [running: ${thread.runningTool}${thread.stuck ? "; STUCK" : ""}]`
+          : ""),
     ),
   ];
   if (omitted > 0) {
@@ -3041,6 +3294,11 @@ function formatCreateChildThreadResult(
 function formatSendMessageToThreadResult(result: SendMessageToThreadToolDetails): string {
   const verb = result.status === "queued" ? "Queued" : "Sent";
   return (
+    (result.rescued === true
+      ? `Rescued thread ${result.threadId}${
+          result.forced === true ? " (abort never settled; run force-stopped)" : ""
+        } and started a new turn. `
+      : "") +
     (result.interrupted === true
       ? `Interrupted thread ${result.threadId} and started a new turn. `
       : "") +

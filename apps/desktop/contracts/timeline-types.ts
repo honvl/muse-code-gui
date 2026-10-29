@@ -33,6 +33,8 @@ export interface TimelineToolCall {
   readonly metadata?: string;
   readonly createdAt: string;
   readonly finishedAt?: string;
+  /** Last toolUpdated timestamp while running; stuck detection uses it as last output activity. */
+  readonly updatedAt?: string;
   readonly input?: unknown;
   readonly output?: unknown;
 }

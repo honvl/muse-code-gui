@@ -55,6 +55,10 @@ export interface OrchestrationThreadListEntry {
   readonly updatedAt: string;
   readonly preview: string;
   readonly childThreadId?: string;
+  /** Human-readable in-flight tool of a running thread, e.g. `bash "sleep 60" for 14m`. */
+  readonly runningTool?: string;
+  /** True when the in-flight tool ran past the stuck threshold with no output. */
+  readonly stuck?: boolean;
 }
 
 export interface OrchestrationThreadTranscriptMessage {
@@ -99,6 +103,10 @@ export interface SendMessageToThreadToolDetails {
   readonly status?: "queued" | "sent";
   readonly queuedMessageCount?: number;
   readonly interrupted?: boolean;
+  /** The lead rescued a stuck run: abort (force-stopping an unsettled tool) then a new turn. */
+  readonly rescued?: boolean;
+  /** The abort never settled, so the host force-stopped the run. */
+  readonly forced?: boolean;
   readonly generation?: number;
   readonly error?: string;
 }
@@ -133,7 +141,12 @@ export interface OrchestrationRuntimeBridge {
   ) => Promise<AgentToolResult<ReadThreadToolDetails>>;
   readonly sendMessageToThread: (
     ctx: ExtensionContext,
-    input: { readonly threadId: string; readonly message: string; readonly interrupt?: boolean },
+    input: {
+      readonly threadId: string;
+      readonly message: string;
+      readonly interrupt?: boolean;
+      readonly rescue?: boolean;
+    },
   ) => Promise<AgentToolResult<SendMessageToThreadToolDetails>>;
 }
 
@@ -325,12 +338,17 @@ function createSendMessageToThreadTool(
   return {
     name: sendMessageToThreadToolName,
     label: "Send message to thread",
-    description: "Send a follow-up message to an existing pi-gui thread.",
+    description:
+      "Send a follow-up message to an existing pi-gui thread. " +
+      "Pass rescue:true to unstick a child whose tool call never finishes: " +
+      "the host aborts the run, force-stops a tool that ignores the abort, " +
+      "and starts your message as a new turn.",
     promptSnippet: "send_message_to_thread: send a follow-up to an existing pi-gui thread.",
     promptGuidelines: [
       "Use send_message_to_thread to follow up with an existing child or sibling pi-gui thread.",
       "Use a thread id returned by list_threads or create_child_thread.",
       "If a child is drifting, pass interrupt:true to stop its current run before the message starts a new turn; otherwise steer it without interrupting.",
+      "If a running child is stuck on one tool call with no output, pass rescue:true: the host aborts the run (force-stopping a tool that ignores the abort) and your message starts a new turn. Rescuing an idle child behaves like an interrupt.",
     ],
     parameters: {
       type: "object",
@@ -347,6 +365,11 @@ function createSendMessageToThreadTool(
           type: "boolean",
           description:
             "Set true to interrupt a still-running thread before delivering, so the message starts a new turn. Omit or false to steer without interrupting.",
+        },
+        rescue: {
+          type: "boolean",
+          description:
+            "Set true to rescue a child stuck on a tool call that never finishes: aborts the run, force-stops an unsettled tool, and starts the message as a new turn. Behaves like an interrupt when the child is idle or not stuck.",
         },
       },
       required: ["thread_id", "message"],
@@ -368,10 +391,12 @@ function createSendMessageToThreadTool(
         };
       }
       const interrupt = interruptFromParams(params);
+      const rescue = rescueFromParams(params);
       return bridge.sendMessageToThread(ctx, {
         threadId,
         message,
         ...(interrupt !== undefined ? { interrupt } : {}),
+        ...(rescue !== undefined ? { rescue } : {}),
       });
     },
   };
@@ -691,6 +716,12 @@ export function sendMessageToThreadFromToolOutput(
 function interruptFromParams(params: unknown): boolean | undefined {
   if (!isRecord(params)) return undefined;
   return params.interrupt === true ? true : undefined;
+}
+
+/** True only when send_message_to_thread params explicitly request a rescue. */
+export function rescueFromParams(params: unknown): boolean | undefined {
+  if (!isRecord(params)) return undefined;
+  return params.rescue === true ? true : undefined;
 }
 
 function toolOutputDetails(output: unknown): Record<string, unknown> | undefined {
