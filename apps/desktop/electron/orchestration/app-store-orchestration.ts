@@ -998,18 +998,26 @@ const sidekickClaimsByHost = new WeakMap<OrchestrationOwnerHost, ReadonlySet<str
  * spawning session's own model). Mirrors the resolution in
  * createChildThreadRecord so the fail-fast check refuses the same model.
  */
-function expectedSpawnModel(
+/**
+ * The model a spawn will actually run, resolved exactly like
+ * createChildThreadRecord: scout model (scouts), thread sidekick, a child
+ * parent's own model, then the workspace/app-global default pi applies.
+ */
+async function expectedSpawnModel(
   store: OrchestrationOwnerHost,
   parentRef: SessionRef,
   mode: OrchestrationChildMode | undefined,
-): SessionModelSelection | undefined {
-  if ((mode ?? "worker") === "scout") {
-    return store.defaultScoutModel();
-  }
+): Promise<SessionModelSelection | undefined> {
   const parentChild = parentChildRecord(store, parentRef.workspaceId, parentRef.sessionId);
-  return (
-    store.sidekickModelFor(parentRef) ?? (parentChild ? store.sessionModelFor(parentRef) : undefined)
-  );
+  const explicit =
+    ((mode ?? "worker") === "scout" ? store.defaultScoutModel() : undefined) ??
+    store.sidekickModelFor(parentRef) ??
+    (parentChild ? store.sessionModelFor(parentRef) : undefined);
+  if (explicit || !store.effectiveChildModel) {
+    return explicit;
+  }
+  const createOptions = await store.buildCreateSessionOptions(parentRef.workspaceId);
+  return store.effectiveChildModel(parentRef.workspaceId, undefined, createOptions);
 }
 
 /**
@@ -1017,12 +1025,12 @@ function expectedSpawnModel(
  * window (recent attestation/auth failure); otherwise undefined. Fresh
  * spawns are refused too: re-spawning on the same model fails the same way.
  */
-function refuseFailedSidekickModel(
+async function refuseFailedSidekickModel(
   store: OrchestrationOwnerHost,
   parentRef: SessionRef,
   mode: OrchestrationChildMode | undefined,
-): string | undefined {
-  return activeProviderFailureNote(expectedSpawnModel(store, parentRef, mode));
+): Promise<string | undefined> {
+  return activeProviderFailureNote(await expectedSpawnModel(store, parentRef, mode));
 }
 
 /** Owner-private bookkeeping that keeps parallel briefs off one sidekick. */
@@ -1047,7 +1055,7 @@ async function createChildThreadToolResult(
   try {
     // Fail fast: a recent attestation/auth failure on this sidekick model
     // refuses the spawn (fresh included) instead of failing another child.
-    const refusal = refuseFailedSidekickModel(store, parentRef, input.mode);
+    const refusal = await refuseFailedSidekickModel(store, parentRef, input.mode);
     if (refusal) {
       return createChildThreadErrorResult(
         (input.sourcePrompt ?? input.prompt).trim(),

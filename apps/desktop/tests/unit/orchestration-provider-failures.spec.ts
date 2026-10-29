@@ -234,6 +234,8 @@ function makeHost(options: {
   readonly transcript: TranscriptMessage[];
   readonly error?: string;
   readonly terminal: "failed" | "idle";
+  /** No explicit sidekick: the child runs the app-global default instead. */
+  readonly noSidekick?: boolean;
 }) {
   const sent: Array<{ text: string }> = [];
   const state = { child: childRecord() };
@@ -272,7 +274,12 @@ function makeHost(options: {
     subscribeToSessionEvents: () => () => {},
     updateSessionConfig: () => {},
     isOrchestratorSession: (ref: SessionRef) => ref.sessionId === parentRef.sessionId,
-    sidekickModelFor: () => ({ provider: "meta", modelId: "muse-spark" }),
+    sidekickModelFor: () =>
+      options.noSidekick ? undefined : { provider: "meta", modelId: "muse-spark" },
+    effectiveChildModel: async (
+      _workspaceId: string,
+      explicit: { provider: string; modelId: string } | undefined,
+    ) => explicit ?? { provider: "meta", modelId: "muse-spark" },
     defaultScoutModel: () => undefined,
     sessionModelFor: (ref: SessionRef) =>
       ref.sessionId === childRef.sessionId
@@ -334,6 +341,20 @@ test("create_child_thread refuses fast while the sidekick model is failed", asyn
     expect(result.details).toMatchObject({ action: createChildThreadAction });
     expect("childThreadId" in (result.details ?? {})).toBe(false);
   }
+});
+
+test("fail-fast also refuses when the child would run the app-global default model", async () => {
+  const { owner } = makeHost({ transcript: [], terminal: "idle", noSidekick: true });
+  recordProviderFailure({ provider: "meta", modelId: "muse-spark" }, "attestation-denied");
+
+  const result = await owner.createChildThreadToolResult(parentRef, {
+    prompt: "do the thing",
+    toolCallId: "call-default-model",
+    mode: "scout",
+  });
+  const text = result.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
+  expect(text).toContain("PI_APP_SIDEKICK_RUNTIME=auto");
+  expect("childThreadId" in (result.details ?? {})).toBe(false);
 });
 
 test("a success on the model clears the memory so spawns resume", async () => {
