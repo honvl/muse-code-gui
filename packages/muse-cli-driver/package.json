@@ -1,0 +1,26 @@
+{
+  "name": "@pi-gui/muse-cli-driver",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "description": "SessionDriver for child sessions backed by the official Muse Code CLI (muse exec).",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsc -p tsconfig.json && node --test \"test/**/*.test.mts\""
+  },
+  "dependencies": {
+    "@pi-gui/catalogs": "workspace:*",
+    "@pi-gui/session-driver": "workspace:*"
+  }
+}

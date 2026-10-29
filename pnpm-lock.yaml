@@ -386,6 +386,15 @@ importers:
         specifier: 0.28.2
         version: 0.28.2
 
+  packages/muse-cli-driver:
+    dependencies:
+      '@pi-gui/catalogs':
+        specifier: workspace:*
+        version: link:../catalogs
+      '@pi-gui/session-driver':
+        specifier: workspace:*
+        version: link:../session-driver
+
   packages/pi-sdk-driver:
     dependencies:
       '@earendil-works/pi-coding-agent':
