@@ -76,7 +76,11 @@ export interface MuseCliDriverOptions {
   readonly killGraceMs?: number;
   /** Timeout for `muse export`. Defaults to 60_000 ms. */
   readonly exportTimeoutMs?: number;
-  /** Per-turn wall clock; the process group is killed past it. Defaults to 15 minutes, 0 disables. */
+  /**
+   * Optional per-turn wall clock; the process group is killed past it. Defaults to
+   * 0 (disabled), matching pi children: long turns are normal for a sidekick, and a
+   * genuinely hung tool is caught by the host's stuck-tool detection and rescue.
+   */
   readonly maxTurnMs?: number;
 }
 
@@ -121,7 +125,7 @@ interface MuseSessionRecord {
 const UNSUPPORTED = "Muse CLI driver does not support";
 const DEFAULT_KILL_GRACE_MS = 3000;
 const DEFAULT_EXPORT_TIMEOUT_MS = 60_000;
-const DEFAULT_MAX_TURN_MS = 15 * 60_000;
+const DEFAULT_MAX_TURN_MS = 0;
 
 export class MuseCliDriver implements SessionDriver {
   private readonly binaryPath: string;

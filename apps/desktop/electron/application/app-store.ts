@@ -370,9 +370,13 @@ export class DesktopAppStore {
     };
 
     this.driver = new PiSdkDriver(driverOptions);
+    // No per-turn wall clock by default (stuck tools are rescued instead);
+    // PI_APP_MUSE_MAX_TURN_MS opts back into one.
+    const museMaxTurnMs = Number(process.env.PI_APP_MUSE_MAX_TURN_MS);
     this.museCliDriver = new MuseCliDriver({
       catalogStorage: this.catalogStore,
       sessionFileDir: join(options.userDataDir, "muse-sessions"),
+      ...(Number.isFinite(museMaxTurnMs) && museMaxTurnMs > 0 ? { maxTurnMs: museMaxTurnMs } : {}),
     });
     this.sessionRouter = new SessionDriverRouter(
       this.driver,
