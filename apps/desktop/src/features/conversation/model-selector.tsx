@@ -32,11 +32,36 @@ interface ModelSelectorProps {
   readonly onToggleOrchestrator?: (enabled: boolean) => void;
   readonly onSetSidekickModel?: (provider: string, modelId: string) => void;
   readonly onClearSidekickModel?: () => void;
+  /** Fail-fast refusal note while the sidekick model is in its failed state. */
+  readonly sidekickWarning?: string | undefined;
   /** `null` clears the sidekick's reasoning back to the app-global default. */
   readonly onSetSidekickThinkingLevel?: (level: string | null) => void;
 }
 
 export const SIDEKICK_IS_LEAD_WARNING = "Sidekick is the lead model; no savings";
+
+export const SIDEKICK_PROVIDER_FAILED_WARNING_ATTRIBUTE = "sidekick-provider-failed";
+
+/**
+ * Refusal note when the thread's effective sidekick model sits inside its
+ * provider fail-fast window (recent attestation/auth failure), else
+ * undefined. Pure and renderer-safe; App feeds it DesktopAppState's
+ * providerFailureNotes.
+ */
+export function sidekickFailureWarning(input: {
+  readonly sidekickProvider: string | undefined;
+  readonly sidekickModelId: string | undefined;
+  readonly defaultProvider: string | undefined;
+  readonly defaultModelId: string | undefined;
+  readonly failureNotes: Readonly<Record<string, string>> | undefined;
+}): string | undefined {
+  const provider = input.sidekickProvider ?? input.defaultProvider;
+  const modelId = input.sidekickModelId ?? input.defaultModelId;
+  if (!provider || !modelId || !input.failureNotes) {
+    return undefined;
+  }
+  return input.failureNotes[`${provider}:${modelId}`];
+}
 
 /**
  * True when children would run on the lead's own model: the thread's sidekick,
@@ -89,6 +114,7 @@ export function ModelSelector({
   sidekickProvider,
   sidekickModelId,
   sidekickThinkingLevel,
+  sidekickWarning,
   defaultSidekickThinkingLevel = DEFAULT_SIDEKICK_THINKING_LEVEL,
   disabled,
   dropdownPlacement = "above",
@@ -196,6 +222,7 @@ export function ModelSelector({
     sidekickProvider && sidekickModelId
       ? `Sidekick: ${sidekickOption ? sidekickOption.label : `${sidekickProvider}:${sidekickModelId}`}`
       : "Sidekick: workspace default";
+  const sidekickWarningActive = showSidekickSelector && Boolean(sidekickWarning);
   const sidekickIsLead =
     showSidekickSelector &&
     sidekickMatchesLead({
@@ -293,18 +320,26 @@ export function ModelSelector({
             className={`model-selector__badge${orchestratorMode ? " model-selector__item--active" : ""}`}
             type="button"
             disabled={disabled}
-            data-warning={sidekickIsLead ? "sidekick-is-lead" : undefined}
+            data-warning={
+              sidekickWarningActive
+                ? SIDEKICK_PROVIDER_FAILED_WARNING_ATTRIBUTE
+                : sidekickIsLead
+                  ? "sidekick-is-lead"
+                  : undefined
+            }
             title={
-              sidekickIsLead
-                ? SIDEKICK_IS_LEAD_WARNING
-                : orchestratorMode
-                  ? "Lead: delegates bulky work and reviews what children report"
-                  : "Solo: works in this thread; can still delegate when needed"
+              sidekickWarningActive && sidekickWarning
+                ? sidekickWarning
+                : sidekickIsLead
+                  ? SIDEKICK_IS_LEAD_WARNING
+                  : orchestratorMode
+                    ? "Lead: delegates bulky work and reviews what children report"
+                    : "Solo: works in this thread; can still delegate when needed"
             }
             onClick={() => onToggleOrchestrator?.(!orchestratorMode)}
           >
             {orchestratorMode ? "Lead" : "Solo"}
-            {sidekickIsLead ? (
+            {sidekickIsLead || sidekickWarningActive ? (
               <span aria-hidden="true" className="model-selector__badge-warning" />
             ) : null}
           </button>

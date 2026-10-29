@@ -60,6 +60,8 @@ interface ComposerPanelProps {
   readonly sidekickProvider?: string | undefined;
   readonly sidekickModelId?: string | undefined;
   readonly sidekickThinkingLevel?: string | undefined;
+  /** Fail-fast refusal note while the sidekick model is in its failed state. */
+  readonly sidekickWarning?: string | undefined;
   readonly defaultSidekickThinkingLevel?: string | undefined;
   readonly slashSections: readonly ComposerSlashCommandSection[];
   readonly slashOptions: readonly ComposerSlashOption[];
@@ -150,6 +152,7 @@ export function ComposerPanel({
   sidekickProvider,
   sidekickModelId,
   sidekickThinkingLevel,
+  sidekickWarning,
   defaultSidekickThinkingLevel,
   onSetSidekickModel,
   onClearSidekickModel,
@@ -252,6 +255,7 @@ export function ComposerPanel({
                     sidekickProvider={sidekickProvider}
                     sidekickModelId={sidekickModelId}
                     sidekickThinkingLevel={sidekickThinkingLevel}
+                    sidekickWarning={sidekickWarning}
                     defaultSidekickThinkingLevel={defaultSidekickThinkingLevel}
                     disabled={selectedSession.status === "running"}
                     unselectedModelLabel={modelOnboarding.unselectedModelLabel}

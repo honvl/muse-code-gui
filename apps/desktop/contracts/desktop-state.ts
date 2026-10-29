@@ -411,6 +411,12 @@ export interface DesktopAppState {
   /** Flag values each thread's pi session started with (only the ones pi receives). */
   readonly extensionFlagsBySession: Readonly<Record<string, ExtensionFlagValues>>;
   readonly orchestrationChildren: readonly OrchestrationChildThread[];
+  /**
+   * Recent provider+model failures blocking child spawns, by
+   * "provider:modelId" to refusal note. In-memory only, never persisted;
+   * entries expire after PI_APP_PROVIDER_FAILURE_MEMORY_MS.
+   */
+  readonly providerFailureNotes?: Readonly<Record<string, string>>;
   readonly scheduledTasks: readonly ScheduledTaskRecord[];
   readonly notificationPreferences: NotificationPreferences;
   /** Whether the Muse Code GUI extension pack is ensured into pi's global setup on startup. */

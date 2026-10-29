@@ -76,6 +76,14 @@ import type {
   ReadThreadToolDetails,
   SendMessageToThreadToolDetails,
 } from "./orchestration-runtime";
+import {
+  activeProviderFailureNote,
+  classifyProviderFailure,
+  clearProviderFailure,
+  providerFailureNote,
+  providerFailureNotesSnapshot,
+  recordProviderFailure,
+} from "../../contracts/provider-failures";
 
 const CHILD_TITLE_LIMIT = 56;
 const MAX_CHILD_TRANSCRIPT_MESSAGES = 40;
@@ -248,6 +256,8 @@ interface OrchestrationOwnerHost {
   isTranscriptLoaded(sessionRef: SessionRef): boolean;
   getSessionError(sessionRef: SessionRef): string | undefined;
   setSessionError(sessionRef: SessionRef, message: string): void;
+  /** Project fail-fast provider notes into desktop state after record/clear. */
+  setProviderFailureNotes?(notes: Readonly<Record<string, string>>): void;
   submitComposerToSession(
     sessionRef: SessionRef,
     text: string,
@@ -982,6 +992,39 @@ interface CreateChildThreadToolInput {
 // `queued` writer claim instead of re-deriving the idle session's status.
 const sidekickClaimsByHost = new WeakMap<OrchestrationOwnerHost, ReadonlySet<string>>();
 
+/**
+ * The model a fresh child would run: the scout model for a read-only sweep,
+ * else the thread sidekick (or, for a child spawning a grandchild, the
+ * spawning session's own model). Mirrors the resolution in
+ * createChildThreadRecord so the fail-fast check refuses the same model.
+ */
+function expectedSpawnModel(
+  store: OrchestrationOwnerHost,
+  parentRef: SessionRef,
+  mode: OrchestrationChildMode | undefined,
+): SessionModelSelection | undefined {
+  if ((mode ?? "worker") === "scout") {
+    return store.defaultScoutModel();
+  }
+  const parentChild = parentChildRecord(store, parentRef.workspaceId, parentRef.sessionId);
+  return (
+    store.sidekickModelFor(parentRef) ?? (parentChild ? store.sessionModelFor(parentRef) : undefined)
+  );
+}
+
+/**
+ * Refusal note when the spawn's sidekick model sits inside its fail-fast
+ * window (recent attestation/auth failure); otherwise undefined. Fresh
+ * spawns are refused too: re-spawning on the same model fails the same way.
+ */
+function refuseFailedSidekickModel(
+  store: OrchestrationOwnerHost,
+  parentRef: SessionRef,
+  mode: OrchestrationChildMode | undefined,
+): string | undefined {
+  return activeProviderFailureNote(expectedSpawnModel(store, parentRef, mode));
+}
+
 /** Owner-private bookkeeping that keeps parallel briefs off one sidekick. */
 interface SidekickReuseState {
   /** Children a reuse is delivering to right now. */
@@ -1002,6 +1045,15 @@ async function createChildThreadToolResult(
   const inFlight = reuseState.inFlightByParent.get(parentKey) ?? 0;
   reuseState.inFlightByParent.set(parentKey, inFlight + 1);
   try {
+    // Fail fast: a recent attestation/auth failure on this sidekick model
+    // refuses the spawn (fresh included) instead of failing another child.
+    const refusal = refuseFailedSidekickModel(store, parentRef, input.mode);
+    if (refusal) {
+      return createChildThreadErrorResult(
+        (input.sourcePrompt ?? input.prompt).trim(),
+        refusal,
+      );
+    }
     const parallel = inFlight > 0 || input.firstInTurn === false;
     const reuse = await reuseSidekickForBrief(store, parentRef, input, reuseState, parallel);
     return reuse.result ?? (await spawnChildThreadToolResult(store, parentRef, input, reuse.note));
@@ -2242,6 +2294,23 @@ async function reportChildCompletion(
   }
   reportedRuns.set(child.id, signature);
 
+  // Name the cause when the provider rejected the request: classify from
+  // the runFailed error plus the last assistant message's errorMessage.
+  // Fail-fast classes (attestation/auth) remember the child's model so later
+  // spawns refuse immediately; a success on the model clears the memory.
+  const failureClass = classifyProviderFailure(
+    [error, readAssistantErrorMessage(finalMessage)]
+      .filter((part) => part && part.trim())
+      .join("\n"),
+  );
+  const childModel = store.sessionModelFor(childSessionRef(child));
+  if (status === "failed") {
+    recordProviderFailure(childModel, failureClass);
+  } else {
+    clearProviderFailure(childModel);
+  }
+  store.setProviderFailureNotes?.(providerFailureNotesSnapshot());
+
   const worktree = childWorktreeOf(child);
   const reportText = childCompletionReportText(
     child,
@@ -2251,6 +2320,7 @@ async function reportChildCompletion(
     generationForChildThread(child.id),
     store.isOrchestratorSession(parentRef),
     worktree ? await childWorktreeSummary(worktree) : undefined,
+    status === "failed" ? providerFailureNote(failureClass) : undefined,
   );
 
   // A newer run of this worker (a lead follow-up or sidekick reuse) ends any
@@ -2462,6 +2532,14 @@ function preReviewScout(
     .orchestrationChildren.find((child) => child.sourceToolCallId === callId);
 }
 
+/** The last assistant message's errorMessage, when the driver attached one. */
+function readAssistantErrorMessage(
+  message: ReturnType<typeof lastAssistantMessage>,
+): string | undefined {
+  const candidate = (message as { readonly errorMessage?: unknown } | undefined)?.errorMessage;
+  return typeof candidate === "string" && candidate.trim() ? candidate : undefined;
+}
+
 /** Report text injected into the orchestrator when a child run ends. Pure; unit-tested. */
 export function childCompletionReportText(
   child: Pick<OrchestrationChildThread, "id" | "title" | "goal" | "status">,
@@ -2471,6 +2549,7 @@ export function childCompletionReportText(
   generation?: number,
   isLeadParent = false,
   worktreeLines?: readonly string[],
+  providerNote?: string,
 ): string {
   const trimmed = finalText?.trim();
   // The child's output is the expensive half of delegation: cap what the
@@ -2493,6 +2572,7 @@ export function childCompletionReportText(
       ? []
       : [`goal: ${truncateReadThreadText(child.goal, READ_THREAD_GOAL_LIMIT)}`]),
     ...(error ? [`error: ${truncateReadThreadText(error, READ_THREAD_GOAL_LIMIT)}`] : []),
+    ...(providerNote ? [`note: ${providerNote}`] : []),
     ...(worktreeLines && worktreeLines.length > 0
       ? [...worktreeLines, "Landing is yours: the host never merges or removes this worktree."]
       : []),

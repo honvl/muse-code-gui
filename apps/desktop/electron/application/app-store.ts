@@ -149,6 +149,7 @@ import { resolveRepoWorkspaceId } from "../../contracts/workspace-roots";
 import { decodeTaskWorkbenchTemplate, type TaskWorkbenchTemplate } from "../../contracts/workbench";
 import { composerImageSavedSkipMessage } from "../../contracts/composer-attachments";
 import { extensionToolLabels } from "../../contracts/tool-labels";
+import { providerFailureNotesSnapshot } from "../../contracts/provider-failures";
 import { quarantinePersistedComposerAttachments } from "../ipc/composer-attachment-pixels";
 import { SessionStateMap, type QueuedComposerEditState } from "../conversation/session-state-map";
 import {
@@ -582,6 +583,9 @@ export class DesktopAppStore {
       }),
       replaceOrchestrationChildren: (children) => {
         this.state = { ...this.state, orchestrationChildren: [...children] };
+      },
+      setProviderFailureNotes: (notes) => {
+        this.state = { ...this.state, providerFailureNotes: notes };
       },
       refreshState: (refreshOptions) => this.refreshState(refreshOptions),
       emit: () => this.emit(),
@@ -3011,6 +3015,9 @@ export class DesktopAppStore {
       this.state = {
         ...this.state,
         orchestrationChildren: this.orchestrationOwner.projectOrchestrationChildren(),
+        // Re-prune on every refresh so an expired fail-fast entry clears the
+        // Lead badge even when no child runs to refresh it.
+        providerFailureNotes: providerFailureNotesSnapshot(),
       };
 
       if (options.markSelectedSessionViewed ?? true) {

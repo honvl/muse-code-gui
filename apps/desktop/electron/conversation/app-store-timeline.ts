@@ -2,6 +2,7 @@ import { isCardEntryItem, sessionKey } from "@pi-gui/session-driver";
 import type { SessionTranscriptItem, SessionTranscriptPin } from "@pi-gui/session-driver";
 import type { SessionDriverEvent, SessionQueuedMessage, SessionRef } from "@pi-gui/session-driver";
 import type { TranscriptMessage } from "../../contracts/desktop-state";
+import { classifyProviderFailure, providerFailureNote } from "../../contracts/provider-failures";
 import {
   extensionToolRowLabel,
   toolInputSummary,
@@ -366,7 +367,11 @@ export function applyTimelineEvent(
       const latestToolError = metrics
         ? latestErrorToolDetail(transcript, metrics.startedAt)
         : undefined;
-      const failureLabel = clearerRunFailureLabel(event.error.message, latestToolError);
+      const failureLabel = withProviderFailureNote(
+        clearerRunFailureLabel(event.error.message, latestToolError),
+        event.error.message,
+        event.error.code,
+      );
       const failureDetail = event.error.code;
       clearRunState(transcript, key, event.sessionRef, state);
       transcript.push(
@@ -650,6 +655,23 @@ function latestErrorToolDetail(
     }
   }
   return undefined;
+}
+
+/**
+ * Append the actionable provider-failure note to a run-failure row when the
+ * error classifies (attestation/auth/rate-limit/overload/quota). Unclassified
+ * errors keep their label untouched. Shared with the child report via
+ * contracts/provider-failures so both threads say the same thing.
+ */
+function withProviderFailureNote(
+  label: string,
+  message: string,
+  code: string | undefined,
+): string {
+  const note = providerFailureNote(
+    classifyProviderFailure([message, code].filter((part) => part).join("\n")),
+  );
+  return note ? `${label} — ${note}` : label;
 }
 
 function clearerRunFailureLabel(message: string, latestToolError: string | undefined): string {

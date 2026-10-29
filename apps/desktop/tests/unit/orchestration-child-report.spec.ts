@@ -91,6 +91,7 @@ function makeHost(state: HostState) {
     isOrchestratorSession: (ref: SessionRef) =>
       ref.sessionId === parentRef.sessionId && state.orchestrator,
     sidekickModelFor: () => undefined,
+    sessionModelFor: () => undefined,
     buildCreateSessionOptions: async () => undefined,
     getQueuedComposerMessages: () => [],
     seedSession: () => {},
