@@ -72,7 +72,7 @@ await test("cancel SIGTERMs the group and settles quietly to idle", async () => 
     await sleeper.ready();
     await driver.cancelCurrentRun(snapshot.ref);
     // Quiet like pi: a bare session update, no completion or failure.
-    // Settling rides the exit event, so it lands just after cancel resolves.
+    // Settling rides the close event, so it lands just after cancel resolves.
     await waitForEvent(events, "sessionUpdated");
     assert.ok(!events.some((event) => event.type === "runFailed"));
     const transcript = await driver.getTranscript(snapshot.ref);

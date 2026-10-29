@@ -91,6 +91,8 @@ interface RunningTurn {
   emittedToolCount: number;
   /** Usage already folded into the record, so terminal sync adds only the rest. */
   reportedUsage: MappedUsage;
+  /** assistantMessageStarted fired once text actually streams (pi message_start parity). */
+  emittedAssistantStart: boolean;
   stdoutRemainder: string;
   stderrTail: string;
   timeout: NodeJS.Timeout | undefined;
@@ -550,6 +552,7 @@ export class MuseCliDriver implements SessionDriver {
       settled: false,
       emittedToolCount: 0,
       reportedUsage: emptyUsage(),
+      emittedAssistantStart: false,
       stdoutRemainder: "",
       stderrTail: "",
       timeout: undefined,
@@ -563,11 +566,14 @@ export class MuseCliDriver implements SessionDriver {
       }, this.maxTurnMs);
       turn.timeout.unref?.();
     }
+    // Pi parity: agent_start announces the run as running before the first
+    // model output. The desktop derives the child status from this snapshot,
+    // so it must lead every response row (tool or text).
     this.emit(record, {
-      type: "assistantMessageStarted",
+      type: "sessionUpdated",
       sessionRef: record.ref,
       timestamp: now,
-      runId,
+      snapshot: this.snapshotOf(record),
     });
 
     proc.stdout?.on("data", (chunk: Buffer) => {
@@ -583,7 +589,11 @@ export class MuseCliDriver implements SessionDriver {
         `Failed to spawn ${this.binaryPath}: ${error.message} Install Muse Code or configure the binary path.`,
       ).catch(() => undefined);
     });
-    proc.on("exit", (code: number | null, signal: string | null) => {
+    // `close`, not `exit`: deltas, usage and the terminal record cluster at
+    // the end of the stream, and `exit` can fire before the final pipe bytes
+    // are ingested. Settling on `close` guarantees the terminal record was
+    // seen, so a finished run cannot degrade into a phantom failure.
+    proc.on("close", (code: number | null, signal: string | null) => {
       this.finishTurn(record, turn, promptFile, code, signal).catch(() => undefined);
     });
   }
@@ -656,25 +666,32 @@ export class MuseCliDriver implements SessionDriver {
   private emitRecord(record: MuseSessionRecord, turn: RunningTurn, payloadKind: string): void {
     const now = new Date().toISOString();
     if (payloadKind === "run_started") {
-      this.emit(record, {
-        type: "assistantMessageStarted",
-        sessionRef: record.ref,
-        timestamp: now,
-        runId: turn.runId,
-      });
+      // Run acceptance carries no model output; the assistant bubble opens
+      // with the first streamed text (pi message_start parity), so a slow
+      // start never fakes a response.
       return;
     }
     if (payloadKind === "run_output_delta") {
       const text = turn.collector.drainDelta();
-      if (text) {
+      if (!text) {
+        return;
+      }
+      if (!turn.emittedAssistantStart) {
+        turn.emittedAssistantStart = true;
         this.emit(record, {
-          type: "assistantDelta",
+          type: "assistantMessageStarted",
           sessionRef: record.ref,
           timestamp: now,
           runId: turn.runId,
-          text,
         });
       }
+      this.emit(record, {
+        type: "assistantDelta",
+        sessionRef: record.ref,
+        timestamp: now,
+        runId: turn.runId,
+        text,
+      });
       return;
     }
     if (payloadKind === "run_usage") {
@@ -769,6 +786,25 @@ export class MuseCliDriver implements SessionDriver {
     if (terminal) {
       this.syncUsage(record, turn);
       const text = terminal.text || turn.collector.assistantText;
+      if (text && !turn.emittedAssistantStart) {
+        // A turn whose text arrived only in the terminal record (no streamed
+        // deltas) still opens a bubble, so the desktop transcript and the
+        // child report carry the final text.
+        turn.emittedAssistantStart = true;
+        this.emit(record, {
+          type: "assistantMessageStarted",
+          sessionRef: record.ref,
+          timestamp: now,
+          runId: turn.runId,
+        });
+        this.emit(record, {
+          type: "assistantDelta",
+          sessionRef: record.ref,
+          timestamp: now,
+          runId: turn.runId,
+          text,
+        });
+      }
       record.transcript = [
         ...record.transcript,
         {
