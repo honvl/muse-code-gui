@@ -18,7 +18,12 @@ export const SIDEKICK_RUNTIME_ENV_VAR = "PI_APP_SIDEKICK_RUNTIME";
 
 export type SidekickRuntimeOverride = "pi" | "muse-cli" | "auto";
 
-/** `PI_APP_SIDEKICK_RUNTIME=pi|muse-cli|auto`, defaulting to auto; junk falls back to auto. */
+/**
+ * `PI_APP_SIDEKICK_RUNTIME=pi|muse-cli|auto`, defaulting to pi; junk falls back
+ * to pi. Meta lifted its subscription attestation block (Oct 29, 2026), so pi
+ * children work again and the Muse CLI runtime is opt-in: `auto` (Muse for
+ * `meta/*` OAuth children) or `muse-cli` (always).
+ */
 export function resolveSidekickRuntimeOverride(
   env: NodeJS.ProcessEnv = process.env,
 ): SidekickRuntimeOverride {
@@ -26,7 +31,7 @@ export function resolveSidekickRuntimeOverride(
   if (raw === "pi" || raw === "muse-cli" || raw === "auto") {
     return raw;
   }
-  return "auto";
+  return "pi";
 }
 
 export function isMetaModelSelection(selection: SessionModelSelection | undefined): boolean {

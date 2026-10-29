@@ -51,8 +51,8 @@ test("runtime override parses pi, muse-cli and auto; junk means auto", () => {
   expect(resolveSidekickRuntimeOverride({ [SIDEKICK_RUNTIME_ENV_VAR]: "MUSE-CLI" })).toBe(
     "muse-cli",
   );
-  expect(resolveSidekickRuntimeOverride({})).toBe("auto");
-  expect(resolveSidekickRuntimeOverride({ [SIDEKICK_RUNTIME_ENV_VAR]: "sometimes" })).toBe("auto");
+  expect(resolveSidekickRuntimeOverride({})).toBe("pi");
+  expect(resolveSidekickRuntimeOverride({ [SIDEKICK_RUNTIME_ENV_VAR]: "sometimes" })).toBe("pi");
 });
 
 test("auto routes meta models on OAuth subscriptions to the Muse CLI", () => {
