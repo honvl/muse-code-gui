@@ -9,6 +9,7 @@ import {
   launchDesktop,
   makeUserDataDir,
   makeWorkspace,
+  openNewThread,
   seedAgentDir,
   seedNamedTextSessionFixture,
   selectSession,
@@ -246,6 +247,78 @@ test("lead and sidekick reasoning defaults sit in Settings and apply to threads"
     await expect(window.getByRole("button", { name: /^Sidekick reasoning:/ })).toHaveText(
       "Sidekick reasoning: Default (low)",
     );
+  } finally {
+    await harness.close();
+  }
+});
+
+test("new-thread toggle follows Solo/Lead and a Lead-born thread returns to the Solo default", async () => {
+  test.setTimeout(120_000);
+  const userDataDir = await makeUserDataDir();
+  const agentDir = join(userDataDir, "agent");
+  const workspacePath = await makeWorkspace("lead-new-thread");
+  // Default seed plus a reasoning spare: gpt-5 is the workspace default,
+  // gpt-5-mini the spare (gpt-4o cannot reason, so it cannot carry
+  // thinking assertions).
+  await seedAgentDir(agentDir, { enabledModels: ["openai/gpt-5", "openai/gpt-5-mini"] });
+  const harness = await launchDesktop(userDataDir, {
+    agentDir,
+    initialWorkspaces: [workspacePath],
+    testMode: "background",
+  });
+
+  try {
+    const window = await harness.firstWindow();
+    await openNewThread(window);
+    const surface = window.locator(".new-thread");
+    await expect(surface.getByRole("button", { name: "openai:gpt-5" })).toBeVisible();
+    // Setup only: the Settings › Models picker is covered by its own spec.
+    await window.evaluate(() =>
+      globalThis.window.piApp?.setDefaultLeadModel({ provider: "openai", modelId: "gpt-5-mini" }),
+    );
+    // Still Solo: the workspace default shows.
+    await expect(surface.getByRole("button", { name: "openai:gpt-5" })).toBeVisible();
+
+    // Solo -> Lead shows the default lead model; back to Solo restores the default.
+    await surface.getByRole("button", { name: "Solo", exact: true }).click();
+    await expect(surface.getByRole("button", { name: "Lead", exact: true })).toBeVisible();
+    await expect(surface.getByRole("button", { name: "openai:gpt-5-mini" })).toBeVisible();
+    await surface.getByRole("button", { name: "Lead", exact: true }).click();
+    await expect(surface.getByRole("button", { name: "Solo", exact: true })).toBeVisible();
+    await expect(surface.getByRole("button", { name: "openai:gpt-5" })).toBeVisible();
+
+    // A thread started in Lead mode runs on the default lead model.
+    await surface.getByRole("button", { name: "Solo", exact: true }).click();
+    await expect(surface.getByRole("button", { name: "openai:gpt-5-mini" })).toBeVisible();
+    await window.getByLabel("New thread prompt").fill("Lead-born model check");
+    await window.getByRole("button", { name: "Start thread" }).click();
+    const footer = window.locator(".composer__bar");
+    await expect(footer.getByRole("button", { name: "Lead", exact: true })).toBeVisible({
+      timeout: 15_000,
+    });
+    const sessionConfig = async () => {
+      const state = await getDesktopState(window);
+      const session = state.workspaces
+        .flatMap((workspace) => workspace.sessions)
+        .find((entry) => entry.id === state.selectedSessionId);
+      return {
+        model: `${session?.config?.provider}:${session?.config?.modelId}`,
+        lead: session?.config?.orchestratorMode === true,
+        thinking: session?.config?.thinkingLevel,
+      };
+    };
+    await expect
+      .poll(sessionConfig)
+      .toEqual({ model: "openai:gpt-5-mini", lead: true, thinking: "high" });
+    await expect(footer.getByRole("button", { name: "openai:gpt-5-mini" })).toBeVisible();
+
+    // No pre-lead record (born in Lead): Lead -> Solo returns to the Solo default.
+    await footer.getByRole("button", { name: "Lead", exact: true }).click();
+    await expect(footer.getByRole("button", { name: "Solo", exact: true })).toBeVisible();
+    await expect(footer.getByRole("button", { name: "openai:gpt-5" })).toBeVisible();
+    await expect
+      .poll(sessionConfig)
+      .toEqual({ model: "openai:gpt-5", lead: false, thinking: "medium" });
   } finally {
     await harness.close();
   }

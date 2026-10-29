@@ -75,6 +75,15 @@ export function useNewThreadController(params: UseNewThreadControllerParams) {
   // Flag edits on this surface, laid over the workspace's remembered defaults.
   const [extensionFlagEdits, setExtensionFlagEdits] = useState<ExtensionFlagValues>({});
   const [composerError, setComposerError] = useState<string | undefined>();
+  // Toggling the mode drops any explicit pick on this surface so the mode's
+  // default shows, matching the existing-thread toggle which switches to
+  // the default lead model (Solo -> Lead) or restores the pre-lead one.
+  const toggleOrchestratorMode = useCallback((enabled: boolean) => {
+    setOrchestratorMode(enabled);
+    setProvider(undefined);
+    setModelId(undefined);
+    setThinkingLevel(undefined);
+  }, []);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const previousActiveViewRef = useRef<AppView | null>(null);
   // Set while an in-app open is switching to New thread, so its chosen folder
@@ -84,15 +93,29 @@ export function useNewThreadController(params: UseNewThreadControllerParams) {
   const workspace =
     rootWorkspaceOptions.find((entry) => entry.id === rootWorkspaceId) ?? rootWorkspaceOptions[0];
   const runtime = snapshot ? getEffectiveModelRuntime(snapshot, workspace) : undefined;
-  const defaultEnabled = buildModelOptions(runtime).some(
+  const modelOptions = buildModelOptions(runtime);
+  const defaultEnabled = modelOptions.some(
     (m) =>
       m.providerId === runtime?.settings.defaultProvider &&
       m.modelId === runtime?.settings.defaultModelId,
   );
+  const leadDefaultModel = snapshot?.defaultLeadModel;
+  const leadDefaultEnabled =
+    leadDefaultModel !== undefined &&
+    modelOptions.some(
+      (m) =>
+        m.providerId === leadDefaultModel.provider && m.modelId === leadDefaultModel.modelId,
+    );
   const resolvedProvider =
-    provider ?? (defaultEnabled ? runtime?.settings.defaultProvider : undefined);
+    provider ??
+    (orchestratorMode && leadDefaultEnabled && leadDefaultModel
+      ? leadDefaultModel.provider
+      : (defaultEnabled ? runtime?.settings.defaultProvider : undefined));
   const resolvedModelId =
-    modelId ?? (defaultEnabled ? runtime?.settings.defaultModelId : undefined);
+    modelId ??
+    (orchestratorMode && leadDefaultEnabled && leadDefaultModel
+      ? leadDefaultModel.modelId
+      : (defaultEnabled ? runtime?.settings.defaultModelId : undefined));
   // A Lead thread starts at the default lead reasoning unless a level is picked here,
   // shown as the level pi will apply on the chosen model.
   const requestedThinkingLevel =
@@ -517,7 +540,7 @@ export function useNewThreadController(params: UseNewThreadControllerParams) {
       setProvider,
       setModelId,
       setThinkingLevel,
-      setOrchestratorMode,
+      setOrchestratorMode: toggleOrchestratorMode,
       setPendingWorkspaceId,
       selectWorkspace,
       addAttachments,
