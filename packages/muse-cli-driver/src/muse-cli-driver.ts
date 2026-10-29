@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { promises as fs, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { SessionCatalogEntry } from "@pi-gui/catalogs";
+import type { SessionCatalogEntry, SessionCatalogSnapshot } from "@pi-gui/catalogs";
 import type {
   CreateSessionOptions,
   ForkSessionOptions,
@@ -1101,12 +1101,55 @@ export class MuseCliDriver implements SessionDriver {
     };
   }
 
+  /**
+   * Sessions this driver knows about, for the desktop listing. Live records
+   * carry authoritative status: pi's catalog copy goes stale the moment a
+   * turn starts (persist runs at turn end), so without this overlay a refresh
+   * resets a running Muse child to idle. Marker files cover sessions from
+   * before a restart whose catalog entry was lost. The desktop merges these
+   * over pi's listing with this side winning per session key.
+   */
+  async listSessions(workspaceId?: string): Promise<SessionCatalogSnapshot> {
+    const byKey = new Map<string, SessionCatalogEntry>();
+    if (this.sessionFileDir) {
+      for (const entry of await readMarkerSessions(this.sessionFileDir)) {
+        if (workspaceId !== undefined && entry.workspaceId !== workspaceId) {
+          continue;
+        }
+        byKey.set(keyOf(entry.sessionRef), entry);
+      }
+    }
+    for (const record of this.records.values()) {
+      if (workspaceId !== undefined && record.ref.workspaceId !== workspaceId) {
+        continue;
+      }
+      byKey.set(keyOf(record.ref), this.entryOf(record));
+    }
+    return { sessions: [...byKey.values()] };
+  }
+
+  private entryOf(record: MuseSessionRecord): SessionCatalogEntry {
+    const filePath = this.getSessionFilePathSync(record.ref);
+    const preview = previewOf(record);
+    return {
+      sessionRef: { ...record.ref },
+      workspaceId: record.ref.workspaceId,
+      title: record.title,
+      updatedAt: record.updatedAt,
+      ...(record.archived ? { archivedAt: record.updatedAt } : {}),
+      ...(preview ? { previewSnippet: preview } : {}),
+      ...(filePath ? { sessionFilePath: filePath } : {}),
+      status: record.status,
+    };
+  }
+
   private async persistSession(record: MuseSessionRecord): Promise<void> {
     const filePath = this.getSessionFilePathSync(record.ref);
     if (filePath && this.sessionFileDir) {
       const payload = JSON.stringify({
-        version: 1,
+        version: 2,
         museSessionId: record.ref.sessionId,
+        workspaceId: record.ref.workspaceId,
         title: record.title,
         updatedAt: record.updatedAt,
       });
@@ -1119,18 +1162,7 @@ export class MuseCliDriver implements SessionDriver {
       }
     }
     if (this.catalogStorage) {
-      const preview = previewOf(record);
-      const entry: SessionCatalogEntry = {
-        sessionRef: { ...record.ref },
-        workspaceId: record.ref.workspaceId,
-        title: record.title,
-        updatedAt: record.updatedAt,
-        ...(record.archived ? { archivedAt: record.updatedAt } : {}),
-        ...(preview ? { previewSnippet: preview } : {}),
-        ...(filePath ? { sessionFilePath: filePath } : {}),
-        status: record.status,
-      };
-      await this.catalogStorage.sessions.upsertSession(entry).catch(() => undefined);
+      await this.catalogStorage.sessions.upsertSession(this.entryOf(record)).catch(() => undefined);
     }
   }
 
@@ -1270,6 +1302,52 @@ function addUsage(left: MappedUsage, right: MappedUsage): MappedUsage {
 
 function keyOf(ref: SessionRef): string {
   return `${ref.workspaceId}:${ref.sessionId}`;
+}
+
+/**
+ * Restart backstop for the listing: one entry per marker file. Markers
+ * predate the workspaceId field (version 1), so those are skipped — the
+ * shared catalog still carries them while their marker file exists for
+ * pi-sync preservation. Fresh markers are always idle: persist runs at turn
+ * end, creation and archive, never mid-turn.
+ */
+async function readMarkerSessions(dir: string): Promise<SessionCatalogEntry[]> {
+  let names: string[];
+  try {
+    names = await fs.readdir(dir);
+  } catch {
+    return [];
+  }
+  const entries: SessionCatalogEntry[] = [];
+  for (const name of names) {
+    if (!name.endsWith(".json")) {
+      continue;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await fs.readFile(join(dir, name), "utf8"));
+    } catch {
+      continue;
+    }
+    if (!parsed || typeof parsed !== "object") {
+      continue;
+    }
+    const record = parsed as Record<string, unknown>;
+    if (typeof record.museSessionId !== "string" || typeof record.workspaceId !== "string") {
+      continue;
+    }
+    const sessionId = record.museSessionId;
+    const workspaceId = record.workspaceId;
+    entries.push({
+      sessionRef: { workspaceId, sessionId },
+      workspaceId,
+      title: typeof record.title === "string" && record.title ? record.title : sessionId,
+      updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : new Date().toISOString(),
+      sessionFilePath: join(dir, name),
+      status: "idle",
+    });
+  }
+  return entries;
 }
 
 function errorMessage(error: unknown): string {
