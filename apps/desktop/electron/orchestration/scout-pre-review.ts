@@ -25,6 +25,8 @@ export const SCOUT_PRE_REVIEW_TIMEOUT_ENV_VAR = "PI_APP_SCOUT_PRE_REVIEW_TIMEOUT
 export const DEFAULT_SCOUT_PRE_REVIEW_TIMEOUT_MS = 180_000;
 /** Host cap on the injected verdict. The scout is asked for ~400 chars. */
 export const SCOUT_VERDICT_LIMIT = 600;
+/** Host cap on a scout failure detail surfaced to the lead. */
+export const SCOUT_FAILURE_DETAIL_LIMIT = 300;
 /** Cap on the worker brief quoted to the scout. */
 const REVIEW_BRIEF_LIMIT = 4_000;
 /** Changed paths listed in the scout brief; the rest are counted. */
@@ -190,6 +192,12 @@ export type PreReviewOutcome =
   | {
       readonly kind: "unavailable";
       readonly reason: "failed" | "timeout" | "cancelled" | "superseded";
+      /**
+       * Why the review failed, for the lead's note. Present only for
+       * `failed`: the spawn/launch error, or the scout run's session error.
+       * Without it the lead cannot tell a broken reviewer from a bad diff.
+       */
+      readonly error?: string;
     };
 
 /**
@@ -201,6 +209,17 @@ export function combinedPreReviewReportText(
   outcome: PreReviewOutcome,
 ): string {
   if (outcome.kind === "unavailable") {
+    // A failed review names its cause: without it the lead cannot tell a
+    // broken reviewer (failed spawn, dead runtime) from a bad diff. Timeout,
+    // cancellation and supersession need no detail.
+    if (outcome.reason === "failed" && outcome.error?.trim()) {
+      const detail = outcome.error.trim();
+      const capped =
+        detail.length > SCOUT_FAILURE_DETAIL_LIMIT
+          ? `${detail.slice(0, SCOUT_FAILURE_DETAIL_LIMIT)}…`
+          : detail;
+      return `${workerReport}\n\nScout pre-review failed (${capped}); review the diff yourself.`;
+    }
     const why = outcome.reason === "timeout" ? "timed out" : outcome.reason;
     return `${workerReport}\n\nScout pre-review ${why}; review the diff yourself.`;
   }

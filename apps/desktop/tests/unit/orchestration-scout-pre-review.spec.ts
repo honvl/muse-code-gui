@@ -9,6 +9,7 @@ import {
 } from "../../electron/orchestration/orchestration-runtime";
 import {
   DEFAULT_SCOUT_PRE_REVIEW_TIMEOUT_MS,
+  SCOUT_FAILURE_DETAIL_LIMIT,
   SCOUT_PRE_REVIEW_BRIEF_OPENING,
   SCOUT_PRE_REVIEW_CALL_PREFIX,
   SCOUT_VERDICT_LIMIT,
@@ -145,12 +146,29 @@ test.describe("pure decision and composition", () => {
     expect(combinedPreReviewReportText("W", { kind: "unavailable", reason: "failed" })).toContain(
       "pre-review failed",
     );
+    const failedDetail = combinedPreReviewReportText("W", {
+      kind: "unavailable",
+      reason: "failed",
+      error: "Could not rebuild Muse session abc via `muse export`.",
+    });
+    expect(failedDetail).toContain(
+      "Scout pre-review failed (Could not rebuild Muse session abc via `muse export`.);",
+    );
+    expect(failedDetail).toContain("review the diff yourself.");
+    const capped = combinedPreReviewReportText("W", {
+      kind: "unavailable",
+      reason: "failed",
+      error: "x".repeat(SCOUT_FAILURE_DETAIL_LIMIT + 50),
+    });
+    expect(capped).toContain(`${"x".repeat(SCOUT_FAILURE_DETAIL_LIMIT)}…`);
   });
 });
 
 const leadRef: SessionRef = { workspaceId: "ws", sessionId: "lead" };
 const workerRef: SessionRef = { workspaceId: "ws", sessionId: "worker" };
 const scoutRef: SessionRef = { workspaceId: "ws", sessionId: "scout" };
+const worktreeWorkerRef: SessionRef = { workspaceId: "wt", sessionId: "worker" };
+const worktreeScoutRef: SessionRef = { workspaceId: "wt", sessionId: "scout" };
 const workerBrief = composeChildBrief({ prompt: "Rename the helper." });
 const VERDICT = "Verdict: needs attention\nHunks: src/b.ts:3 - stale import";
 
@@ -162,6 +180,25 @@ interface FlowState {
   cancelled: string[];
   spawnFails: boolean;
   scoutAnswers: boolean;
+  /** The worker lives in a repo-local worktree instead of the lead workspace. */
+  worktreeWorker: boolean;
+  /** The worker session's live model, inherited by the scout when nothing explicit is set. */
+  workerLiveModel: { provider: string; modelId: string } | undefined;
+  /** Runtime the host routes the scout to; defaults to pi. */
+  scoutRuntime: "pi" | "muse-cli";
+  /** Models the host was asked to route, in order. */
+  routedModels: Array<{ provider: string; modelId: string } | undefined>;
+  /** Workspace ids every scout session creation requested, in order. */
+  createdSessionWorkspaces: string[];
+  /** Runtimes every scout session creation requested, in order. */
+  createdSessionRuntimes: Array<"pi" | "muse-cli">;
+  /** Session ids created through the fake driver, for faithful resolution. */
+  createdSessionIds: Set<string>;
+  /** ensureSessionSubscription throws this message, mirroring a driver that
+   * cannot open a just-created session (pre-311f81e9 Muse CLI behavior). */
+  subscriptionFails: string | undefined;
+  /** Session error reported for the scout run. */
+  scoutSessionError: string | undefined;
 }
 
 function workerRecord(): OrchestrationChildThread {
@@ -184,16 +221,30 @@ function workerRecord(): OrchestrationChildThread {
   };
 }
 
+function worktreeWorkerRecord(): OrchestrationChildThread {
+  return {
+    ...workerRecord(),
+    // An `isolation: "worktree"` worker: its checkout (and the diff under
+    // review) lives in the linked worktree, not the lead workspace.
+    childWorkspaceId: "wt",
+    worktreePath: "/nonexistent/pi-gui-ws/.worktrees/x",
+    branch: "child/x",
+    baseCommit: "abc123",
+  };
+}
+
 function makeFlowHost(state: FlowState) {
   const host = {
     driver: {
       cancelCurrentRun: async (ref: SessionRef) => {
         state.cancelled.push(ref.sessionId);
       },
-      createSession: async (): Promise<SessionSnapshot> => {
+      createSession: async (workspace: { workspaceId: string }): Promise<SessionSnapshot> => {
         if (state.spawnFails) throw new Error("no session");
+        state.createdSessionWorkspaces.push(workspace.workspaceId);
+        state.createdSessionIds.add(`session:${workspace.workspaceId}:scout`);
         return {
-          ref: scoutRef,
+          ref: { workspaceId: workspace.workspaceId, sessionId: "scout" },
           title: "Review",
           status: "idle",
           updatedAt: createdAt,
@@ -223,23 +274,62 @@ function makeFlowHost(state: FlowState) {
     withError: async () => ({}) as never,
     persistUiState: async () => {},
     schedulePersistUiState: () => {},
-    workspaceRefFromState: () => ({ workspaceId: "ws", path: "/nonexistent/pi-gui-ws" }),
-    sessionFromState: (ref: SessionRef) => ({
-      status: "idle",
-      title: ref.sessionId,
-      updatedAt: createdAt,
-    }),
+    workspaceRefFromState: (workspaceId: string) =>
+      workspaceId === "ws"
+        ? { workspaceId: "ws", path: "/nonexistent/pi-gui-ws" }
+        : workspaceId === "wt" && state.worktreeWorker
+          ? { workspaceId: "wt", path: "/nonexistent/pi-gui-ws/.worktrees/x" }
+          : undefined,
+    sessionFromState: (ref: SessionRef) => {
+      // Faithful to production: only sessions the fake workspaces know exist
+      // resolve. Unknown refs (a worker whose worktree workspace dropped out
+      // of state, a scout that was never created) resolve to undefined.
+      const known =
+        (ref.sessionId === "lead" && ref.workspaceId === "ws") ||
+        (ref.sessionId === "worker" &&
+          ref.workspaceId === (state.worktreeWorker ? "wt" : "ws")) ||
+        state.createdSessionIds.has(`session:${ref.workspaceId}:${ref.sessionId}`);
+      return known
+        ? { status: "idle", title: ref.sessionId, updatedAt: createdAt }
+        : undefined;
+    },
     ensureSessionReady: async () => undefined,
-    ensureSessionSubscription: async () => {},
+    ensureSessionSubscription: async () => {
+      if (state.subscriptionFails) throw new Error(state.subscriptionFails);
+    },
     subscribeToSessionEvents: () => () => {},
     updateSessionConfig: () => {},
     isOrchestratorSession: (ref: SessionRef) => ref.sessionId === "lead",
     sidekickModelFor: () => undefined,
     defaultScoutModel: () => undefined,
+    resolveChildRuntime: (input: { model: { provider: string; modelId: string } | undefined }) => {
+      state.routedModels.push(input.model);
+      return state.scoutRuntime;
+    },
+    createChildSession: async (
+      workspace: { workspaceId: string },
+      _options: unknown,
+      runtime: "pi" | "muse-cli",
+    ): Promise<SessionSnapshot> => {
+      if (state.spawnFails) throw new Error("no session");
+      state.createdSessionWorkspaces.push(workspace.workspaceId);
+      state.createdSessionRuntimes.push(runtime);
+      state.createdSessionIds.add(`session:${workspace.workspaceId}:scout`);
+      return {
+        ref: { workspaceId: workspace.workspaceId, sessionId: "scout" },
+        title: "Review",
+        status: "idle",
+        updatedAt: createdAt,
+      } as unknown as SessionSnapshot;
+    },
     sidekickThinkingLevelFor: () => undefined,
     defaultSidekickThinkingLevel: () => "xhigh" as const,
     defaultScoutThinkingLevel: () => undefined,
-    sessionModelFor: () => undefined,
+    sessionModelFor: (ref: SessionRef) =>
+      // Production populates this from the session's live model once it runs:
+      // a worker on meta/* hands its reviewer the same model unless the lead
+      // set an explicit scout or sidekick model.
+      ref.sessionId === "worker" ? state.workerLiveModel : undefined,
     buildCreateSessionOptions: async () => undefined,
     getQueuedComposerMessages: () => [],
     seedSession: () => {},
@@ -247,7 +337,8 @@ function makeFlowHost(state: FlowState) {
     transcriptForKey: () => [],
     replaceTranscript: () => {},
     isTranscriptLoaded: () => true,
-    getSessionError: () => undefined,
+    getSessionError: (ref: SessionRef) =>
+      ref.sessionId === "scout" ? state.scoutSessionError : undefined,
     setSessionError: () => {},
     submitComposerToSession: async (ref: SessionRef, text: string) => {
       state.scoutPrompts.push(text);
@@ -282,6 +373,15 @@ function flowState(overrides: Partial<FlowState> = {}): FlowState {
     cancelled: [],
     spawnFails: false,
     scoutAnswers: true,
+    worktreeWorker: false,
+    workerLiveModel: undefined,
+    scoutRuntime: "pi",
+    routedModels: [],
+    createdSessionWorkspaces: [],
+    createdSessionRuntimes: [],
+    createdSessionIds: new Set(),
+    subscriptionFails: undefined,
+    scoutSessionError: undefined,
     ...overrides,
   };
 }
@@ -323,14 +423,16 @@ test.describe("owner flow", () => {
     expect(state.sent[0]?.text).toContain("src/b.ts:3 - stale import");
   });
 
-  test("a failed scout spawn delivers the worker report alone", async () => {
+  test("a failed scout spawn delivers the worker report with its error", async () => {
     const state = flowState({ spawnFails: true });
     const owner = makeFlowHost(state);
 
     await owner.reportChildCompletion(workerRef);
     await waitFor(() => state.sent.length === 1);
     expect(state.sent[0]?.text).toContain("WORKER-DONE");
-    expect(state.sent[0]?.text).toContain("Scout pre-review failed; review the diff yourself.");
+    expect(state.sent[0]?.text).toContain(
+      "Scout pre-review failed (no session); review the diff yourself.",
+    );
   });
 
   test("a scout that misses the timeout is cancelled and the worker report goes alone", async () => {
@@ -383,6 +485,97 @@ test.describe("owner flow", () => {
     expect(state.sent[0]?.text).toContain("Scout pre-review superseded");
     expect(state.sent[1]?.text).toContain("WORKER-RUN-2 docs fixed");
     expect(state.cancelled).toContain("scout");
+  });
+
+  test("a worktree worker is reviewed in its own worktree", async () => {
+    const state = flowState({ worktreeWorker: true, children: [worktreeWorkerRecord()] });
+    const owner = makeFlowHost(state);
+
+    await owner.reportChildCompletion(worktreeWorkerRef);
+    expect(state.sent).toHaveLength(0);
+    await waitFor(() => state.children.length === 2);
+
+    // The scout session is created in the worker's worktree workspace, where
+    // the diff under review lives — not in the lead's parent workspace.
+    expect(state.createdSessionWorkspaces).toEqual(["wt"]);
+    expect(state.createdSessionRuntimes).toEqual(["pi"]);
+    const scout = state.children.find((child) => child.id !== "worker-thread");
+    expect(scout?.mode).toBe("scout");
+    expect(scout?.parentSessionId).toBe("worker");
+    expect(scout?.childWorkspaceId).toBe("wt");
+    expect(state.scoutPrompts[0]).toContain("src/a.ts, src/b.ts");
+
+    await owner.reportChildCompletion(worktreeScoutRef);
+    expect(state.sent).toHaveLength(1);
+    expect(state.sent[0]?.sessionRef).toEqual(leadRef);
+    expect(state.sent[0]?.text).toContain("WORKER-DONE");
+    expect(state.sent[0]?.text).toContain(`Scout pre-review (thread_id: ${scout?.id}):`);
+  });
+
+  test("a scout routed to a runtime that cannot open its session surfaces the error", async () => {
+    // Reproduces the Oct 29 incident: the worktree worker ran meta/* on pi,
+    // the review scout inherited that live model, auto-routing sent it to the
+    // Muse CLI driver, and opening the just-created session threw before the
+    // scout record was inserted — the held report went out as bare "failed".
+    const openError =
+      "Could not rebuild Muse session scout-1 via `muse export` (binary: /usr/local/bin/muse).";
+    const state = flowState({
+      worktreeWorker: true,
+      children: [worktreeWorkerRecord()],
+      workerLiveModel: { provider: "meta", modelId: "muse-spark-1.3-contributor" },
+      scoutRuntime: "muse-cli",
+      subscriptionFails: openError,
+    });
+    const owner = makeFlowHost(state);
+
+    await owner.reportChildCompletion(worktreeWorkerRef);
+    await waitFor(() => state.sent.length === 1);
+
+    // The scout inherited the worker's live model for its routing decision.
+    expect(state.routedModels).toEqual([
+      { provider: "meta", modelId: "muse-spark-1.3-contributor" },
+    ]);
+    expect(state.createdSessionRuntimes).toEqual(["muse-cli"]);
+    // The spawn died before the record was inserted: nothing to settle later.
+    expect(
+      state.children.some((child) =>
+        child.sourceToolCallId?.startsWith(SCOUT_PRE_REVIEW_CALL_PREFIX),
+      ),
+    ).toBe(false);
+    expect(state.sent[0]?.text).toContain("WORKER-DONE");
+    expect(state.sent[0]?.text).toContain(`Scout pre-review failed (${openError})`);
+    expect(state.sent[0]?.text).toContain("review the diff yourself.");
+  });
+
+  test("a scout whose first request fails surfaces the driver error in the held report", async () => {
+    // The scout spawns but its first request is rejected: the launch path
+    // wraps the driver error, and the held worker report carries it.
+    const state = flowState({ scoutSessionError: "attestation denied (403)" });
+    const owner = makeFlowHost(state);
+
+    await owner.reportChildCompletion(workerRef);
+    await waitFor(() => state.sent.length === 1);
+
+    expect(state.sent[0]?.text).toContain("WORKER-DONE");
+    expect(state.sent[0]?.text).toContain(
+      "Scout pre-review failed (Failed to start child thread: attestation denied (403)); review the diff yourself.",
+    );
+  });
+
+  test("a scout that finishes without a verdict notes it in the held report", async () => {
+    const state = flowState({ scoutAnswers: false });
+    const owner = makeFlowHost(state);
+
+    await owner.reportChildCompletion(workerRef);
+    await waitFor(() => state.children.length === 2);
+    // The scout finished (idle with a tool row) but said nothing usable.
+    await owner.reportChildCompletion(scoutRef);
+
+    expect(state.sent).toHaveLength(1);
+    expect(state.sent[0]?.text).toContain("WORKER-DONE");
+    expect(state.sent[0]?.text).toContain(
+      "Scout pre-review failed (no verdict returned); review the diff yourself.",
+    );
   });
 
   test("single-file runs and PI_APP_SCOUT_PRE_REVIEW=0 report immediately", async () => {

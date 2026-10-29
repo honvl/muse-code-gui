@@ -2355,7 +2355,15 @@ function startScoutPreReview(
     () => store.schedulePersistUiState(),
     (cause: unknown) => {
       console.warn(`[orchestration] scout pre-review did not start:`, cause);
-      void releasePreReview(store, preReviews, callId, { kind: "unavailable", reason: "failed" });
+      // Surface the spawn/launch error in the lead's note: a bare "failed"
+      // hides whether the reviewer broke (bad runtime, unknown workspace)
+      // or the diff did. The worker report still goes out alone.
+      const error = errorMessage(cause).trim();
+      void releasePreReview(store, preReviews, callId, {
+        kind: "unavailable",
+        reason: "failed",
+        ...(error ? { error } : {}),
+      });
     },
   );
 }
@@ -2411,14 +2419,21 @@ async function settlePreReviewFromScout(
   const verdict =
     lastAssistantMessage(store.transcriptFor(scoutRef))?.text ??
     store.sessionFromState(scoutRef)?.preview;
-  const ok = status === "complete" && !store.getSessionError(scoutRef) && verdict?.trim();
+  const sessionError = store.getSessionError(scoutRef)?.trim();
+  const ok = status === "complete" && !sessionError && verdict?.trim();
   await releasePreReview(
     store,
     preReviews,
     callId,
     ok
       ? { kind: "verdict", scoutThreadId: scout.id, verdict: verdict ?? "" }
-      : { kind: "unavailable", reason: "failed" },
+      : {
+          kind: "unavailable",
+          reason: "failed",
+          error:
+            sessionError ||
+            (status !== "complete" ? `review run ${status}` : "no verdict returned"),
+        },
   );
 }
 
