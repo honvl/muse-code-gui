@@ -3,6 +3,8 @@ import { sessionKey } from "@pi-gui/session-driver";
 import {
   defaultLeadModelForLeadToggle,
   defaultLeadThinkingForLeadToggle,
+  fallbackSoloModelForSoloToggle,
+  fallbackSoloThinkingForSoloToggle,
   preLeadModelForSoloToggle,
   preLeadThinkingForSoloToggle,
   type PreLeadModel,
@@ -828,6 +830,37 @@ async function setSessionOrchestratorMode(
         preLead: preLead?.thinking,
         ...(currentThinking ? { current: currentThinking } : {}),
       });
+      // No record: the thread was born in Lead mode, or a restart dropped
+      // the in-memory map. While it is still on the default lead model,
+      // fall back to the workspace Solo default instead of staying stuck.
+      if (!modelSwitch && !preLead?.model) {
+        const runtime = store.runtimeForWorkspace(sessionRef.workspaceId);
+        const settings = runtime?.settings;
+        const workspaceDefaultModel =
+          settings?.defaultProvider && settings.defaultModelId
+            ? { provider: settings.defaultProvider, modelId: settings.defaultModelId }
+            : undefined;
+        if (workspaceDefaultModel) {
+          modelSwitch = fallbackSoloModelForSoloToggle({
+            ...(current ? { current } : {}),
+            defaultLeadModel: store.defaultLeadModel(),
+            workspaceDefaultModel,
+            ...(runtime?.models ? { models: runtime.models } : {}),
+            ...(settings?.enabledModelPatterns
+              ? { enabledModelPatterns: settings.enabledModelPatterns }
+              : {}),
+          });
+        }
+      }
+      if (!thinkingSwitch && !preLead?.thinking) {
+        const workspaceDefaultThinkingLevel = store.runtimeForWorkspace(sessionRef.workspaceId)
+          ?.settings.defaultThinkingLevel;
+        thinkingSwitch = fallbackSoloThinkingForSoloToggle({
+          ...(currentThinking ? { current: currentThinking } : {}),
+          defaultLeadThinkingLevel: store.defaultLeadThinkingLevel(),
+          ...(workspaceDefaultThinkingLevel ? { workspaceDefaultThinkingLevel } : {}),
+        });
+      }
       preLeadStates.delete(key);
     }
     // The level pi will settle on: the driver clamps it to the target model.

@@ -4,6 +4,9 @@ import type { TranscriptMessage } from "../../contracts/desktop-state";
 import {
   defaultLeadModelForLeadToggle,
   defaultLeadThinkingForLeadToggle,
+  fallbackSoloModelForSoloToggle,
+  fallbackSoloThinkingForSoloToggle,
+  isModelAvailableInRuntime,
   preLeadModelForSoloToggle,
   preLeadThinkingForSoloToggle,
   resolveInitialModelForLeadThread,
@@ -200,6 +203,14 @@ function toggleHost(options: {
   defThinking?: string;
   /** Levels each model supports, by modelId, as the runtime reports them. */
   modelLevels?: Record<string, readonly string[]>;
+  /** Workspace Solo default model, as runtime settings report it. */
+  workspaceDefault?: SessionModelSelection;
+  /** Whether the runtime reports the workspace default as available. */
+  workspaceDefaultAvailable?: boolean;
+  /** Workspace Solo default reasoning, as runtime settings report it. */
+  workspaceDefaultThinking?: string;
+  /** Enabled-model patterns, as runtime settings report them. */
+  enabledModelPatterns?: readonly string[];
 }) {
   const key = "ws:sess";
   const transcriptCache = new Map<string, readonly TranscriptMessage[]>();
@@ -238,12 +249,37 @@ function toggleHost(options: {
     defaultLeadModel: () => options.def,
     defaultLeadThinkingLevel: () => options.defThinking ?? DEFAULT_LEAD_THINKING_LEVEL,
     runtimeForWorkspace: () => ({
-      models: [defaultLead, threadModel, otherModel].flatMap((model) => {
-        const thinkingLevels = options.modelLevels?.[model.modelId];
-        return thinkingLevels
-          ? [{ providerId: model.provider, modelId: model.modelId, thinkingLevels }]
-          : [];
-      }),
+      settings: {
+        ...(options.workspaceDefault
+          ? {
+              defaultProvider: options.workspaceDefault.provider,
+              defaultModelId: options.workspaceDefault.modelId,
+            }
+          : {}),
+        ...(options.workspaceDefaultThinking
+          ? { defaultThinkingLevel: options.workspaceDefaultThinking }
+          : {}),
+        ...(options.enabledModelPatterns
+          ? { enabledModelPatterns: options.enabledModelPatterns }
+          : {}),
+      },
+      models: [
+        ...[defaultLead, threadModel, otherModel].flatMap((model) => {
+          const thinkingLevels = options.modelLevels?.[model.modelId];
+          return thinkingLevels
+            ? [{ providerId: model.provider, modelId: model.modelId, thinkingLevels }]
+            : [];
+        }),
+        ...(options.workspaceDefault
+          ? [
+              {
+                providerId: options.workspaceDefault.provider,
+                modelId: options.workspaceDefault.modelId,
+                available: options.workspaceDefaultAvailable ?? true,
+              },
+            ]
+          : []),
+      ],
     }),
     ensureSessionReady: async () => {
       ensureCalls += 1;
@@ -395,6 +431,174 @@ test("toggle-off without a pre-lead record leaves the model alone", async () => 
   });
   await owner.setSessionOrchestratorMode(ref, false);
   expect(modelCalls()).toEqual([]);
+});
+
+test("solo fallback model pure helpers", () => {
+  const availableModels = [
+    { providerId: defaultLead.provider, modelId: defaultLead.modelId, available: true },
+    { providerId: threadModel.provider, modelId: threadModel.modelId, available: true },
+  ];
+  const onLeadDefault = {
+    current: defaultLead,
+    defaultLeadModel: defaultLead,
+    workspaceDefaultModel: threadModel,
+    models: availableModels,
+  };
+  expect(fallbackSoloModelForSoloToggle(onLeadDefault)).toEqual(threadModel);
+  // Not on the lead default: a user pick or a thread that moved on stays.
+  expect(
+    fallbackSoloModelForSoloToggle({ ...onLeadDefault, current: otherModel }),
+  ).toBeUndefined();
+  expect(fallbackSoloModelForSoloToggle({ ...onLeadDefault, current: undefined })).toBeUndefined();
+  // No lead default, or no workspace default to return to.
+  expect(
+    fallbackSoloModelForSoloToggle({ ...onLeadDefault, defaultLeadModel: undefined }),
+  ).toBeUndefined();
+  expect(
+    fallbackSoloModelForSoloToggle({ ...onLeadDefault, workspaceDefaultModel: undefined }),
+  ).toBeUndefined();
+  // Already on the workspace default: nothing to switch.
+  expect(
+    fallbackSoloModelForSoloToggle({
+      ...onLeadDefault,
+      current: threadModel,
+      workspaceDefaultModel: threadModel,
+    }),
+  ).toBeUndefined();
+  // Unknown to the runtime, or disabled by patterns: not available.
+  expect(
+    fallbackSoloModelForSoloToggle({ ...onLeadDefault, workspaceDefaultModel: otherModel }),
+  ).toBeUndefined();
+  expect(
+    fallbackSoloModelForSoloToggle({
+      ...onLeadDefault,
+      enabledModelPatterns: [`${defaultLead.provider}/${defaultLead.modelId}`],
+    }),
+  ).toBeUndefined();
+});
+
+test("model availability helper mirrors the picker filter", () => {
+  const models = [
+    { providerId: "openai", modelId: "gpt-5", available: true },
+    { providerId: "openai", modelId: "gpt-4o", available: false },
+  ];
+  expect(isModelAvailableInRuntime({ models, provider: "openai", modelId: "gpt-5" })).toBe(
+    true,
+  );
+  expect(
+    isModelAvailableInRuntime({
+      models,
+      enabledModelPatterns: [],
+      provider: "openai",
+      modelId: "gpt-5",
+    }),
+  ).toBe(true);
+  expect(isModelAvailableInRuntime({ models, provider: "openai", modelId: "gpt-4o" })).toBe(
+    false,
+  );
+  expect(isModelAvailableInRuntime({ models, provider: "openai", modelId: "o1" })).toBe(false);
+  expect(isModelAvailableInRuntime({ provider: "openai", modelId: "gpt-5" })).toBe(false);
+  expect(
+    isModelAvailableInRuntime({
+      models,
+      enabledModelPatterns: ["openai/gpt-4o"],
+      provider: "openai",
+      modelId: "gpt-5",
+    }),
+  ).toBe(false);
+});
+
+test("solo fallback thinking pure helpers", () => {
+  expect(
+    fallbackSoloThinkingForSoloToggle({
+      current: "high",
+      defaultLeadThinkingLevel: "high",
+      workspaceDefaultThinkingLevel: "low",
+    }),
+  ).toBe("low");
+  // A level the user picked meanwhile stays.
+  expect(
+    fallbackSoloThinkingForSoloToggle({
+      current: "medium",
+      defaultLeadThinkingLevel: "high",
+      workspaceDefaultThinkingLevel: "low",
+    }),
+  ).toBeUndefined();
+  expect(
+    fallbackSoloThinkingForSoloToggle({ workspaceDefaultThinkingLevel: "low" }),
+  ).toBeUndefined();
+  // No workspace default, or already there: nothing to switch.
+  expect(
+    fallbackSoloThinkingForSoloToggle({ current: "high", defaultLeadThinkingLevel: "high" }),
+  ).toBeUndefined();
+  expect(
+    fallbackSoloThinkingForSoloToggle({
+      current: "high",
+      defaultLeadThinkingLevel: "high",
+      workspaceDefaultThinkingLevel: "high",
+    }),
+  ).toBeUndefined();
+});
+
+test("toggle-off with no record but on the lead default falls back to the workspace default", async () => {
+  // A thread born in Lead (or a restart-dropped record) has no pre-lead
+  // state; leaving Lead returns it to the workspace Solo default.
+  const { owner, modelCalls, currentModel } = toggleHost({
+    transcript: withHistory,
+    current: defaultLead,
+    def: defaultLead,
+    workspaceDefault: threadModel,
+  });
+  await owner.setSessionOrchestratorMode(ref, false);
+  expect(modelCalls()).toEqual([threadModel]);
+  expect(currentModel()).toEqual(threadModel);
+
+  // A user-picked model is not on the lead default, so it stays.
+  const picked = toggleHost({
+    transcript: withHistory,
+    current: otherModel,
+    def: defaultLead,
+    workspaceDefault: threadModel,
+  });
+  await picked.owner.setSessionOrchestratorMode(ref, false);
+  expect(picked.modelCalls()).toEqual([]);
+  expect(picked.currentModel()).toEqual(otherModel);
+});
+
+test("toggle-off fallback leaves an unavailable workspace default alone", async () => {
+  const unavailable = toggleHost({
+    transcript: withHistory,
+    current: defaultLead,
+    def: defaultLead,
+    workspaceDefault: threadModel,
+    workspaceDefaultAvailable: false,
+  });
+  await unavailable.owner.setSessionOrchestratorMode(ref, false);
+  expect(unavailable.modelCalls()).toEqual([]);
+
+  const patternDisabled = toggleHost({
+    transcript: withHistory,
+    current: defaultLead,
+    def: defaultLead,
+    workspaceDefault: threadModel,
+    enabledModelPatterns: [`${defaultLead.provider}/${defaultLead.modelId}`],
+  });
+  await patternDisabled.owner.setSessionOrchestratorMode(ref, false);
+  expect(patternDisabled.modelCalls()).toEqual([]);
+});
+
+test("toggle-off with no record falls back to the workspace thinking level", async () => {
+  const { owner, thinkingCalls, currentThinking } = toggleHost({
+    transcript: withHistory,
+    current: threadModel,
+    def: undefined,
+    thinking: "high",
+    defThinking: "high",
+    workspaceDefaultThinking: "medium",
+  });
+  await owner.setSessionOrchestratorMode(ref, false);
+  expect(thinkingCalls()).toEqual(["medium"]);
+  expect(currentThinking()).toBe("medium");
 });
 
 test("lead toggle leaves the model alone when no default is set or already on default", async () => {
