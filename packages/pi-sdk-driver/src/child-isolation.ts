@@ -216,6 +216,7 @@ export const SCOUT_READ_ONLY_TOOLS: readonly string[] = [
   "file",
   "pwd",
   "git",
+  "gh",
 ];
 
 /** `git` subcommands a scout may run. Writes (commit/push/…) deny by default. */
@@ -228,6 +229,39 @@ export const SCOUT_READ_ONLY_GIT_SUBCOMMANDS: readonly string[] = [
   "rev-parse",
   "blame",
   "grep",
+  "tag",
+];
+
+/** `gh` (GitHub CLI) group/subcommand pairs a scout may run: views, lists, and GET API calls. */
+export const SCOUT_READ_ONLY_GH_COMMANDS: readonly (readonly [group: string, sub: string])[] = [
+  ["run", "view"],
+  ["run", "list"],
+  ["release", "view"],
+  ["release", "list"],
+  ["repo", "view"],
+  ["pr", "view"],
+  ["pr", "list"],
+];
+
+/** `gh` flags that consume the following token as a value (`gh -R owner/repo run view`). */
+const GH_FLAGS_WITH_VALUE: readonly string[] = ["-R", "--repo"];
+
+/** `git tag` flags that create, delete, or sign tags (`git tag --list` stays read-only). */
+const DENIED_GIT_TAG_FLAGS: readonly string[] = [
+  "-a",
+  "--annotate",
+  "-s",
+  "--sign",
+  "-u",
+  "--local-user",
+  "-d",
+  "--delete",
+  "-f",
+  "--force",
+  "-m",
+  "--message",
+  "-F",
+  "--file",
 ];
 
 /** `git` flags that consume the following token as a value (`git -C <path> log`).
@@ -437,9 +471,108 @@ function checkScoutGit(tokens: readonly string[]): string | undefined {
     if (!SCOUT_READ_ONLY_GIT_SUBCOMMANDS.includes(token)) {
       return `"git ${token}" is not a read-only git subcommand.`;
     }
+    if (token === "tag") {
+      return checkScoutGitTag(tokens);
+    }
     return undefined;
   }
   return "no git subcommand was provided.";
+}
+
+/**
+ * `git tag` lists tags only with `--list`/`-l`. A bare `git tag <name>`
+ * creates a tag, so anything without an explicit list flag denies, as do
+ * the create/delete/sign flags even alongside `--list`.
+ */
+function checkScoutGitTag(tokens: readonly string[]): string | undefined {
+  let listed = false;
+  for (const token of tokens) {
+    if (token.length === 0) continue;
+    if (token === "--list" || token === "-l") {
+      listed = true;
+      continue;
+    }
+    if (DENIED_GIT_TAG_FLAGS.includes(token) || token.startsWith("--local-user=")) {
+      return `"git tag ${token}" can mutate tags and is not allowed.`;
+    }
+  }
+  if (!listed) {
+    return `"git tag" without --list can create a tag; use "git tag --list".`;
+  }
+  return undefined;
+}
+
+/**
+ * `gh` allows read-only views/lists plus `gh api` with GET (the default
+ * when no method flag is present). Anything else — `release create`,
+ * `pr create`, `run cancel`, `workflow run`, non-GET `api` — denies.
+ * Positional arguments (ids, filters) and unrelated flags are ignored;
+ * `-R`/`--repo` consume their value so `owner/repo` is not misread as
+ * the command pair.
+ */
+function checkScoutGh(tokens: readonly string[]): string | undefined {
+  let sawGh = false;
+  let skipValue = false;
+  let group: string | undefined;
+  let sub: string | undefined;
+  let method: string | undefined;
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index] ?? "";
+    if (token.length === 0) continue;
+    if (!sawGh) {
+      // Skip `KEY=value` env prefixes; the first real token is the `gh` binary itself.
+      if (isScoutEnvAssignment(token)) continue;
+      sawGh = true;
+      continue;
+    }
+    if (skipValue) {
+      skipValue = false;
+      continue;
+    }
+    if (GH_FLAGS_WITH_VALUE.includes(token)) {
+      skipValue = true;
+      continue;
+    }
+    if (token === "-X" || token === "--method") {
+      const value = tokens[index + 1];
+      if (typeof value !== "string" || value.trim().length === 0) {
+        return `"gh api" has a method flag without a value.`;
+      }
+      method = value;
+      skipValue = true;
+      continue;
+    }
+    if (token.startsWith("-X") && token.length > 2) {
+      method = token.slice(2);
+      continue;
+    }
+    if (token.startsWith("--method=")) {
+      method = token.slice("--method=".length);
+      continue;
+    }
+    if (token.startsWith("-")) continue;
+    if (group === undefined) {
+      group = token;
+      continue;
+    }
+    if (sub === undefined) {
+      sub = token;
+      continue;
+    }
+    // Further positionals (ids, JSON fields, filters) are ignored.
+  }
+  if (group === undefined) return "no gh subcommand was provided.";
+  if (group === "api") {
+    if (method !== undefined && method.trim().toUpperCase() !== "GET") {
+      return `"gh api -X ${method.trim()}" can mutate and is not allowed.`;
+    }
+    return undefined;
+  }
+  if (sub === undefined) return `"gh ${group}" needs a read-only subcommand.`;
+  if (!SCOUT_READ_ONLY_GH_COMMANDS.some(([g, s]) => g === group && s === sub)) {
+    return `"gh ${group} ${sub}" is not a read-only gh command.`;
+  }
+  return undefined;
 }
 
 function checkScoutSed(segment: string, tokens: readonly string[]): string | undefined {
@@ -486,6 +619,7 @@ function checkScoutSegment(segment: string): string | undefined {
   if (base.length === 0) return "no command was provided.";
   if (!SCOUT_READ_ONLY_TOOLS.includes(base)) return `"${base}" is not read-only.`;
   if (base === "git") return checkScoutGit(scan.tokens);
+  if (base === "gh") return checkScoutGh(scan.tokens);
   if (base === "sed") return checkScoutSed(segment, scan.tokens);
   if (base === "find") return checkScoutFind(scan.tokens);
   return undefined;

@@ -210,3 +210,42 @@ await test("pattern matcher handles OpenCode-style globs", () => {
   assert.equal(matchIsolationPattern("*.env", "dir/.env"), false);
   assert.equal(matchIsolationPattern("**/*.env", "a/b/.env"), true);
 });
+
+await test("scout bash allows read-only gh commands and chained read-only segments", () => {
+  for (const command of [
+    "gh run view 123 --json status",
+    "gh release list",
+    "git log --oneline -3 && gh run view 1",
+    "git diff --stat",
+    "git tag --list",
+    "git rev-parse HEAD",
+    "git branch --show-current",
+    "gh -R owner/repo run view 1",
+    "gh repo view",
+    "gh pr list",
+  ]) {
+    assert.equal(decideChildToolCall("bash", { command }, scout).allowed, true, command);
+    assert.equal(isScoutReadOnlyBashCommand(command), true, command);
+  }
+  // Plain `gh api` defaults to GET: read-only by policy (workspace
+  // confinement still applies to its absolute path argument separately).
+  assert.equal(isScoutReadOnlyBashCommand("gh api /repos/o/r/releases/latest"), true);
+});
+
+await test("scout bash denies mutating gh commands and tag writes", () => {
+  for (const command of [
+    "gh release create v1",
+    "gh api -X POST /repos/x",
+    "gh pr create",
+    "gh run cancel 1",
+    "git tag -a v1 -m x",
+    "git tag v1",
+    "gh workflow run ci.yml",
+    "gh api -X DELETE /repos/x",
+    "gh release delete v1",
+  ]) {
+    const decision = decideChildToolCall("bash", { command }, scout);
+    assert.equal(decision.allowed, false, command);
+    assert.equal(isScoutReadOnlyBashCommand(command), false, command);
+  }
+});
