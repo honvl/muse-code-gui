@@ -235,6 +235,53 @@ Disjoint path scopes in one checkout still share build outputs, lockfiles and th
 - `session-rail-children.spec.ts` for the lane.
 - One visible-UI check through the verification skill.
 
+## Priority 1: Muse Code CLI as the sidekick runtime
+
+**Why:** since October 29, 2026, Meta rejects Muse-subscription (OAuth) requests that don't come from Muse Code itself. They fail with `403 client_attestation_denied` ("this request does not carry Muse Code's builtin tool declarations"). This also reproduces with the plain `pi` 1.4.0 CLI, so every pi child on a `meta/*` sidekick fails on its first request. pi-gui must not imitate Muse Code's declarations. The supported route is to run the official client: the subscription is meant for exactly that.
+
+### Findings (verified with Muse Code 1.4.14, `~/.local/bin/muse`)
+
+- **Headless runs work under the subscription.** `muse exec --json --session-id <uuid> --model muse-spark-1.3-contributor --reasoning-effort <lvl> --approval-mode never "<prompt>"` succeeds and streams versioned MSP JSONL records (`schema_version: 1`).
+- **Event kinds needed for mapping:** `run_started`, `run_output_delta` (text), `task_lifecycle` (tool/model steps), `run_usage` (per-model input/cached/output/reasoning tokens plus subscription allowance), and `run_terminal` (`completed|failed|cancelled`, final `text`).
+- **Follow-ups keep context.** Running `exec` again with the same `--session-id` continues the session: the second turn recalled the first, with 17k cached tokens. So `send_message_to_thread`, sidekick reuse and the warm cache all map onto one Muse session id.
+- **Muse persists sessions itself** under `~/.local/share/muse/sessions/`. `muse export --session <id> --out <file>` returns the full durable log as one JSON document (messages, tool calls and results, usage, lineage). That's enough to rebuild a transcript after a restart.
+- **Flags that match pi-gui's concepts:** `--workspace <path>`, `-w existing --worktree-existing <path>` (worktree children), `--disable-write` (scouts), `--max-model-steps`, `--max-tool-output-bytes`, `--prompt-file`, `--no-parallel-tool-calls`. The sandbox and approval policy stay on by default; children run with `--approval-mode never` inside their scope.
+- **Long-lived option:** `muse serve` is an MSP session host over stdio that supports steering, interrupt over the wire and approvals. `muse schema generate-ts --out <dir>` exports exact TypeScript types for this binary.
+
+### Change
+
+- **9a. `packages/muse-cli-driver`:** a `SessionDriver` (`@pi-gui/session-driver`) for child sessions, backed by `muse exec --json`. Each child keeps one Muse session id.
+  - `createSession` mints the id and spawns nothing.
+  - `sendUserMessage` spawns one `exec` per turn, in its own process group, with the brief passed through `--prompt-file`.
+  - MSP records map to driver events:
+    - deltas become assistant text;
+    - `task_lifecycle` becomes tool start and finish rows;
+    - `run_usage` becomes usage;
+    - `run_terminal` becomes `runCompleted`/`runFailed`, which the existing child report consumes unchanged.
+  - `cancelCurrentRun`/`rescueCurrentRun` send SIGTERM to the group, then SIGKILL. Rescue already expects a process tree.
+  - `openSession` after a restart rebuilds the transcript with `muse export`.
+  - Unsupported operations (fork, tree navigation, compaction) reject with a clear message.
+  - It only shells out to the official binary and never talks to Meta's API directly.
+- **9b. Routing:** the desktop driver becomes a router. A session tagged `runtime: "muse-cli"` goes to the Muse driver; everything else goes to `pi-sdk-driver`.
+  - `createChildThreadRecord` tags a child `muse-cli` when the sidekick (or scout) model is a `meta/*` model and the Meta auth is a subscription (OAuth), or when the new setting forces it.
+  - The child stays an ordinary thread: sidebar, rail, report, rescue, worktree, reuse and budget behave as they do today.
+- **9c. Settings:** in Settings › Models, add "Sidekick runtime" with Auto (Muse Code CLI for subscription `meta/*` sidekicks), pi, or Muse Code CLI. Show the detected `muse` path and version. If `muse` is missing, Auto falls back to pi and the Lead badge warns.
+- **9d. Phase 2:** move to `muse serve` (MSP over stdio, typed with `generate-ts`) for mid-run steering and wire-level interrupt, once 9a has proved the event mapping.
+
+### Acceptance criteria
+
+- A Lead thread whose sidekick is `meta/muse-spark-1.3-contributor` (subscription auth) delegates a worker. The child runs through `muse exec` with no 403, streams text and tool rows into its thread, and its report wakes the lead.
+- A follow-up to the same child continues the same Muse session, and its usage shows cached tokens.
+- Rescue kills a hung `muse exec` tree. A pi-gui restart keeps the child's transcript (rebuilt from `muse export`).
+- Children on non-Meta sidekicks are unchanged.
+
+### Proof
+
+- Unit tests for the MSP mapping, using recorded JSONL fixtures captured from a real run.
+- A driver test against `muse exec --provider echo`, which is deterministic, offline and costs nothing.
+- A core Electron spec that uses a stub `muse` binary replaying fixtures.
+- One real subscription run.
+
 ## Priority 3: effort per lane and mid-session routing
 
 **Why:** Fusion tunes the lead's effort and the sidekick per pairing, and switches models during compaction, where the cache is lost anyway, so the switch costs nothing extra. pi-gui fixes model and thinking level at spawn: children get no thinking level (`app-store-orchestration.ts:421-426`), and a missing sidekick silently falls back to the workspace default, which may be the frontier lead model.
