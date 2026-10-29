@@ -202,11 +202,10 @@ export class MuseCliDriver implements SessionDriver {
     }
     const turns = await this.exportTurns(sessionRef.sessionId);
     if (turns === undefined) {
-      if (record.transcript.length === 0 && record.usage.calls === 0) {
-        throw new Error(
-          `Could not rebuild Muse session ${sessionRef.sessionId} via \`muse export\` (binary: ${this.binaryPath}).`,
-        );
-      }
+      // Muse writes nothing until the first turn runs, so a session that was
+      // just created (or never prompted before a restart) has no export yet.
+      // That is an empty session, not an error: opening must never fail here,
+      // or every new child dies before its first prompt.
       return this.snapshotOf(record);
     }
     record.transcript = [];
