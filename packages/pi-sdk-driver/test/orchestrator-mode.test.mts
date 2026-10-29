@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  LEAD_ALLOW_SUBAGENT_TOOL_ENV_VAR,
   ORCHESTRATOR_ALLOWED_TOOLS,
   ORCHESTRATOR_SYSTEM_PROMPT,
   SOLO_SYSTEM_GUIDELINE,
   createOrchestratorModeExtension,
+  leadSubagentBlockReason,
 } from "../dist/orchestrator-mode.js";
 import { SessionSupervisor } from "../dist/session-supervisor.js";
 
@@ -17,9 +19,9 @@ await test("delegation tool names are still exported for prompt text", () => {
   ]);
 });
 
-await test("lead prompt covers the six lead rules in order", () => {
+await test("lead prompt covers the seven lead rules in order", () => {
   const lines = ORCHESTRATOR_SYSTEM_PROMPT.split("\n");
-  assert.equal(lines.length, 6, "lead prompt must have exactly six rules");
+  assert.equal(lines.length, 7, "lead prompt must have exactly seven rules");
   assert.match(lines[0] ?? "", /you own the plan/i);
   assert.match(lines[0] ?? "", /final review/i);
   assert.match(lines[1] ?? "", /delegate by default/i);
@@ -43,6 +45,9 @@ await test("lead prompt covers the six lead rules in order", () => {
   assert.match(lines[5] ?? "", /never dump a whole file/i);
   assert.match(lines[0] ?? "", /never re-run a suite/i);
   assert.match(lines[0] ?? "", /reading the diff/i);
+  assert.match(lines[6] ?? "", /create_child_thread/i);
+  assert.match(lines[6] ?? "", /third-party subagent/i);
+  assert.equal(ORCHESTRATOR_SYSTEM_PROMPT.split("third-party subagent").length - 1, 1);
 });
 
 await test("lead prompt offers worktree isolation for overlapping parallel writers once", () => {
@@ -167,6 +172,7 @@ function makeMockPi() {
       handlers[event] = handler;
     },
     getAllTools: () => ALL_TOOLS,
+    getActiveTools: () => ALL_TOOLS.map((tool) => tool.name),
     setActiveTools: (names: string[]) => {
       activeToolsCalls.push(names);
     },
@@ -390,9 +396,15 @@ await test("setSessionSidekickModel is idempotent: redundant calls write nothing
   assert.equal(emitted.length, 2, "second clear must not emit again");
 });
 
-async function makeLeadHarness(sessionId: string, enabled = true) {
+async function makeLeadHarness(
+  sessionId: string,
+  enabled = true,
+  blockedTools: readonly string[] = [],
+) {
   const { pi, handlers } = makeMockPi();
-  await createOrchestratorModeExtension(() => enabled)(pi as never);
+  await createOrchestratorModeExtension(() => enabled, { leadBlockedTools: blockedTools })(
+    pi as never,
+  );
   const before = handlers["before_agent_start"];
   const toolCall = handlers["tool_call"];
   assert.ok(before, "before_agent_start handler registered");
@@ -590,7 +602,7 @@ await test("read budget bounces one exploratory call to a scout, then lets reads
 
 await test("lead prompt teaches rescue for stuck children once", async () => {
   const lines = ORCHESTRATOR_SYSTEM_PROMPT.split("\n");
-  assert.equal(lines.length, 6, "lead prompt must have exactly six rules");
+  assert.equal(lines.length, 7, "lead prompt must have exactly seven rules");
   assert.match(
     lines[4] ?? "",
     /stuck on one tool call/i,
@@ -620,7 +632,7 @@ await test("lead prompt contains each policy sentence exactly once", async () =>
     ...Object.values(event.systemPromptOptions.sections),
   ].join("\n");
   const sentences = ORCHESTRATOR_SYSTEM_PROMPT.split("\n");
-  assert.equal(sentences.length, 6, "lead prompt must have exactly six rules");
+  assert.equal(sentences.length, 7, "lead prompt must have exactly seven rules");
   for (const sentence of sentences) {
     const occurrences = assembled.split(sentence).length - 1;
     assert.equal(
@@ -652,6 +664,7 @@ const LEAD_STRATEGY_PHRASES = [
   "final review",
   "scout review",
   "preserves context/cache",
+  "third-party subagent",
 ];
 
 await test("solo and child prompts contain no delegation-strategy text", async () => {
@@ -709,4 +722,197 @@ await test("read budget ignores nested tool output, resets per run, and skips so
   } finally {
     delete process.env.PI_APP_LEAD_READ_BUDGET_CHARS;
   }
+});
+
+await test("lead blocks the agent subagent tool with a create_child_thread redirect", async () => {
+  const { call } = await makeLeadHarness("lead-subagent-blocked", true, ["agent"]);
+  const blocked = (await call({ toolName: "agent", input: { description: "x" } })) as GateResult;
+  assert.equal(blocked?.block, true, "lead agent call must block");
+  assert.equal(blocked?.reason, leadSubagentBlockReason("agent"));
+  assert.match(blocked?.reason ?? "", /In Lead mode/);
+  assert.match(blocked?.reason ?? "", /create_child_thread/);
+  assert.match(blocked?.reason ?? "", /mode worker/);
+  assert.match(blocked?.reason ?? "", /isolation:"worktree"/);
+  assert.match(blocked?.reason ?? "", /mode scout/);
+  assert.match(blocked?.reason ?? "", /sidekick/);
+  assert.match(blocked?.reason ?? "", /sidebar/);
+});
+
+await test("lead block is generic: only listed tools block", async () => {
+  const { call } = await makeLeadHarness("lead-subagent-generic", true, ["agent"]);
+  // agent_output stays allowed so running subagents can still be checked.
+  assert.equal(await call({ toolName: "agent_output", input: { agent_id: "agent-1" } }), undefined);
+  assert.equal(await call({ toolName: "read", input: { path: "src/a.ts" } }), undefined);
+  assert.equal(await call({ toolName: "create_child_thread", input: {} }), undefined);
+  // A nested agent call (e.g. from a codemode script) is still blocked.
+  const nested = (await call({
+    toolName: "agent",
+    input: {},
+    parentToolCallId: "outer",
+  })) as GateResult;
+  assert.equal(nested?.block, true, "nested agent call must also block");
+});
+
+await test("solo and child sessions still allow the agent tool", async () => {
+  for (const name of ["solo-session-agent", "child-session-agent"]) {
+    const { call } = await makeLeadHarness(name, false, ["agent"]);
+    assert.equal(
+      await call({ toolName: "agent", input: {} }),
+      undefined,
+      `${name} must allow agent`,
+    );
+    assert.equal(
+      await call({ toolName: "agent_output", input: {} }),
+      undefined,
+      `${name} must allow agent_output`,
+    );
+  }
+});
+
+await test("PI_APP_LEAD_ALLOW_SUBAGENT_TOOL=1 disables the lead subagent block", async () => {
+  process.env[LEAD_ALLOW_SUBAGENT_TOOL_ENV_VAR] = "1";
+  try {
+    const { call } = await makeLeadHarness("lead-subagent-env", true, ["agent"]);
+    assert.equal(await call({ toolName: "agent", input: {} }), undefined);
+  } finally {
+    delete process.env[LEAD_ALLOW_SUBAGENT_TOOL_ENV_VAR];
+  }
+  // Without the escape hatch the same call blocks again.
+  const { call } = await makeLeadHarness("lead-subagent-env-off", true, ["agent"]);
+  const blocked = (await call({ toolName: "agent", input: {} })) as GateResult;
+  assert.equal(blocked?.block, true);
+});
+
+await test("lead hides the blocked subagent tool from the active set; solo keeps it", async () => {
+  const toolsWithAgent = [
+    ...ALL_TOOLS,
+    { name: "agent", exposure: "direct" },
+    { name: "agent_output", exposure: "direct" },
+  ];
+  const makeHidingPi = () => {
+    const handlers: Record<string, (...args: never[]) => unknown> = {};
+    const activeToolsCalls: string[][] = [];
+    return {
+      handlers,
+      activeToolsCalls,
+      pi: {
+        on: (event: string, handler: (...args: never[]) => unknown) => {
+          handlers[event] = handler;
+        },
+        getAllTools: () => toolsWithAgent,
+        getActiveTools: () => toolsWithAgent.map((tool) => tool.name),
+        setActiveTools: (names: string[]) => {
+          activeToolsCalls.push(names);
+        },
+      },
+    };
+  };
+  // Lead hides agent but keeps agent_output.
+  {
+    const { pi, handlers, activeToolsCalls } = makeHidingPi();
+    await createOrchestratorModeExtension(() => true, { leadBlockedTools: ["agent"] })(
+      pi as never,
+    );
+    await (handlers["before_agent_start"] as (e: never, c: never) => Promise<unknown>)(
+      makePromptEvent() as never,
+      mockCtx as never,
+    );
+    assert.equal(activeToolsCalls.length, 1);
+    assert.ok(!activeToolsCalls[0]?.includes("agent"), "lead hides agent");
+    assert.ok(activeToolsCalls[0]?.includes("agent_output"), "lead keeps agent_output");
+  }
+  // Solo never hides.
+  {
+    const { pi, handlers, activeToolsCalls } = makeHidingPi();
+    await createOrchestratorModeExtension(() => false, { leadBlockedTools: ["agent"] })(
+      pi as never,
+    );
+    await (handlers["before_agent_start"] as (e: never, c: never) => Promise<unknown>)(
+      makePromptEvent() as never,
+      mockCtx as never,
+    );
+    assert.deepEqual(activeToolsCalls, [], "solo leaves the loadout alone");
+  }
+  // Env escape hatch restores the tool.
+  {
+    process.env[LEAD_ALLOW_SUBAGENT_TOOL_ENV_VAR] = "1";
+    try {
+      const { pi, handlers, activeToolsCalls } = makeHidingPi();
+      await createOrchestratorModeExtension(() => true, { leadBlockedTools: ["agent"] })(
+        pi as never,
+      );
+      await (handlers["before_agent_start"] as (e: never, c: never) => Promise<unknown>)(
+        makePromptEvent() as never,
+        mockCtx as never,
+      );
+      assert.ok(activeToolsCalls[0]?.includes("agent"), "escape hatch restores agent");
+    } finally {
+      delete process.env[LEAD_ALLOW_SUBAGENT_TOOL_ENV_VAR];
+    }
+  }
+});
+
+await test("solo run after Lead restores the blocked tool; never-Lead solo touches nothing", async () => {
+  const toolsWithAgent = [
+    ...ALL_TOOLS,
+    { name: "agent", exposure: "direct" },
+    { name: "agent_output", exposure: "direct" },
+  ];
+  const fullLoadout = toolsWithAgent.map((tool) => tool.name);
+  // Mutable mock: getActiveTools reflects the live loadout, so the solo run
+  // sees the filtered set the Lead run left behind.
+  let active = [...fullLoadout];
+  const activeToolsCalls: string[][] = [];
+  const handlers: Record<string, (...args: never[]) => unknown> = {};
+  const pi = {
+    on: (event: string, handler: (...args: never[]) => unknown) => {
+      handlers[event] = handler;
+    },
+    getAllTools: () => toolsWithAgent,
+    getActiveTools: () => [...active],
+    setActiveTools: (names: string[]) => {
+      activeToolsCalls.push([...names]);
+      active = [...names];
+    },
+  };
+  let lead = true;
+  await createOrchestratorModeExtension(() => lead, { leadBlockedTools: ["agent"] })(
+    pi as never,
+  );
+  const before = handlers["before_agent_start"] as (e: never, c: never) => Promise<unknown>;
+  // Lead run hides agent.
+  await before(makePromptEvent() as never, mockCtx as never);
+  assert.equal(activeToolsCalls.length, 1);
+  assert.ok(!active.includes("agent"), "lead hides agent");
+  // Toggle to Solo: the next run re-adds agent, keeping the rest as-is.
+  lead = false;
+  await before(makePromptEvent() as never, mockCtx as never);
+  assert.equal(activeToolsCalls.length, 2, "solo restore must call setActiveTools once");
+  assert.ok(active.includes("agent"), "solo restores agent");
+  assert.deepEqual(activeToolsCalls[1], [...(activeToolsCalls[0] as string[]), "agent"]);
+  assert.ok(active.includes("agent_output"), "solo keeps agent_output");
+  // A further solo run is a no-op: nothing missing, no setActiveTools call.
+  await before(makePromptEvent() as never, mockCtx as never);
+  assert.equal(activeToolsCalls.length, 2, "steady-state solo must not touch the loadout");
+  // A never-Lead solo thread never calls setActiveTools at all.
+  const freshHandlers: Record<string, (...args: never[]) => unknown> = {};
+  const freshCalls: string[][] = [];
+  const freshPi = {
+    on: (event: string, handler: (...args: never[]) => unknown) => {
+      freshHandlers[event] = handler;
+    },
+    getAllTools: () => toolsWithAgent,
+    getActiveTools: () => [...fullLoadout],
+    setActiveTools: (names: string[]) => {
+      freshCalls.push(names);
+    },
+  };
+  await createOrchestratorModeExtension(() => false, { leadBlockedTools: ["agent"] })(
+    freshPi as never,
+  );
+  await (freshHandlers["before_agent_start"] as (e: never, c: never) => Promise<unknown>)(
+    makePromptEvent() as never,
+    mockCtx as never,
+  );
+  assert.deepEqual(freshCalls, [], "never-Lead solo leaves the loadout alone");
 });

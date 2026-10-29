@@ -54,14 +54,18 @@ export type { ChildIsolationInfo, ChildThreadMode, ChildToolDecision } from "./c
 export {
   DEFAULT_LEAD_DIRECT_MUTATION_LIMIT,
   DEFAULT_LEAD_READ_BUDGET_CHARS,
+  LEAD_ALLOW_SUBAGENT_TOOL_ENV_VAR,
   LEAD_DIRECT_MUTATION_LIMIT_ENV_VAR,
   LEAD_READ_BUDGET_ENV_VAR,
   ORCHESTRATOR_ALLOWED_TOOLS,
   ORCHESTRATOR_SYSTEM_PROMPT,
   createOrchestratorModeExtension,
+  isLeadSubagentToolAllowed,
+  leadSubagentBlockReason,
   resolveLeadDirectMutationLimit,
   resolveLeadReadBudgetChars,
 } from "./orchestrator-mode.js";
+export type { OrchestratorModeOptions } from "./orchestrator-mode.js";
 export {
   PACK_EXTENSION_RELATIVE_PATHS,
   PACK_MCP_SERVERS,

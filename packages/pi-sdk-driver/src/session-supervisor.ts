@@ -223,6 +223,11 @@ export interface PiSdkDriverOptions {
   readonly onTurnCaptureBoundary?: import("@pi-gui/session-driver").TurnCaptureObserver;
   readonly turnCaptureTimeoutMs?: number;
   /**
+   * Lead-blocked subagent-spawning tools (desktop passes ["agent"]).
+   * The driver stays generic: no third-party tool names hard-coded here.
+   */
+  readonly leadBlockedTools?: readonly string[];
+  /**
    * Exploratory: when set, a hidden extension asks this router at every
    * compaction whether the session should switch model/thinking level.
    */
@@ -367,6 +372,7 @@ export class SessionSupervisor {
   private readonly piAddons: readonly InlineExtension[];
   private readonly desktopExtensions: PiDesktopExtensionObserver | undefined;
   private readonly extensionFlagValuesForSession: PiSdkDriverOptions["extensionFlagValuesForSession"];
+  private readonly leadBlockedTools: readonly string[];
   private readonly onTurnCaptureBoundary: PiSdkDriverOptions["onTurnCaptureBoundary"];
   private readonly turnCaptureTimeoutMs: number | undefined;
   private readonly compactionModelRouter: CompactionModelRouter | undefined;
@@ -412,6 +418,7 @@ export class SessionSupervisor {
     this.piAddons = piAddonExtensions(options.openUrl ? { openUrl: options.openUrl } : {});
     this.desktopExtensions = options.desktopExtensions;
     this.extensionFlagValuesForSession = options.extensionFlagValuesForSession;
+    this.leadBlockedTools = options.leadBlockedTools ?? [];
     this.onTurnCaptureBoundary = options.onTurnCaptureBoundary;
     this.turnCaptureTimeoutMs = options.turnCaptureTimeoutMs;
     this.compactionModelRouter = options.compactionModelRouter;
@@ -497,13 +504,16 @@ export class SessionSupervisor {
           {
             name: "pi-gui-orchestrator-mode",
             hidden: true,
-            factory: createOrchestratorModeExtension((ctx) => {
-              try {
-                return this.orchestratorModes.get(ctx.sessionManager.getSessionId()) === true;
-              } catch {
-                return false;
-              }
-            }),
+            factory: createOrchestratorModeExtension(
+              (ctx) => {
+                try {
+                  return this.orchestratorModes.get(ctx.sessionManager.getSessionId()) === true;
+                } catch {
+                  return false;
+                }
+              },
+              { leadBlockedTools: this.leadBlockedTools },
+            ),
           },
           {
             name: "pi-gui-transcript-identity",

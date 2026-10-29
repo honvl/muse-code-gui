@@ -45,7 +45,31 @@ export const ORCHESTRATOR_SYSTEM_PROMPT = [
   'Keep briefs short: a child is cheap and explores, verifies, and retries on its own, so give the objective plus any hard constraint or what NOT to do, and let the host fill in success criteria and verification. Always pass scope: only one worker writes at a time, so parallel workers need disjoint scopes (apps/a vs apps/b); an unscoped worker claims the whole workspace and blocks the others. Parallel workers whose paths overlap can pass isolation:"worktree" to each get their own worktree and branch, which you land yourself.',
   "Children report back automatically when a run ends; do not poll read_thread in a loop. Act on each report. If a report is thin, steer the child with send_message_to_thread; if a child is drifting, take the work back and do it yourself. If a running child is stuck on one tool call with no output, rescue it with send_message_to_thread rescue:true, which aborts the stuck tool and starts your message as a new turn.",
   "Keep your own context small: use targeted rg patterns, line ranges, and git diff --stat followed by only the files that matter. Never dump a whole file, a full diff, or a test log into your context; never re-read what a child already verified.",
+  "Use create_child_thread, not third-party subagent tools: subagents run on the lead's model while child threads run on the sidekick and show in the sidebar.",
 ].join("\n");
+
+/** Env escape hatch: when \"1\", the lead may call third-party subagent tools. */
+export const LEAD_ALLOW_SUBAGENT_TOOL_ENV_VAR = "PI_APP_LEAD_ALLOW_SUBAGENT_TOOL";
+
+/** Options for the lead-mode extension. Keeps third-party tool names out of driver core. */
+export interface OrchestratorModeOptions {
+  /** Lead-blocked subagent-spawning tools (desktop passes [\"agent\"]). */
+  readonly leadBlockedTools?: readonly string[];
+}
+
+/** True when the env escape hatch disables the subagent-tool block (and hiding). */
+export function isLeadSubagentToolAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env[LEAD_ALLOW_SUBAGENT_TOOL_ENV_VAR]?.trim() === "1";
+}
+
+/** Block message for a lead call to a subagent-spawning tool. Tool name is interpolated so the driver stays generic. */
+export function leadSubagentBlockReason(toolName: string): string {
+  return (
+    `In Lead mode, \`${toolName}\` subagents run on the lead's model. ` +
+    `Use create_child_thread (mode worker, isolation:\"worktree\" for parallel writers; mode scout for exploration) ` +
+    `— they run on the sidekick and show in the sidebar.`
+  );
+}
 
 /** Default cap on the lead's own mutating tool calls per run before the soft gate redirects to delegation. */
 export const DEFAULT_LEAD_DIRECT_MUTATION_LIMIT = 3;
@@ -177,17 +201,46 @@ function toolResultChars(content: unknown): number {
  * - Read volume: after each budget's worth of tool output enters the lead's
  *   context, the next exploratory call is bounced once toward a scout.
  *
+ * - Subagent tools: blocked in Lead mode with a redirect to
+ *   create_child_thread, and hidden from the lead's active tool set (hiding
+ *   is the primary UX; the block is the backstop for stale loadouts and
+ *   codemode bypasses, so it runs before the nested-call early return).
+ *
  * Solo threads are untouched: the switch changes policy, not capability.
  */
 export function createOrchestratorModeExtension(
   resolveEnabled: (ctx: ExtensionContext) => boolean,
+  options?: OrchestratorModeOptions,
 ): ExtensionFactory {
+  const blockedTools = new Set(options?.leadBlockedTools ?? []);
   return (pi: ExtensionAPI) => {
     pi.on("before_agent_start", async (event, ctx) => {
       if (!resolveEnabled(ctx)) {
         event.systemPromptOptions.promptGuidelines.push(SOLO_SYSTEM_GUIDELINE);
+        // A Lead run hides blocked tools via setActiveTools, and pi
+        // re-records that filtered loadout — so after a Lead → Solo toggle
+        // the thread would keep the cage. Re-add any blocked tool that is
+        // registered and declarable (same exposure filter) but missing from
+        // the live set, leaving every other active tool exactly as it is.
+        // No-op (no setActiveTools call) when nothing is missing, so a
+        // never-Lead solo thread sees no change.
+        if (blockedTools.size > 0) {
+          const live = pi.getActiveTools();
+          const liveSet = new Set(live);
+          const missing = pi
+            .getAllTools()
+            .filter(
+              (tool) => (tool.exposure ?? "direct") === "direct" || tool.exposure === "model-only",
+            )
+            .map((tool) => tool.name)
+            .filter((name) => blockedTools.has(name) && !liveSet.has(name));
+          if (missing.length > 0) {
+            pi.setActiveTools([...live, ...missing]);
+          }
+        }
         return undefined;
       }
+      const hideBlocked = blockedTools.size > 0 && !isLeadSubagentToolAllowed();
       // Lead mode restores pi's NORMAL default loadout on every run. A thread
       // resumed from the dispatcher-only era replays its transcript loadout at
       // open (_restoreToolsFromTranscript), which cages it to the 4 delegation
@@ -206,7 +259,8 @@ export function createOrchestratorModeExtension(
           .filter(
             (tool) => (tool.exposure ?? "direct") === "direct" || tool.exposure === "model-only",
           )
-          .map((tool) => tool.name),
+          .map((tool) => tool.name)
+          .filter((name) => !hideBlocked || !blockedTools.has(name)),
       );
       // Delegation strategy lives only in the orchestrator_mode section above:
       // no per-run guideline, so the lead's cached prefix stays small.
@@ -218,10 +272,17 @@ export function createOrchestratorModeExtension(
 
     pi.on("tool_call", async (_event, ctx) => {
       if (!resolveEnabled(ctx)) return undefined;
-      // Solo threads are never gated; nested calls (e.g. codemode scripts)
-      // are the tool's work, not the lead's hands.
       const toolName = (_event as { readonly toolName?: unknown }).toolName;
       if (typeof toolName !== "string" || toolName.length === 0) return undefined;
+      // Subagent block first: hiding is the primary UX, but a stale loadout
+      // or a codemode script could still reach the tool, so the block runs
+      // even for nested calls. agent_output stays allowed so running
+      // subagents can still be checked.
+      if (blockedTools.has(toolName) && !isLeadSubagentToolAllowed()) {
+        return { block: true, reason: leadSubagentBlockReason(toolName) };
+      }
+      // Solo threads are never gated; nested calls (e.g. codemode scripts)
+      // are the tool's work, not the lead's hands.
       if ((_event as { readonly parentToolCallId?: unknown }).parentToolCallId) return undefined;
       const input = (_event as { readonly input?: unknown }).input;
       const action = classifyLeadToolCall(toolName, input);
