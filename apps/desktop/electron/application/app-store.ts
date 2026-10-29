@@ -207,6 +207,7 @@ export interface DesktopAppStoreOptions {
     PiSdkDriverConfig,
     | "builtinExtensions"
     | "desktopExtensions"
+    | "leadBlockedTools"
     | "onTurnCaptureBoundary"
     | "openUrl"
     | "turnCaptureTimeoutMs"

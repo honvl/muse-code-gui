@@ -1062,6 +1062,12 @@ app
           extensionViews.invalidateRuntime(target, generation),
       },
       openUrl: openMcpSignInUrl,
+      // Lead-mode enforcement for the third-party `agent` subagent tool: it
+      // would run on the lead's frontier model (measured ~$44 vs ~$0.30 for
+      // equivalent sidekick children). The driver blocks and hides it in Lead
+      // mode only; agent_output stays allowed. Env escape hatch:
+      // PI_APP_LEAD_ALLOW_SUBAGENT_TOOL=1.
+      leadBlockedTools: ["agent"],
       builtinExtensions: [
         {
           name: "pi-gui-thread-orchestration",
