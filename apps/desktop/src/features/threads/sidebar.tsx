@@ -68,6 +68,7 @@ import {
   recencyHistoryExpansionKey,
   sessionThreadKey,
   summarizeChildGroup,
+  threadDisplayTitle,
   threadHistoryPreview,
   visibleThreadShortcutOrder,
   workspaceHistoryExpansionKey,
@@ -1790,7 +1791,7 @@ const ThreadSessionRow = forwardRef<HTMLDivElement, ThreadSessionRowProps>(
             </span>
             <span className="session-row__body">
               <span className="session-row__title-line">
-                <span className="session-row__title">{thread.session.title}</span>
+                <span className="session-row__title">{threadDisplayTitle(thread)}</span>
               </span>
               {showContext ? (
                 <span className="session-row__context">{thread.contextLabel}</span>

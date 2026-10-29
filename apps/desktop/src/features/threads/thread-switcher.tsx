@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { ThreadSwitcherState } from "./hooks/use-thread-switcher";
-import { sessionThreadKey } from "./thread-groups";
+import { sessionThreadKey, threadDisplayTitle } from "./thread-groups";
 
 interface ThreadSwitcherProps {
   readonly state: ThreadSwitcherState;
@@ -38,7 +38,7 @@ export function ThreadSwitcher({ state, onChoose }: ThreadSwitcherProps) {
                 onChoose(index);
               }}
             >
-              <span className="thread-switcher__item-title">{entry.session.title}</span>
+              <span className="thread-switcher__item-title">{threadDisplayTitle(entry)}</span>
               <span className="thread-switcher__item-context">{entry.contextLabel}</span>
             </li>
           ))}

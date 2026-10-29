@@ -1,5 +1,11 @@
-export { MuseCliDriver, reasoningEffortOf, worktreeExistingPathOf } from "./muse-cli-driver.js";
-export type { MuseCliDriverOptions } from "./muse-cli-driver.js";
+export {
+  DEFAULT_MUSE_SESSION_TITLE,
+  MuseCliDriver,
+  reasoningEffortOf,
+  resolveMuseRecordTitle,
+  worktreeExistingPathOf,
+} from "./muse-cli-driver.js";
+export type { MuseCliDriverOptions, MuseTitleSources } from "./muse-cli-driver.js";
 export { resolveMuseBinaryPath, museBinaryAvailable } from "./binary.js";
 export { MspTurnCollector, collectExportTurns, toSessionUsageSnapshot } from "./msp-mapping.js";
 export type {

@@ -72,6 +72,12 @@ export interface MuseCliDriverOptions {
    * these the pi driver's reconcile would drop Muse sessions.
    */
   readonly sessionFileDir?: string;
+  /**
+   * Optional fallback for title healing: the desktop's orchestration child
+   * record title, which survives even when the catalog and marker titles
+   * are blank. Called lazily, so it always sees current app state.
+   */
+  readonly resolveOrchestrationTitle?: (sessionRef: SessionRef) => string | undefined;
   /** SIGTERM-to-SIGKILL grace for cancel/rescue. Defaults to 3000 ms. */
   readonly killGraceMs?: number;
   /** Timeout for `muse export`. Defaults to 60_000 ms. */
@@ -123,6 +129,82 @@ interface MuseSessionRecord {
 }
 
 const UNSUPPORTED = "Muse CLI driver does not support";
+/** Last-resort title when no stored, marker, orchestration, or transcript title exists. */
+export const DEFAULT_MUSE_SESSION_TITLE = "Muse sidekick";
+
+/** Title sources for the shell-record fallback chain. Every link is optional. */
+export interface MuseTitleSources {
+  readonly catalogTitle?: string | undefined;
+  readonly markerTitle?: string | undefined;
+  readonly orchestrationTitle?: string | undefined;
+  readonly transcript?: readonly SessionTranscriptItem[] | undefined;
+  readonly fallback?: string | undefined;
+}
+
+/**
+ * Title fallback chain for shell records: catalog title, then marker file
+ * title, then orchestration child record title, then the first user prompt
+ * in the transcript, then the default. The first non-blank title wins, so
+ * a blank link never erases a good one.
+ */
+/** A stored title that is blank or the placeholder carries no information. */
+function realTitle(title: string | undefined): string | undefined {
+  const trimmed = title?.trim();
+  return trimmed && trimmed !== DEFAULT_MUSE_SESSION_TITLE ? trimmed : undefined;
+}
+
+export function resolveMuseRecordTitle(sources: MuseTitleSources): string {
+  const catalog = realTitle(sources.catalogTitle);
+  if (catalog) {
+    return catalog;
+  }
+  const marker = realTitle(sources.markerTitle);
+  if (marker) {
+    return marker;
+  }
+  const orchestration = realTitle(sources.orchestrationTitle);
+  if (orchestration) {
+    return orchestration;
+  }
+  const prompt = firstUserPromptOf(sources.transcript ?? []);
+  if (prompt) {
+    return prompt;
+  }
+  return sources.fallback?.trim() || DEFAULT_MUSE_SESSION_TITLE;
+}
+
+function firstUserPromptOf(
+  transcript: readonly SessionTranscriptItem[],
+): string | undefined {
+  for (const item of transcript) {
+    if (item?.kind === "message" && item.role === "user" && item.text.trim()) {
+      const text = item.text.trim();
+      return text.length > 72 ? text.slice(0, 72) : text;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Best-effort sync read of a marker file's title. Markers predate the
+ * workspaceId field (v1), so this reads by file name and takes whatever
+ * title is present, regardless of version.
+ */
+function markerTitleOf(dir: string | undefined, sessionId: string): string | undefined {
+  if (!dir) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(
+      readFileSync(join(dir, `${sessionId}.json`), "utf8"),
+    ) as Record<string, unknown>;
+    return typeof parsed.title === "string" && parsed.title.trim()
+      ? parsed.title.trim()
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
 const DEFAULT_KILL_GRACE_MS = 3000;
 const DEFAULT_EXPORT_TIMEOUT_MS = 60_000;
 const DEFAULT_MAX_TURN_MS = 0;
@@ -131,6 +213,9 @@ export class MuseCliDriver implements SessionDriver {
   private readonly binaryPath: string;
   private readonly provider: string | undefined;
   private readonly catalogStorage: MuseCliDriverOptions["catalogStorage"];
+  private readonly resolveOrchestrationTitle:
+    | ((sessionRef: SessionRef) => string | undefined)
+    | undefined;
   private readonly sessionFileDir: string | undefined;
   private readonly killGraceMs: number;
   private readonly exportTimeoutMs: number;
@@ -141,6 +226,7 @@ export class MuseCliDriver implements SessionDriver {
     this.binaryPath = resolveMuseBinaryPath(options.binaryPath);
     this.provider = options.provider;
     this.catalogStorage = options.catalogStorage;
+    this.resolveOrchestrationTitle = options.resolveOrchestrationTitle;
     this.sessionFileDir = options.sessionFileDir;
     this.killGraceMs = options.killGraceMs ?? DEFAULT_KILL_GRACE_MS;
     this.exportTimeoutMs = options.exportTimeoutMs ?? DEFAULT_EXPORT_TIMEOUT_MS;
@@ -161,7 +247,8 @@ export class MuseCliDriver implements SessionDriver {
     const record: MuseSessionRecord = {
       ref: { workspaceId: workspace.workspaceId, sessionId },
       workspace,
-      title: options?.title?.trim() || workspace.displayName || "Muse sidekick",
+      title:
+        options?.title?.trim() || workspace.displayName || DEFAULT_MUSE_SESSION_TITLE,
       model: options?.initialModel,
       thinkingLevel: options?.initialThinkingLevel,
       scout: false,
@@ -202,6 +289,11 @@ export class MuseCliDriver implements SessionDriver {
     let record = this.records.get(keyOf(sessionRef));
     if (!record) {
       record = await this.createShellRecord(sessionRef);
+    } else {
+      // A sync shell (from subscribe/setChildIsolation) never read the
+      // stored title; heal it before anything can persist it over the
+      // catalog. Without this, opening a restarted child blanks its title.
+      await this.healRecordTitle(record);
     }
     if (record.transcript.length > 0 || record.running) {
       return this.snapshotOf(record);
@@ -250,6 +342,15 @@ export class MuseCliDriver implements SessionDriver {
     }
     record.usage = usage;
     record.updatedAt = new Date().toISOString();
+    if (!record.title.trim() || record.title === DEFAULT_MUSE_SESSION_TITLE) {
+      // The export rebuild is the first sight of the transcript, so a
+      // session with no stored/marker title still names itself after its
+      // first prompt instead of keeping the placeholder.
+      const prompt = firstUserPromptOf(record.transcript);
+      if (prompt) {
+        record.title = prompt;
+      }
+    }
     await this.persistSession(record);
     return this.snapshotOf(record);
   }
@@ -1035,13 +1136,38 @@ export class MuseCliDriver implements SessionDriver {
           .catch(() => undefined)
       )?.path ?? "";
     if (stored) {
-      record.title = stored.title || record.title;
       record.archived = stored.archivedAt !== undefined;
     }
     if (workspacePath) {
       record.workspace = { workspaceId: sessionRef.workspaceId, path: workspacePath };
     }
+    await this.healRecordTitle(record, stored?.title);
     return record;
+  }
+
+  /**
+   * Restore a blank shell-record title without ever overwriting a good one.
+   * Chain: catalog title, marker file title, orchestration child record
+   * title, transcript prompt, default. A no-op when the title is set, so
+   * persist paths can call it unconditionally before every upsert.
+   */
+  private async healRecordTitle(record: MuseSessionRecord, catalogTitle?: string): Promise<void> {
+    // The placeholder counts as untitled, so a stored "Muse sidekick" never
+    // blocks healing to the real title.
+    if (realTitle(record.title)) {
+      return;
+    }
+    const storedTitle =
+      catalogTitle ??
+      (await this.catalogStorage?.sessions
+        .getSession(record.ref)
+        .catch(() => undefined))?.title;
+    record.title = resolveMuseRecordTitle({
+      catalogTitle: storedTitle,
+      markerTitle: markerTitleOf(this.sessionFileDir, record.ref.sessionId),
+      orchestrationTitle: this.resolveOrchestrationTitle?.(record.ref),
+      transcript: record.transcript,
+    });
   }
 
   private createShellRecordSync(sessionRef: SessionRef): MuseSessionRecord {
@@ -1052,7 +1178,11 @@ export class MuseCliDriver implements SessionDriver {
     const record: MuseSessionRecord = {
       ref: { ...sessionRef },
       workspace: { workspaceId: sessionRef.workspaceId, path: "" },
-      title: "",
+      // Seed from the marker file so a subscribe-before-open shell already
+      // carries the stored title. Stays blank when nothing is stored, so
+      // the async heal can still adopt the catalog title (a placeholder here
+      // would look "set" and block the heal).
+      title: markerTitleOf(this.sessionFileDir, sessionRef.sessionId) ?? "",
       model: undefined,
       thinkingLevel: undefined,
       scout: false,
@@ -1089,7 +1219,7 @@ export class MuseCliDriver implements SessionDriver {
     return {
       ref: { ...record.ref },
       workspace: { ...record.workspace },
-      title: record.title,
+      title: this.displayTitleOf(record),
       status: record.status,
       updatedAt: record.updatedAt,
       ...(record.archived ? { archivedAt: record.updatedAt } : {}),
@@ -1123,9 +1253,27 @@ export class MuseCliDriver implements SessionDriver {
       if (workspaceId !== undefined && record.ref.workspaceId !== workspaceId) {
         continue;
       }
-      byKey.set(keyOf(record.ref), this.entryOf(record));
+      const key = keyOf(record.ref);
+      const entry = this.entryOf(record);
+      const markerEntry = byKey.get(key);
+      if (!record.title.trim() && markerEntry?.title.trim()) {
+        // An unhealed shell record must not shadow the restart marker's
+        // stored title; keep the marker title with the live status.
+        byKey.set(key, { ...entry, title: markerEntry.title });
+        continue;
+      }
+      byKey.set(key, entry);
     }
     return { sessions: [...byKey.values()] };
+  }
+
+  /** Never blank: marker title, then the default, so an upsert can't erase a good catalog title. */
+  private displayTitleOf(record: MuseSessionRecord): string {
+    return (
+      record.title.trim() ||
+      markerTitleOf(this.sessionFileDir, record.ref.sessionId) ||
+      DEFAULT_MUSE_SESSION_TITLE
+    );
   }
 
   private entryOf(record: MuseSessionRecord): SessionCatalogEntry {
@@ -1134,7 +1282,7 @@ export class MuseCliDriver implements SessionDriver {
     return {
       sessionRef: { ...record.ref },
       workspaceId: record.ref.workspaceId,
-      title: record.title,
+      title: this.displayTitleOf(record),
       updatedAt: record.updatedAt,
       ...(record.archived ? { archivedAt: record.updatedAt } : {}),
       ...(preview ? { previewSnippet: preview } : {}),
@@ -1144,6 +1292,10 @@ export class MuseCliDriver implements SessionDriver {
   }
 
   private async persistSession(record: MuseSessionRecord): Promise<void> {
+    // Heal first: a shell record created by subscribe/getTranscript carries
+    // title "" until opened, and upserting that would blank the catalog.
+    // The heal never overwrites a non-empty title.
+    await this.healRecordTitle(record);
     const filePath = this.getSessionFilePathSync(record.ref);
     if (filePath && this.sessionFileDir) {
       const payload = JSON.stringify({

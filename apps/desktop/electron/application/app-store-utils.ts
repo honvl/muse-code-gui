@@ -46,7 +46,15 @@ export function mergeSessionListings(
     piSessions.map((session) => [sessionKey(session.sessionRef), session] as const),
   );
   for (const session of museSessions) {
-    merged.set(sessionKey(session.sessionRef), session);
+    const key = sessionKey(session.sessionRef);
+    const existing = merged.get(key);
+    if (existing && !session.title.trim() && existing.title.trim()) {
+      // A blank Muse title must never clobber pi's stored one (shell
+      // records start untitled); keep the live Muse status with pi's title.
+      merged.set(key, { ...session, title: existing.title });
+      continue;
+    }
+    merged.set(key, session);
   }
   return [...merged.values()];
 }

@@ -377,6 +377,13 @@ export class DesktopAppStore {
     this.museCliDriver = new MuseCliDriver({
       catalogStorage: this.catalogStore,
       sessionFileDir: join(options.userDataDir, "muse-sessions"),
+      resolveOrchestrationTitle: (sessionRef) =>
+        this.state.orchestrationChildren.find(
+          (child) =>
+            child.runtime === "muse-cli" &&
+            child.childWorkspaceId === sessionRef.workspaceId &&
+            child.childSessionId === sessionRef.sessionId,
+        )?.title,
       ...(Number.isFinite(museMaxTurnMs) && museMaxTurnMs > 0 ? { maxTurnMs: museMaxTurnMs } : {}),
     });
     this.sessionRouter = new SessionDriverRouter(

@@ -29,6 +29,24 @@ export interface OrchestrationChildInfo {
   readonly mode?: OrchestrationChildMode;
   /** `workspaceId:sessionId` of the parent thread. */
   readonly parentKey: string;
+  /**
+   * The orchestration child record's title. Display fallback for a child
+   * session whose catalog title is blank, so the row never renders empty.
+   */
+  readonly title?: string;
+}
+
+/**
+ * Row title for the sidebar and switcher. The catalog title wins; a child
+ * session with a blanked catalog title falls back to its orchestration
+ * child record title so the row can't show empty.
+ */
+export function threadDisplayTitle(entry: ThreadListEntry): string {
+  if (entry.session.title.trim()) {
+    return entry.session.title;
+  }
+  const childTitle = entry.child?.title?.trim();
+  return childTitle || entry.session.title;
 }
 
 export interface ThreadListEntry {
@@ -396,6 +414,7 @@ function attachOrchestrationChildren(entries: ThreadListEntry[], state: DesktopA
         status: child.status,
         ...(child.mode ? { mode: child.mode } : {}),
         parentKey: parentThreadKey(child.parentWorkspaceId, child.parentSessionId),
+        ...(child.title?.trim() ? { title: child.title } : {}),
       },
     };
   }
