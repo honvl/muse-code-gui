@@ -3,7 +3,9 @@ import type { SessionRef } from "@pi-gui/session-driver";
 import type { OrchestrationChildThread, TranscriptMessage } from "../../contracts/desktop-state";
 import {
   CHILD_REPORT_SUFFIX,
-  SUCCESS_CRITERIA_BRIEF_WARNING,
+  DEFAULT_SUCCESS_CRITERIA,
+  DEFAULT_VERIFY,
+  SCOPE_BRIEF_WARNING,
   createChildThreadAction,
   createChildThreadToolName,
   createOrchestrationRuntimeTools,
@@ -19,7 +21,11 @@ const createdAt = "2026-10-28T00:00:00.000Z";
 const parentRef: SessionRef = { workspaceId: "ws", sessionId: "parent" };
 const prompt = "Do the investigation.";
 
-function seedChild(n: number): OrchestrationChildThread {
+// Budget seeds are scouts: they count toward the delegation budget but never
+// hold the single-writer slot, so the budget check (phase B) is what fires,
+// not the writer-scope refusal (phase A, which runs first). A worker seed
+// with no writeScopes claims the whole workspace and would refuse first.
+function seedChild(n: number, mode: "scout" | "worker" = "scout"): OrchestrationChildThread {
   return {
     id: `seed-child-${n}`,
     parentWorkspaceId: "ws",
@@ -28,7 +34,7 @@ function seedChild(n: number): OrchestrationChildThread {
     childSessionId: `child-session-${n}`,
     title: `Seed child ${n}`,
     goal: `Seed goal ${n}`,
-    mode: "worker",
+    mode,
     depth: 1,
     status: "running",
     latestTranscript: `Seed goal ${n}`,
@@ -150,6 +156,7 @@ test("create_child_thread refuses with actionable text at the delegation budget"
   const result = await owner.createChildThreadToolResult(parentRef, {
     prompt: "One more slice.",
     toolCallId: "call-over-budget",
+    scope: "slice-over-budget",
   });
 
   expect(createSessionCalls).toHaveLength(0);
@@ -163,6 +170,8 @@ test("create_child_thread refuses with actionable text at the delegation budget"
 });
 
 test("delegationsRemaining decrements with each spawn", async () => {
+  // Scout seeds hold no writer slot; each fresh worker spawn takes a disjoint
+  // scope so consecutive spawns refuse on budget, not on each other.
   const children = Array.from({ length: 28 }, (_, index) => seedChild(index + 1));
   const { owner, createSessionCalls } = makeHost({
     children,
@@ -173,6 +182,7 @@ test("delegationsRemaining decrements with each spawn", async () => {
   const first = await owner.createChildThreadToolResult(parentRef, {
     prompt,
     toolCallId: "call-a",
+    scope: "slice-a",
   });
   expect(first.details.error).toBeUndefined();
   expect(first.details.delegationsRemaining).toBe(1);
@@ -181,6 +191,7 @@ test("delegationsRemaining decrements with each spawn", async () => {
   const second = await owner.createChildThreadToolResult(parentRef, {
     prompt,
     toolCallId: "call-b",
+    scope: "slice-b",
   });
   expect(second.details.error).toBeUndefined();
   expect(second.details.delegationsRemaining).toBe(0);
@@ -188,6 +199,7 @@ test("delegationsRemaining decrements with each spawn", async () => {
   const third = await owner.createChildThreadToolResult(parentRef, {
     prompt,
     toolCallId: "call-c",
+    scope: "slice-c",
   });
   expect(third.details.error).toContain("Delegation budget exhausted");
   expect(createSessionCalls).toHaveLength(2);
@@ -215,6 +227,7 @@ test("PI_APP_ORCHESTRATION_MAX_CHILDREN overrides the budget; junk is ignored", 
     const result = await owner.createChildThreadToolResult(parentRef, {
       prompt: "One more.",
       toolCallId: "call-env",
+      scope: "slice-env",
     });
     expect(result.details.error).toContain(
       "Delegation budget exhausted (2 children on this thread).",
@@ -225,7 +238,7 @@ test("PI_APP_ORCHESTRATION_MAX_CHILDREN overrides the budget; junk is ignored", 
   }
 });
 
-test("brief hint appears when success_criteria is missing and never reaches the child prompt", async () => {
+test("brief hint appears when scope is missing and never reaches the child prompt", async () => {
   const seen: Array<{ prompt: string }> = [];
   const bridge = {
     createChildThread: async (_ctx: unknown, input: { prompt: string }) => {
@@ -254,44 +267,55 @@ test("brief hint appears when success_criteria is missing and never reaches the 
   ).find((entry) => entry.name === createChildThreadToolName);
   expect(tool).toBeDefined();
 
+  // success_criteria and verify fall back to host defaults, so only a missing
+  // scope still warns. Warnings ride the tool result; the child brief is
+  // untouched by them but carries the defaults plus the report suffix.
   const result = await tool!.execute(
     "call-1",
-    { prompt: "Probe the cache.", scope: "apps/desktop" },
+    { prompt: "Probe the cache." },
     undefined,
     undefined,
     {},
   );
-  expect(result.details).toMatchObject({ briefWarnings: [SUCCESS_CRITERIA_BRIEF_WARNING] });
-  expect(resultText(result)).toContain(
-    "Brief hint: add success_criteria so the child can self-check.",
-  );
+  expect(result.details).toMatchObject({ briefWarnings: [SCOPE_BRIEF_WARNING] });
+  expect(resultText(result)).toContain(SCOPE_BRIEF_WARNING);
   expect(seen).toHaveLength(1);
   expect(seen[0]?.prompt).not.toContain("Brief hint");
   expect(seen[0]?.prompt).toContain(CHILD_REPORT_SUFFIX);
+  expect(seen[0]?.prompt).toContain(DEFAULT_SUCCESS_CRITERIA);
+  expect(seen[0]?.prompt).toContain(DEFAULT_VERIFY);
 
   const full = await tool!.execute(
     "call-2",
-    { prompt: "Probe the cache.", scope: "apps/desktop", success_criteria: "A written summary." },
+    {
+      prompt: "Probe the cache.",
+      scope: "apps/desktop",
+      success_criteria: "A written summary.",
+      verify: "Run the cache spec.",
+    },
     undefined,
     undefined,
     {},
   );
   expect("briefWarnings" in (full.details as Record<string, unknown>)).toBe(false);
   expect(resultText(full)).not.toContain("Brief hint");
+  expect(seen).toHaveLength(2);
+  expect(seen[1]?.prompt).toContain("Scope: apps/desktop");
+  expect(seen[1]?.prompt).toContain("A written summary.");
+  expect(seen[1]?.prompt).toContain("Run the cache spec.");
+  expect(seen[1]?.prompt).not.toContain(DEFAULT_SUCCESS_CRITERIA);
 
-  const thin = await tool!.execute(
+  const scoped = await tool!.execute(
     "call-3",
-    { prompt: "Probe the cache." },
+    { prompt: "Probe the cache.", scope: "apps/desktop" },
     undefined,
     undefined,
     {},
   );
-  const hintLines = resultText(thin)
-    .split("\n")
-    .filter((line) => line.includes("Brief hint"));
-  expect(hintLines).toHaveLength(1);
-  expect(hintLines[0]).toContain("add scope");
-  expect(hintLines[0]).toContain("add success_criteria");
+  expect("briefWarnings" in (scoped.details as Record<string, unknown>)).toBe(false);
+  expect(resultText(scoped)).not.toContain("Brief hint");
+  // A thin brief still spawns; the hint never blocks.
+  expect(seen).toHaveLength(3);
 });
 
 test("child report suffix carries the character budget", () => {
