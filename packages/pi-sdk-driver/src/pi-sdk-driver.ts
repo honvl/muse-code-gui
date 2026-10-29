@@ -6,6 +6,8 @@ import type {
 import type {
   NavigateSessionTreeOptions,
   NavigateSessionTreeResult,
+  RescueCurrentRunOptions,
+  RescueCurrentRunResult,
   SessionQueuedMessage,
   SessionTreeSnapshot,
 } from "@pi-gui/session-driver/types";
@@ -104,6 +106,13 @@ export class PiSdkDriver implements SessionDriver {
 
   cancelCurrentRun(sessionRef: SessionRef): Promise<void> {
     return this.supervisor.cancelCurrentRun(sessionRef);
+  }
+
+  rescueCurrentRun(
+    sessionRef: SessionRef,
+    options?: RescueCurrentRunOptions,
+  ): Promise<RescueCurrentRunResult> {
+    return this.supervisor.rescueCurrentRun(sessionRef, options);
   }
 
   setChildIsolation(sessionRef: SessionRef, info: ChildIsolationInfo): void {

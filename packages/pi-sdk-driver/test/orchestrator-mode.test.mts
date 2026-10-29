@@ -588,6 +588,26 @@ await test("read budget bounces one exploratory call to a scout, then lets reads
   }
 });
 
+await test("lead prompt teaches rescue for stuck children once", async () => {
+  const lines = ORCHESTRATOR_SYSTEM_PROMPT.split("\n");
+  assert.equal(lines.length, 6, "lead prompt must have exactly six rules");
+  assert.match(
+    lines[4] ?? "",
+    /stuck on one tool call/i,
+    "prompt must name the stuck-tool rescue case",
+  );
+  assert.match(
+    lines[4] ?? "",
+    /rescue:true/,
+    "prompt must teach the rescue flag",
+  );
+  assert.equal(
+    ORCHESTRATOR_SYSTEM_PROMPT.split("rescue:true").length - 1,
+    1,
+    "the rescue flag must appear exactly once",
+  );
+});
+
 await test("lead prompt contains each policy sentence exactly once", async () => {
   const { pi, handlers } = makeMockPi();
   await createOrchestratorModeExtension(() => true)(pi as never);

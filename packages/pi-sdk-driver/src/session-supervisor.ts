@@ -21,6 +21,8 @@ import type { SessionCatalogSnapshot, WorkspaceCatalogSnapshot } from "@pi-gui/c
 import type {
   NavigateSessionTreeOptions,
   NavigateSessionTreeResult,
+  RescueCurrentRunOptions,
+  RescueCurrentRunResult,
   SendCustomMessageOptions,
   SessionCustomMessageInput,
   SessionMessageDeliveryMode,
@@ -155,7 +157,15 @@ import {
 /** Custom message type for a background task finishing on its own. */
 const BACKGROUND_TASK_CUSTOM_TYPE = "pi-gui.background-task";
 
-
+/**
+ * How long `rescueCurrentRun` waits for pi's abort to settle a run stuck on
+ * a tool call before it force-stops the host side. A cooperative tool (bash
+ * included: pi kills the process tree on abort) settles well inside this;
+ * only a tool whose promise never settles trips the forced path.
+ */
+export const RESCUE_ABORT_TIMEOUT_MS = 5_000;
+/** Upper bound for an explicit rescue abort timeout override. */
+export const RESCUE_ABORT_TIMEOUT_MAX_MS = 60_000;
 
 type RuntimeModel = NonNullable<ReturnType<ModelRuntime["getModel"]>>;
 
@@ -307,6 +317,12 @@ interface ManagedSessionRecord {
   reloadInFlight: Promise<void> | undefined;
   /** Extension commands (such as `/mcp login`) still running; a reload would end them. */
   extensionCommandsRunning: number;
+  /**
+   * Tools pi reports as started but not yet finished (callId to tool name).
+   * Lets the rescue path mark exactly the stuck rows when an abort never
+   * settles; a tool that finishes late deletes its own entry here.
+   */
+  inFlightToolCalls: Map<string, string>;
 }
 
 type NotifyHostUiRequest = Extract<
@@ -1946,6 +1962,116 @@ export class SessionSupervisor {
       console.warn(`[pi-sdk-driver] abort failed for ${sessionKey(record.ref)}:`, error);
     }
 
+    await this.settleRunAfterAbort(record);
+  }
+
+  /**
+   * Bounded abort for a run stuck on a tool call that never finishes. Pi's
+   * abort only signals the in-flight tool: the run promise settles only once
+   * the tool's promise does, so a tool that ignores the signal (or a bash
+   * child that outlives it) hangs `session.abort()` forever. Wait up to
+   * `abortTimeoutMs`, then force the host side consistent: kill any tracked
+   * interactive bash, mark the in-flight tools aborted, and clear local run
+   * state so the session reads idle and the next prompt can queue. A tool
+   * that settles late still reports through the normal events afterwards.
+   */
+  async rescueCurrentRun(
+    sessionRef: SessionRef,
+    options?: RescueCurrentRunOptions,
+  ): Promise<RescueCurrentRunResult> {
+    const record = this.records.get(sessionKey(sessionRef));
+    if (!record?.session) {
+      return { forced: false };
+    }
+
+    record.cancellationRequested = true;
+    if (record.promptStarting && !record.session.isStreaming) {
+      record.abortOnRunStart = true;
+    }
+    const timeoutMs =
+      options?.abortTimeoutMs !== undefined &&
+      Number.isFinite(options.abortTimeoutMs) &&
+      options.abortTimeoutMs > 0
+        ? Math.min(Math.floor(options.abortTimeoutMs), RESCUE_ABORT_TIMEOUT_MAX_MS)
+        : RESCUE_ABORT_TIMEOUT_MS;
+    let settled = false;
+    let abortTimer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        record.session.abort().then(
+          () => undefined,
+          (error: unknown) => {
+            console.warn(
+              `[pi-sdk-driver] rescue abort failed for ${sessionKey(record.ref)}:`,
+              error,
+            );
+          },
+        ),
+        new Promise<void>((resolve) => {
+          abortTimer = setTimeout(resolve, timeoutMs);
+        }),
+      ]);
+      // The race resolves either way; only pi's own settle counts. A late
+      // abort resolution after the timeout must not flip the forced outcome.
+      settled = record.session ? !record.session.isStreaming : true;
+    } catch (error) {
+      console.warn(`[pi-sdk-driver] rescue failed for ${sessionKey(record.ref)}:`, error);
+      settled = record.session ? !record.session.isStreaming : true;
+    } finally {
+      if (abortTimer !== undefined) clearTimeout(abortTimer);
+    }
+
+    if (!settled) {
+      // The tool ignored the abort: pi's run is still wedged. Best-effort
+      // kill of tracked interactive bash (tool-path bash already got the
+      // signal through the abort above), then mark the in-flight tools so
+      // the timeline shows the rescue instead of a forever-running row.
+      try {
+        record.session.abortBash();
+      } catch (error) {
+        console.warn(`[pi-sdk-driver] rescue abortBash failed for ${sessionKey(record.ref)}:`, error);
+      }
+      this.markInFlightToolsAborted(record, timeoutMs);
+    }
+
+    await this.settleRunAfterAbort(record);
+    return { forced: !settled };
+  }
+
+  /**
+   * Mark every tool pi still reports as in-flight aborted. Emitted as normal
+   * toolFinished errors (carrying the current run id) so the timeline flips
+   * the stuck rows instead of leaving them running. A tool that settles late
+   * reports its real outcome afterwards through the usual events.
+   */
+  private markInFlightToolsAborted(record: ManagedSessionRecord, timeoutMs: number): void {
+    if (record.inFlightToolCalls.size === 0) {
+      return;
+    }
+    const seconds = Math.max(1, Math.round(timeoutMs / 1000));
+    const events: SessionDriverEvent[] = [];
+    for (const [callId, toolName] of record.inFlightToolCalls) {
+      events.push({
+        type: "toolFinished" as const,
+        sessionRef: record.ref,
+        timestamp: nowIso(),
+        callId,
+        success: false,
+        output: {
+          content: [
+            {
+              type: "text",
+              text: `Rescued by the lead: abort did not settle the in-flight ${toolName} tool within ${seconds}s, so the run was force-stopped. Deliver the follow-up with guidance and retry the step with a bounded command.`,
+            },
+          ],
+        },
+      });
+      record.inFlightToolCalls.delete(callId);
+    }
+    this.queueDriverEvents(record, events);
+  }
+
+  private async settleRunAfterAbort(record: ManagedSessionRecord): Promise<void> {
     // Aborting ends the current turn, so any steer/follow-up messages queued
     // against it can never be delivered. Clear both the SDK queue and our
     // mirror so the composer stops showing orphaned pending messages — matching
@@ -2359,6 +2485,7 @@ export class SessionSupervisor {
       reloadPending: false,
       reloadInFlight: undefined,
       extensionCommandsRunning: 0,
+      inFlightToolCalls: new Map(),
     };
     return record;
   }
@@ -3327,6 +3454,7 @@ export class SessionSupervisor {
         return [sessionUpdatedEvent(record)];
       case "tool_execution_start":
         record.status = "running";
+        record.inFlightToolCalls.set(event.toolCallId, event.toolName);
         return toDriverEvents(
           {
             type: "toolStarted" as const,
@@ -3352,6 +3480,7 @@ export class SessionSupervisor {
         );
       case "tool_execution_end":
         record.assistantRequestStartedAt = timestamp;
+        record.inFlightToolCalls.delete(event.toolCallId);
         return toDriverEvents(
           {
             type: "toolFinished" as const,
@@ -3419,6 +3548,7 @@ export class SessionSupervisor {
           : record.pendingRunOutcome;
         record.pendingRunOutcome = undefined;
         record.cancellationRequested = false;
+        record.inFlightToolCalls.clear();
         const runId = record.runningRunId;
         record.runningRunId = undefined;
         record.status = outcome?.status === "failed" ? "failed" : "idle";

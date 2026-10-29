@@ -418,6 +418,23 @@ export type SessionDriverEvent =
 export type SessionEventListener = (event: SessionDriverEvent) => void | Promise<void>;
 export type Unsubscribe = () => void;
 
+export interface RescueCurrentRunOptions {
+  /**
+   * How long to wait for pi's abort to settle before the host force-stops
+   * the run. Must be positive; defaults to RescueCurrentRunDefaults.abortTimeoutMs.
+   */
+  readonly abortTimeoutMs?: number;
+}
+
+export interface RescueCurrentRunResult {
+  /**
+   * True when pi's abort did not settle in time: the host cleared its own
+   * run state and marked the in-flight tool aborted, while pi's run may
+   * still be wedged on the unsettled tool.
+   */
+  readonly forced: boolean;
+}
+
 export interface SessionDriver {
   createSession(workspace: WorkspaceRef, options?: CreateSessionOptions): Promise<SessionSnapshot>;
   validateForkSession(sourceRef: SessionRef, options: ForkSessionOptions): Promise<void>;
@@ -440,6 +457,15 @@ export interface SessionDriver {
     messages: readonly SessionQueuedMessage[],
   ): Promise<void>;
   cancelCurrentRun(sessionRef: SessionRef): Promise<void>;
+  /**
+   * Outcome of a bounded rescue abort: `forced` is true when the abort did
+   * not settle in time and the host force-stopped the run instead. The
+   * session is idle from the host's perspective either way.
+   */
+  rescueCurrentRun(
+    sessionRef: SessionRef,
+    options?: RescueCurrentRunOptions,
+  ): Promise<RescueCurrentRunResult>;
   setSessionModel(sessionRef: SessionRef, selection: SessionModelSelection): Promise<void>;
   setSessionThinkingLevel(sessionRef: SessionRef, thinkingLevel: string): Promise<void>;
   setSessionOrchestratorMode(sessionRef: SessionRef, enabled: boolean): Promise<void>;

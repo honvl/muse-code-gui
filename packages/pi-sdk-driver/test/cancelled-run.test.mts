@@ -12,6 +12,7 @@ await test("requested abort emits only idle state, without completion or failure
     updatedAt: new Date().toISOString(),
     runningRunId: "run",
     cancellationRequested: true,
+    inFlightToolCalls: new Map(),
     queuedMessages: [],
   };
   // Exercise the runtime-event translation directly; no live session, provider,

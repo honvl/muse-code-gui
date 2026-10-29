@@ -23,6 +23,7 @@ export type {
   PiSdkDriverOptions,
   SyncWorkspaceResult,
 } from "./session-supervisor.js";
+export { RESCUE_ABORT_TIMEOUT_MS, RESCUE_ABORT_TIMEOUT_MAX_MS } from "./session-supervisor.js";
 export type {
   CompactionModelRoute,
   CompactionModelRouteRequest,
