@@ -213,7 +213,9 @@ await test("cancel closes an open tool as interrupted", async () => {
 });
 
 await test("echo turn runs to completion and rebuilds via export", async (t) => {
-  if (!museBinaryAvailable(resolveMuseBinaryPath())) {
+  // Resolve before swapping HOME: the ~/.local/bin fallback is HOME-relative.
+  const binaryPath = resolveMuseBinaryPath();
+  if (!museBinaryAvailable(binaryPath)) {
     t.skip("muse binary not installed");
     return;
   }
@@ -222,16 +224,16 @@ await test("echo turn runs to completion and rebuilds via export", async (t) => 
   const previousHome = process.env.HOME;
   process.env.HOME = home;
   try {
-    await runEchoTurns();
+    await runEchoTurns(binaryPath);
   } finally {
     process.env.HOME = previousHome;
   }
 });
 
-async function runEchoTurns(): Promise<void> {
+async function runEchoTurns(binaryPath: string): Promise<void> {
   const workspacePath = mkdtempSync(join(tmpdir(), "muse-ws-"));
   const sessionFileDir = mkdtempSync(join(tmpdir(), "muse-sessions-"));
-  const driver = new MuseCliDriver({ provider: "echo", sessionFileDir });
+  const driver = new MuseCliDriver({ provider: "echo", sessionFileDir, binaryPath });
   const events: SessionDriverEvent[] = [];
   const snapshot = await driver.createSession(
     { workspaceId: "ws-echo", path: workspacePath },
@@ -262,7 +264,7 @@ async function runEchoTurns(): Promise<void> {
     assert.deepEqual(roles, ["user", "assistant", "user", "assistant"]);
 
     // A fresh driver instance rebuilds the transcript via `muse export`.
-    const reopened = new MuseCliDriver({ provider: "echo", sessionFileDir });
+    const reopened = new MuseCliDriver({ provider: "echo", sessionFileDir, binaryPath });
     const rebuilt = await reopened.openSession(snapshot.ref);
     assert.equal(rebuilt.status, "idle");
     const rebuiltTranscript = await reopened.getTranscript(snapshot.ref);
