@@ -206,6 +206,59 @@ await test("export documents rebuild per-turn prompts, texts, tools and usage", 
   assert.deepEqual(turns[1]?.terminal, { status: "completed", text: "b1b2", reason: null });
 });
 
+const OPEN_BASH_CALL_ID = "01a1864f-43d4-7c40-b90f-c5da3bd8ce98";
+const FAILED_BASH_CALL_ID = "01a1864b-679e-7400-9507-50e5d1d1461f";
+
+await test("real-tool fixture maps names and pairs every started call", () => {
+  const collector = collect("turn-tools.jsonl");
+  const events = [...collector.pendingToolEvents];
+  const started = events.filter((event) => event.type === "toolStarted");
+  const finished = events.filter((event) => event.type === "toolFinished");
+
+  assert.equal(started.length, 5);
+  assert.deepEqual(
+    started.map((event) => event.toolName),
+    ["read_file", "bash", "edit_file", "bash", "bash"],
+  );
+
+  // Every started call has exactly one finish.
+  const finishByCall = new Map(finished.map((event) => [event.callId, event]));
+  assert.equal(finishByCall.size, 5);
+  for (const event of started) {
+    assert.ok(finishByCall.has(event.callId), `missing finish for ${event.callId}`);
+  }
+
+  // The failed call finishes unsuccessfully without the interrupted mark.
+  const failed = finishByCall.get(FAILED_BASH_CALL_ID);
+  assert.equal(failed?.success, false);
+  assert.equal(failed?.interrupted, undefined);
+
+  // The live_process bash call never reached a terminal record; the run
+  // terminal closes it as interrupted instead of leaving it running.
+  const open = finishByCall.get(OPEN_BASH_CALL_ID);
+  assert.equal(open?.toolName, "bash");
+  assert.equal(open?.success, false);
+  assert.equal(open?.interrupted, true);
+  assert.deepEqual(events.at(-1), open);
+
+  // A second drain finds nothing left open.
+  assert.deepEqual(collector.drainOpenTools(), []);
+
+  assert.equal(collector.assistantText, "Done");
+  assert.equal(collector.mappedTerminal?.status, "completed");
+  assert.match(collector.mappedTerminal?.text ?? "", /^Done\. Two commits/);
+
+  const usage = collector.mappedUsage;
+  assert.equal(usage.model, "muse-spark-1.3-contributor");
+  assert.equal(usage.inputTokens, 62146321);
+  assert.equal(usage.cachedTokens, 61862227);
+  assert.equal(usage.outputTokens, 154427);
+  assert.equal(usage.reasoningTokens, 68778);
+  assert.equal(usage.calls, 260);
+  assert.equal(usage.allowance?.weekly?.used_percent, 93);
+  assert.equal(toSessionUsageSnapshot(usage).subscription, true);
+});
+
 function lifecycle(taskId: string, kind: string, event: Record<string, unknown>): string {
   return JSON.stringify({
     schema_version: 1,

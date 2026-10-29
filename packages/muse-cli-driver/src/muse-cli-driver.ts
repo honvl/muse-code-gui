@@ -755,6 +755,7 @@ export class MuseCliDriver implements SessionDriver {
       record.status = "idle";
       record.updatedAt = now;
       this.emitAssistantEnd(record, turn, now);
+      this.closeInterruptedTools(record, turn);
       this.emit(record, {
         type: "sessionUpdated",
         sessionRef: record.ref,
@@ -814,6 +815,7 @@ export class MuseCliDriver implements SessionDriver {
     record.status = "failed";
     record.updatedAt = now;
     this.emitAssistantEnd(record, turn, now);
+    this.closeInterruptedTools(record, turn);
     const detail =
       turn.stderrTail.trim() || (signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`);
     this.emit(record, {
@@ -846,6 +848,7 @@ export class MuseCliDriver implements SessionDriver {
     const now = new Date().toISOString();
     record.updatedAt = now;
     this.emitAssistantEnd(record, turn, now);
+    this.closeInterruptedTools(record, turn);
     this.emit(record, {
       type: "runFailed",
       sessionRef: record.ref,
@@ -854,6 +857,17 @@ export class MuseCliDriver implements SessionDriver {
       error: { message },
     });
     await this.persistSession(record);
+  }
+
+  /**
+   * Emit an interrupted finish for every started-but-unfinished tool so the
+   * UI stops showing it as running. The collector dedupes against calls that
+   * already reached a terminal record.
+   */
+  private closeInterruptedTools(record: MuseSessionRecord, turn: RunningTurn): void {
+    for (const tool of turn.collector.drainOpenTools()) {
+      this.emitToolEvent(record, turn, tool);
+    }
   }
 
   /**
@@ -933,6 +947,7 @@ export class MuseCliDriver implements SessionDriver {
         const now = new Date().toISOString();
         record.updatedAt = now;
         this.emitAssistantEnd(record, turn, now);
+        this.closeInterruptedTools(record, turn);
         this.emit(record, {
           type: "sessionUpdated",
           sessionRef: record.ref,

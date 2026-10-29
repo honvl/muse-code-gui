@@ -146,6 +146,72 @@ async function waitForEvent(events: SessionDriverEvent[], type: string): Promise
   }
 }
 
+await test("cancel closes an open tool as interrupted", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "muse-stub-"));
+  const binaryPath = join(dir, "muse");
+  const proposed = JSON.stringify({
+    schema_version: 1,
+    id: "p1",
+    stream: { kind: "session", id: "s" },
+    sequence: 1,
+    recorded_at: 0,
+    record_type: "event",
+    durability: "durable",
+    causation_id: "cmd-1",
+    payload_type: "task.lifecycle.proposed",
+    payload_schema_version: 1,
+    payload: {
+      kind: "task_lifecycle",
+      command_id: "cmd-1",
+      task_id: "task-9",
+      event: { kind: "proposed", task_id: "task-9", task_kind: "tool.bash" },
+    },
+  });
+  const started = JSON.stringify({
+    schema_version: 1,
+    id: "p2",
+    stream: { kind: "session", id: "s" },
+    sequence: 2,
+    recorded_at: 0,
+    record_type: "event",
+    durability: "durable",
+    causation_id: "cmd-1",
+    payload_type: "task.lifecycle.started",
+    payload_schema_version: 1,
+    payload: {
+      kind: "task_lifecycle",
+      command_id: "cmd-1",
+      task_id: "task-9",
+      event: { kind: "started", task_id: "task-9" },
+    },
+  });
+  writeFileSync(binaryPath, `#!/bin/sh\nprintf '%s\\n' '${proposed}' '${started}'\nsleep 30\n`, {
+    mode: 0o755,
+  });
+  chmodSync(binaryPath, 0o755);
+  const driver = new MuseCliDriver({ binaryPath, killGraceMs: 200 });
+  const snapshot = await driver.createSession({ workspaceId: "ws", path: tmpdir() });
+  const events: SessionDriverEvent[] = [];
+  const unsubscribe = driver.subscribe(snapshot.ref, (event) => {
+    events.push(event);
+  });
+  try {
+    await driver.sendUserMessage(snapshot.ref, { text: "run something" });
+    await waitForEvent(events, "toolStarted");
+    await driver.cancelCurrentRun(snapshot.ref);
+    await waitForEvent(events, "toolFinished");
+    const finish = events.find((event) => event.type === "toolFinished");
+    assert.equal(finish?.type, "toolFinished");
+    if (finish?.type === "toolFinished") {
+      assert.equal(finish.callId, "task-9");
+      assert.equal(finish.success, false);
+    }
+  } finally {
+    unsubscribe();
+    await driver.closeSession(snapshot.ref);
+  }
+});
+
 await test("echo turn runs to completion and rebuilds via export", async (t) => {
   if (!museBinaryAvailable(resolveMuseBinaryPath())) {
     t.skip("muse binary not installed");

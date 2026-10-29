@@ -8,10 +8,10 @@ import type { MspAllowance, MspRecord } from "./msp.js";
  *
  * Only `task_lifecycle` records that represent tool calls become tool rows. A
  * task represents a tool call when its `task_kind` (on `proposed`) or its
- * `side_effect_intent` operation names a `tool.*` operation. The recorded
- * fixtures show the other shapes: `reminder.*` child runs and `model.*`
- * model steps, which are internal to the run and intentionally produce no
- * tool rows (model text arrives via `run_output_delta`).
+ * `side_effect_intent` operation names a `tool.*` (or `tool:*`) operation.
+ * The recorded fixtures show the other shapes: `reminder.*` child runs and
+ * `model.*` model steps, which are internal to the run and intentionally
+ * produce no tool rows (model text arrives via `run_output_delta`).
  */
 
 export interface MappedToolEvent {
@@ -20,6 +20,8 @@ export interface MappedToolEvent {
   /** The MSP task id; stable for the call's whole lifecycle. */
   readonly callId: string;
   readonly success?: boolean;
+  /** True when the call never reached a terminal record and was closed by the run ending. */
+  readonly interrupted?: boolean;
 }
 
 export interface MappedUsage {
@@ -40,10 +42,6 @@ export interface MappedTerminal {
   readonly reason: string | null;
 }
 
-function isToolOperation(value: string | undefined): boolean {
-  return value !== undefined && (value === "tool" || value.startsWith("tool."));
-}
-
 function toolNameFrom(value: string | undefined): string | undefined {
   if (value === undefined) {
     return undefined;
@@ -51,8 +49,10 @@ function toolNameFrom(value: string | undefined): string | undefined {
   if (value === "tool") {
     return "tool";
   }
-  if (value.startsWith("tool.")) {
-    return value.slice("tool.".length);
+  for (const prefix of ["tool.", "tool:"]) {
+    if (value.startsWith(prefix)) {
+      return value.slice(prefix.length);
+    }
   }
   return undefined;
 }
@@ -66,6 +66,7 @@ export class MspTurnCollector {
   private readonly toolEvents: MappedToolEvent[] = [];
   private readonly taskToolNames = new Map<string, string>();
   private readonly startedTools = new Set<string>();
+  private readonly finishedTools = new Set<string>();
   private usage: MappedUsage = {
     model: null,
     inputTokens: 0,
@@ -116,6 +117,7 @@ export class MspTurnCollector {
           text: payload.text ?? "",
           reason: payload.reason ?? null,
         };
+        this.drainOpenTools();
         return;
       default:
         return;
@@ -144,25 +146,50 @@ export class MspTurnCollector {
         }
         return;
       case "completed":
-        this.toolEvents.push({
-          type: "toolFinished",
-          toolName,
-          callId: event.task_id,
-          success: true,
-        });
+        this.finishTool(event.task_id, toolName, true);
         return;
       case "failed":
       case "cancelled":
-        this.toolEvents.push({
-          type: "toolFinished",
-          toolName,
-          callId: event.task_id,
-          success: false,
-        });
+        this.finishTool(event.task_id, toolName, false);
         return;
       default:
         return;
     }
+  }
+
+  private finishTool(taskId: string, toolName: string, success: boolean): void {
+    if (this.finishedTools.has(taskId)) {
+      return;
+    }
+    this.finishedTools.add(taskId);
+    this.toolEvents.push({ type: "toolFinished", toolName, callId: taskId, success });
+  }
+
+  /**
+   * Close every started-but-unfinished tool with an interrupted finish. Runs
+   * end (completed, failed or cancelled) while a live-process call is still
+   * open, and kills never deliver its terminal record; without this the UI
+   * would show the call running forever. Idempotent: already-finished calls
+   * are skipped, so a late terminal record cannot double-close.
+   */
+  drainOpenTools(): MappedToolEvent[] {
+    const closed: MappedToolEvent[] = [];
+    for (const taskId of this.startedTools) {
+      if (this.finishedTools.has(taskId)) {
+        continue;
+      }
+      this.finishedTools.add(taskId);
+      const finished: MappedToolEvent = {
+        type: "toolFinished",
+        toolName: this.taskToolNames.get(taskId) ?? "tool",
+        callId: taskId,
+        success: false,
+        interrupted: true,
+      };
+      this.toolEvents.push(finished);
+      closed.push(finished);
+    }
+    return closed;
   }
 
   private ingestUsage(
