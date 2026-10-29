@@ -365,6 +365,114 @@ function makeWorkspaceDefaultHost(workspaceDefaultModel: SessionModelSelection |
     sessionUsageFor: () => undefined,
     buildCreateSessionOptions: async () =>
       workspaceDefaultModel ? { initialModel: workspaceDefaultModel } : undefined,
+    effectiveChildModel: async (
+      _workspaceId: string,
+      explicit: SessionModelSelection | undefined,
+    ) => explicit ?? workspaceDefaultModel,
+    createChildWorktree: async () => {
+      throw new Error("no worktree in this spec");
+    },
+    getQueuedComposerMessages: () => [],
+    seedSession: () => {},
+    transcriptFor: (ref: SessionRef) => (ref.sessionId === spawnedSessionId ? childTranscript : []),
+    transcriptForKey: () => [],
+    replaceTranscript: () => {},
+    isTranscriptLoaded: () => true,
+    getSessionError: () => undefined,
+    setSessionError: () => {},
+    submitComposerToSession: async () => ({}) as never,
+  };
+  const owner = createOrchestrationOwner(
+    host as unknown as Parameters<typeof createOrchestrationOwner>[0],
+  );
+  return {
+    owner,
+    children: () => children,
+    createChildSessionCalls,
+    seenModel: () => seenModel,
+  };
+}
+
+function makeAppGlobalHost(globalDefaultModel: SessionModelSelection | undefined) {
+  // App-global mode: buildCreateSessionOptions is undefined (per-repo only),
+  // so the child runs on pi's live global default via effectiveChildModel.
+  const createChildSessionCalls: CreateChildSessionCall[] = [];
+  let children: readonly OrchestrationChildThread[] = [];
+  let seenModel: SessionModelSelection | undefined;
+  const childTranscript: TranscriptMessage[] = [
+    { kind: "message", role: "user", id: "u1", text: prompt, createdAt },
+    { kind: "message", role: "assistant", id: "a1", text: "On it.", createdAt },
+  ];
+  const sessionSnapshot = {
+    ref: { workspaceId: "ws", sessionId: spawnedSessionId },
+    workspace: { workspaceId: "ws", path: "/tmp/ws" },
+    title: prompt,
+    preview: "On it.",
+    status: "running",
+    updatedAt: createdAt,
+  };
+  const host = {
+    driver: {
+      cancelCurrentRun: async () => {},
+      createSession: async () => sessionSnapshot,
+      setChildIsolation: () => {},
+      sendCustomMessage: async () => {},
+    },
+    driverForSession: () => host.driver,
+    createChildSession: async (
+      workspace: WorkspaceRef,
+      sessionOptions: CreateSessionOptions | undefined,
+      runtime: OrchestrationChildRuntime,
+    ) => {
+      createChildSessionCalls.push({ workspace, options: sessionOptions, runtime });
+      return sessionSnapshot;
+    },
+    resolveChildRuntime: (input: { model: SessionModelSelection | undefined }) => {
+      seenModel = input.model;
+      return decideChildRuntime("auto", {
+        model: input.model,
+        metaOAuth: true,
+        museAvailable: true,
+      });
+    },
+    initialize: async () => {},
+    orchestrationState: () => ({
+      selectedWorkspaceId: "ws",
+      selectedSessionId: "parent",
+      workspaces: [],
+      orchestrationChildren: children,
+    }),
+    replaceOrchestrationChildren: (next: readonly OrchestrationChildThread[]) => {
+      children = [...next];
+    },
+    refreshState: async () => ({}) as never,
+    emit: () => ({}) as never,
+    withError: async () => ({}) as never,
+    persistUiState: async () => {},
+    schedulePersistUiState: () => {},
+    workspaceRefFromState: () => ({ workspaceId: "ws", path: "/tmp/ws" }),
+    sessionFromState: (ref: SessionRef) =>
+      ref.sessionId === "parent" || ref.sessionId === spawnedSessionId
+        ? { status: "running", title: "thread", updatedAt: createdAt }
+        : undefined,
+    ensureSessionReady: async () => undefined,
+    ensureSessionSubscription: async () => {},
+    subscribeToSessionEvents: () => () => {},
+    updateSessionConfig: () => {},
+    isOrchestratorSession: () => false,
+    sidekickModelFor: () => undefined,
+    defaultScoutModel: () => undefined,
+    sidekickThinkingLevelFor: () => undefined,
+    defaultScoutThinkingLevel: () => undefined,
+    defaultSidekickThinkingLevel: () => DEFAULT_SIDEKICK_THINKING_LEVEL,
+    sessionModelFor: () => undefined,
+    sessionThinkingLevelFor: () => undefined,
+    sessionUsageFor: () => undefined,
+    buildCreateSessionOptions: async () => undefined,
+    effectiveChildModel: async (
+      _workspaceId: string,
+      explicit: SessionModelSelection | undefined,
+    ) => explicit ?? globalDefaultModel,
     createChildWorktree: async () => {
       throw new Error("no worktree in this spec");
     },
@@ -421,6 +529,23 @@ test("a workspace-default non-meta model with no sidekick stays on pi", async ()
   expect(createChildSessionCalls[0]?.options?.initialModel).toEqual(otherSidekick);
   expect(children()).toHaveLength(1);
   expect(children()[0]?.runtime).toBeUndefined();
+});
+
+test("an app-global pi default meta model with no sidekick routes to muse-cli", async () => {
+  const { owner, children, createChildSessionCalls, seenModel } =
+    makeAppGlobalHost(metaSidekick);
+
+  await owner.createChildThreadToolResult(
+    { workspaceId: "ws", sessionId: "parent" },
+    { prompt, toolCallId: "call-app-global-meta-default" },
+  );
+
+  expect(seenModel()).toEqual(metaSidekick);
+  expect(createChildSessionCalls).toHaveLength(1);
+  expect(createChildSessionCalls[0]?.runtime).toBe("muse-cli");
+  expect(createChildSessionCalls[0]?.options?.initialModel).toBeUndefined();
+  expect(children()).toHaveLength(1);
+  expect(children()[0]?.runtime).toBe("muse-cli");
 });
 
 function childThread(overrides: Partial<OrchestrationChildThread> = {}): OrchestrationChildThread {

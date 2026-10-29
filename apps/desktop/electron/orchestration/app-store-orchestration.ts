@@ -224,6 +224,12 @@ interface OrchestrationOwnerHost {
   sessionThinkingLevelFor(sessionRef: SessionRef): string | undefined;
   sessionUsageFor(sessionRef: SessionRef): SessionUsageSnapshot | undefined;
   buildCreateSessionOptions(workspaceId: string): Promise<CreateSessionOptions | undefined>;
+  /** Effective model a child will run: explicit pick, else the workspace default pi applies. */
+  effectiveChildModel?(
+    workspaceId: string,
+    explicit: SessionModelSelection | undefined,
+    createOptions?: CreateSessionOptions | undefined,
+  ): Promise<SessionModelSelection | undefined>;
   /**
    * Create an `isolation: "worktree"` child's repo-local worktree and branch
    * from the parent checkout's HEAD, and register it as a workspace.
@@ -634,9 +640,17 @@ async function createChildThreadRecord(
     const thinkingLevel = childThinkingLevel(store, mode, parentRef);
     // Resolve the workspace default through the same path session creation
     // uses, so the runtime decision sees the effective model the child will
-    // actually run: the explicit pick when present, else createOptions.
+    // actually run: the explicit pick when present, else createOptions, else
+    // the app-global pi default (buildCreateSessionOptions is per-repo only).
     const createOptions = await store.buildCreateSessionOptions(input.parentWorkspaceId);
-    const effectiveModel = sidekick ?? createOptions?.initialModel;
+    const effectiveModel =
+      (await store.effectiveChildModel?.(
+        input.parentWorkspaceId,
+        sidekick,
+        createOptions,
+      )) ??
+      sidekick ??
+      createOptions?.initialModel;
     // Meta-subscription sidekicks run on the Muse CLI driver; everything else
     // stays on pi. The tag persists on the record so restarts route the same way.
     const childRuntime =

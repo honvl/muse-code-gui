@@ -601,6 +601,8 @@ export class DesktopAppStore {
       sessionUsageFor: (sessionRef) =>
         this.sessionState.sessionUsageBySession.get(sessionKey(sessionRef)),
       buildCreateSessionOptions: (workspaceId) => this.buildCreateSessionOptions(workspaceId),
+      effectiveChildModel: (workspaceId, explicit, createOptions) =>
+        this.effectiveChildModel(workspaceId, explicit, createOptions),
       createChildWorktree: (parentWorkspaceId, name) =>
         this.createChildWorktree(parentWorkspaceId, name),
       getQueuedComposerMessages: (sessionRef) => this.getQueuedComposerMessages(sessionRef),
@@ -4071,6 +4073,35 @@ export class DesktopAppStore {
         ? { initialThinkingLevel: effectiveSettings.defaultThinkingLevel }
         : {}),
     };
+  }
+
+  /**
+   * Model a new child will actually run: the explicit pick when present, else
+   * the workspace default pi applies. Reuses buildCreateSessionOptions (the
+   * per-repo path session creation uses) and falls back to the live effective
+   * settings for app-global mode, where buildCreateSessionOptions is undefined
+   * and pi applies its global default on its own.
+   */
+  async effectiveChildModel(
+    workspaceId: string,
+    explicit: SessionModelSelection | undefined,
+    createOptions?: CreateSessionOptions | undefined,
+  ): Promise<SessionModelSelection | undefined> {
+    if (explicit) {
+      return explicit;
+    }
+    const options = createOptions ?? (await this.buildCreateSessionOptions(workspaceId));
+    if (options?.initialModel) {
+      return options.initialModel;
+    }
+    const effectiveSettings = await this.loadEffectiveModelSettingsForWorkspace(workspaceId);
+    if (effectiveSettings?.defaultProvider && effectiveSettings?.defaultModelId) {
+      return {
+        provider: effectiveSettings.defaultProvider,
+        modelId: effectiveSettings.defaultModelId,
+      };
+    }
+    return undefined;
   }
 
   /**
