@@ -24,6 +24,7 @@ import {
 } from "./sidekick-reuse";
 import type {
   DesktopAppState,
+  OrchestrationChildRuntime,
   OrchestrationEvidenceRecord,
   OrchestrationChildThread,
   OrchestrationChildThreadStatus,
@@ -173,6 +174,24 @@ type OrchestrationDriver = Pick<
 
 interface OrchestrationOwnerHost {
   readonly driver: OrchestrationDriver;
+  /**
+   * Session-scoped driver for one child/parent ref: the Muse CLI driver for
+   * `muse-cli` sessions, pi otherwise. Optional so older stub hosts keep
+   * working; they fall back to `driver` (pi).
+   */
+  driverForSession?(sessionRef: SessionRef): OrchestrationDriver;
+  /** Create a child session on the given runtime; falls back to `driver.createSession`. */
+  createChildSession?(
+    workspace: WorkspaceRef,
+    options: CreateSessionOptions | undefined,
+    runtime: OrchestrationChildRuntime,
+  ): Promise<SessionSnapshot>;
+  /** Decide a new child's driver from its mode and resolved model; absent means pi. */
+  resolveChildRuntime?(input: {
+    readonly mode: OrchestrationChildMode;
+    readonly model: SessionModelSelection | undefined;
+    readonly parentWorkspaceId: string;
+  }): OrchestrationChildRuntime;
   initialize(): Promise<void>;
   orchestrationState(): OrchestrationStateView;
   replaceOrchestrationChildren(children: readonly OrchestrationChildThread[]): void;
@@ -366,7 +385,14 @@ export function createOrchestrationOwner(
       createChildThreadToolResult(store, parentRef, input, sidekickReuse),
     listThreadsToolResult: (parentRef, options) => listThreadsToolResult(store, parentRef, options),
     readThreadToolResult: (parentRef, threadId, options) =>
-      readThreadToolResult(store, parentRef, threadId, options, readThreadCursors, notifiedStuckTools),
+      readThreadToolResult(
+        store,
+        parentRef,
+        threadId,
+        options,
+        readThreadCursors,
+        notifiedStuckTools,
+      ),
     sendMessageToThreadToolResult: (parentRef, input) =>
       sendMessageToThreadToolResult(store, parentRef, input),
   };
@@ -420,6 +446,23 @@ function isActiveWriterStatus(status: OrchestrationChildThreadStatus): boolean {
  */
 function existingChildWriteScopes(child: OrchestrationChildThread): readonly string[] {
   return child.writeScopes ?? [];
+}
+
+/** Session-scoped driver for a child (or parent) ref; pi unless the host routes it. */
+function childDriver(store: OrchestrationOwnerHost, sessionRef: SessionRef): OrchestrationDriver {
+  return store.driverForSession?.(sessionRef) ?? store.driver;
+}
+
+async function createChildSession(
+  store: OrchestrationOwnerHost,
+  workspace: WorkspaceRef,
+  options: CreateSessionOptions | undefined,
+  runtime: OrchestrationChildRuntime,
+): Promise<SessionSnapshot> {
+  if (store.createChildSession) {
+    return store.createChildSession(workspace, options, runtime);
+  }
+  return store.driver.createSession(workspace, options);
 }
 
 function findConflictingWorker(
@@ -510,7 +553,7 @@ async function createChildThreadRecord(
       throw new Error(existing.latestTranscript || "Failed to start child thread.");
     }
     const childRef = childSessionRef(existing);
-    store.driver.setChildIsolation(childRef, {
+    childDriver(store, childRef).setChildIsolation(childRef, {
       mode: existing.mode ?? "worker",
       workspacePath: store.workspaceRefFromState(existing.childWorkspaceId)?.path ?? workspace.path,
       depth: existing.depth ?? 1,
@@ -589,6 +632,14 @@ async function createChildThreadRecord(
       store.sidekickModelFor(parentRef) ??
       (parentChild ? store.sessionModelFor(parentRef) : undefined);
     const thinkingLevel = childThinkingLevel(store, mode, parentRef);
+    // Meta-subscription sidekicks run on the Muse CLI driver; everything else
+    // stays on pi. The tag persists on the record so restarts route the same way.
+    const childRuntime =
+      store.resolveChildRuntime?.({
+        mode,
+        model: sidekick,
+        parentWorkspaceId: input.parentWorkspaceId,
+      }) ?? "pi";
     const childId = randomUUID();
     let sessionWorkspace = workspace;
     let worktree: ChildWorktree | undefined;
@@ -603,12 +654,17 @@ async function createChildThreadRecord(
       }
     }
     const createOptions = await store.buildCreateSessionOptions(input.parentWorkspaceId);
-    const session = await store.driver.createSession(sessionWorkspace, {
-      ...createOptions,
-      ...(sidekick ? { initialModel: sidekick } : {}),
-      initialThinkingLevel: thinkingLevel,
-      title: titleFromPrompt(displayPrompt),
-    });
+    const session = await createChildSession(
+      store,
+      sessionWorkspace,
+      {
+        ...createOptions,
+        ...(sidekick ? { initialModel: sidekick } : {}),
+        initialThinkingLevel: thinkingLevel,
+        title: titleFromPrompt(displayPrompt),
+      },
+      childRuntime,
+    );
     const childRef = session.ref;
     store.seedSession(session);
     await store.ensureSessionSubscription(childRef);
@@ -616,7 +672,7 @@ async function createChildThreadRecord(
     const now = new Date().toISOString();
     const git = await workspaceGitRef(sessionWorkspace.workspaceId, sessionWorkspace.path);
     const status = toOrchestrationStatus(session.status, childRef, store);
-    store.driver.setChildIsolation(childRef, {
+    childDriver(store, childRef).setChildIsolation(childRef, {
       mode,
       workspacePath: sessionWorkspace.path,
       depth,
@@ -632,6 +688,7 @@ async function createChildThreadRecord(
       goal: displayPrompt,
       mode,
       depth,
+      ...(childRuntime === "muse-cli" ? { runtime: childRuntime } : {}),
       ...(mode === "worker" && !worktree ? { writeScopes: [...newScopes] } : {}),
       ...(worktree
         ? {
@@ -862,7 +919,9 @@ async function cancelChildRun(
   if (!child.childSessionId) {
     return;
   }
-  await store.driver.cancelCurrentRun(childSessionRef(child)).catch(() => undefined);
+  await childDriver(store, childSessionRef(child))
+    .cancelCurrentRun(childSessionRef(child))
+    .catch(() => undefined);
 }
 
 /**
@@ -1060,7 +1119,10 @@ async function reuseSidekickForBrief(
     const thinkingLevel = childThinkingLevel(store, "worker", parentRef);
     if (thinkingLevel !== store.sessionThinkingLevelFor(childSessionRef(child))) {
       try {
-        await store.driver.setSessionThinkingLevel(childSessionRef(child), thinkingLevel);
+        await childDriver(store, childSessionRef(child)).setSessionThinkingLevel(
+          childSessionRef(child),
+          thinkingLevel,
+        );
       } catch {
         return {};
       }
@@ -1130,7 +1192,7 @@ async function countChildCompactions(
   childRef: SessionRef,
 ): Promise<number | undefined> {
   try {
-    const tree = await store.driver.getSessionTree(childRef);
+    const tree = await childDriver(store, childRef).getSessionTree(childRef);
     return tree.nodes.filter((node) => node.kind === "compaction").length;
   } catch {
     return undefined;
@@ -1399,9 +1461,7 @@ export function resolveStuckToolThresholdMs(env: NodeJS.ProcessEnv = process.env
 
 export function runningToolCalls(transcript: readonly TranscriptMessage[]): TimelineToolCall[] {
   return transcript
-    .filter(
-      (item): item is TimelineToolCall => item.kind === "tool" && item.status === "running",
-    )
+    .filter((item): item is TimelineToolCall => item.kind === "tool" && item.status === "running")
     .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
 }
 
@@ -1515,7 +1575,7 @@ async function notifyStuckChildTool(
     threshold: formatToolElapsedMs(thresholdMs),
   });
   try {
-    await store.driver.sendCustomMessage(
+    await childDriver(store, parentRef).sendCustomMessage(
       parentRef,
       { customType: CHILD_STUCK_CUSTOM_TYPE, text, display: true },
       { triggerTurn: true, deliverAs: "followUp" },
@@ -1704,7 +1764,13 @@ async function readThreadToolResult(
     content: [
       {
         type: "text",
-        text: formatThreadReadResult({ ...details, title, status: displayStatus, messages, notice }),
+        text: formatThreadReadResult({
+          ...details,
+          title,
+          status: displayStatus,
+          messages,
+          notice,
+        }),
       },
     ],
     details,
@@ -1751,7 +1817,9 @@ async function deliverMessageToThread(
   // Waking an idle worker re-acquires its writer slot, so it faces the same
   // scope check as a fresh spawn. A running (or reuse-claimed) worker already
   // holds the slot. Read the record by id so the status is current.
-  const liveChild = target.child ? (childRecordById(store, target.child.id) ?? target.child) : undefined;
+  const liveChild = target.child
+    ? (childRecordById(store, target.child.id) ?? target.child)
+    : undefined;
   const idleWorker =
     liveChild &&
     liveChild.mode !== "scout" &&
@@ -1788,12 +1856,12 @@ async function deliverMessageToThread(
     // interrupt path no settle wait follows: the rescue already waited out
     // the abort, and a still-wedged pi queues the message as the next turn,
     // which starts once the tool settles.
-    const outcome = await store.driver.rescueCurrentRun(target.sessionRef);
+    const outcome = await childDriver(store, target.sessionRef).rescueCurrentRun(target.sessionRef);
     rescued = true;
     forced = outcome.forced;
   } else if (running && input.interrupt === true) {
     try {
-      await store.driver.cancelCurrentRun(target.sessionRef);
+      await childDriver(store, target.sessionRef).cancelCurrentRun(target.sessionRef);
       interrupted = true;
     } catch {
       interrupted = false;
@@ -1924,9 +1992,7 @@ async function hydrateOrchestrationChildren(store: OrchestrationOwnerHost): Prom
   }
 }
 
-async function hydrateRemainingOrchestrationChildren(
-  store: OrchestrationOwnerHost,
-): Promise<void> {
+async function hydrateRemainingOrchestrationChildren(store: OrchestrationOwnerHost): Promise<void> {
   const state = store.orchestrationState();
   const visibleKeys = new Set(
     state.orchestrationChildren
@@ -2020,7 +2086,7 @@ function registerChildIsolation(
     store.workspaceRefFromState(child.parentWorkspaceId);
   if (!workspace) return;
   try {
-    store.driver.setChildIsolation(childSessionRef(child), {
+    childDriver(store, childSessionRef(child)).setChildIsolation(childSessionRef(child), {
       mode: child.mode ?? "worker",
       workspacePath: workspace.path,
       depth: child.depth ?? 1,
@@ -2197,7 +2263,7 @@ async function deliverChildReport(
   triggerTurn = true,
 ): Promise<boolean> {
   try {
-    await store.driver.sendCustomMessage(
+    await childDriver(store, parentRef).sendCustomMessage(
       parentRef,
       { customType: CHILD_REPORT_CUSTOM_TYPE, text, display: true },
       { triggerTurn, deliverAs: "followUp" },
@@ -2670,10 +2736,9 @@ function projectOrchestrationChild(
   // background hydration pass loads the rest shortly after startup. A loaded
   // transcript is sufficient evidence on its own: even without a session
   // snapshot, hasStartedRun can tell a finished child from a never-started one.
-  const derivedStatus =
-    transcriptLoaded
-      ? toOrchestrationStatus(session?.status ?? "idle", childRef, store)
-      : (liveChildStatus(session?.status, childRef, store) ?? child.status);
+  const derivedStatus = transcriptLoaded
+    ? toOrchestrationStatus(session?.status ?? "idle", childRef, store)
+    : (liveChildStatus(session?.status, childRef, store) ?? child.status);
   // A sidekick reuse in flight holds `queued` until its live status takes over.
   const status =
     sidekickClaimsByHost.get(store)?.has(child.id) && !isActiveWriterStatus(derivedStatus)

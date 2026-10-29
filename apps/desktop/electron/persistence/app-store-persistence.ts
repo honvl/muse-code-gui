@@ -22,7 +22,7 @@ import { decodeTaskWorkbenchTemplate, type TaskWorkbenchTemplate } from "../../c
 
 export interface PersistedUiState {
   readonly version?:
-    2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21;
+    2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22;
   readonly taskWorkbenchTemplatesBySession?: Record<string, TaskWorkbenchTemplate>;
   readonly selectedWorkspaceId?: string;
   readonly selectedSessionId?: string;
@@ -80,8 +80,9 @@ export interface PersistedUiState {
  * children; a v19 child without it claims the whole workspace. v21 adds the
  * optional worktree fields (`worktreePath`, `branch`, `baseCommit`) of an
  * `isolation: "worktree"` child; an older child has none and shares the checkout.
+ * v22 adds the optional `runtime` driver tag of a child; an older child runs on pi.
  */
-const UI_STATE_VERSION = 21;
+const UI_STATE_VERSION = 22;
 const CHILD_WORKTREE_KEYS = ["worktreePath", "branch", "baseCommit"] as const;
 
 export interface LegacyPersistedUiState extends PersistedUiState {
@@ -499,6 +500,7 @@ function validateUiState(value: unknown): Record<string, unknown> {
           "mode",
           "depth",
           "writeScopes",
+          "runtime",
           ...CHILD_WORKTREE_KEYS,
           "status",
           "latestTranscript",
@@ -536,6 +538,9 @@ function validateUiState(value: unknown): Record<string, unknown> {
         `${path}.status`,
       );
       optional(record, "mode", (v) => v === "scout" || v === "worker", `${path}.mode`);
+      optional(record, "runtime", (v) => v === "pi" || v === "muse-cli", `${path}.runtime`);
+      if (record.runtime !== undefined && typeof root.version === "number" && root.version < 22)
+        fail(`${path}.runtime before v22`);
       optional(
         record,
         "depth",
@@ -730,6 +735,11 @@ function toPersistedOrchestrationChildren(value: unknown): OrchestrationChildThr
           (token): token is string => typeof token === "string" && token !== "",
         )
       : undefined;
+    // Missing runtime (every file before v22) means pi.
+    const runtime =
+      candidate.runtime === "pi" || candidate.runtime === "muse-cli"
+        ? candidate.runtime
+        : undefined;
     const worktreePath = stringValue(candidate.worktreePath);
     const branch = stringValue(candidate.branch);
     const baseCommit = stringValue(candidate.baseCommit);
@@ -748,6 +758,7 @@ function toPersistedOrchestrationChildren(value: unknown): OrchestrationChildThr
         ...(mode ? { mode } : {}),
         ...(depth !== undefined ? { depth } : {}),
         ...(writeScopes ? { writeScopes } : {}),
+        ...(runtime === "muse-cli" ? { runtime } : {}),
         ...worktree,
         status,
         latestTranscript:

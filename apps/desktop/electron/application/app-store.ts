@@ -16,10 +16,22 @@ import {
   isExtensionUiDialogRequest,
   PiSdkDriver,
   type PiSdkDriverConfig,
+  RUNTIME_SCHEMA_VERSION,
   SessionLeasedError,
   type SuggestionSourceMessage,
 } from "@pi-gui/pi-sdk-driver";
 import type { SessionCatalogEntry } from "@pi-gui/catalogs";
+import { MuseCliDriver, museBinaryAvailable, resolveMuseBinaryPath } from "@pi-gui/muse-cli-driver";
+import { SessionDriverRouter } from "./session-driver-router";
+import {
+  decideChildRuntime,
+  readMetaCredentialType,
+  resolveSidekickRuntimeOverride,
+} from "../orchestration/sidekick-runtime";
+import type {
+  OrchestrationChildMode,
+  OrchestrationChildRuntime,
+} from "../../contracts/desktop-state";
 import type {
   NavigateSessionTreeOptions,
   NavigateSessionTreeResult,
@@ -270,6 +282,8 @@ export class DesktopAppStore {
   private readonly sessionSchemaInfoCache = new Map<string, SessionSchemaInfo>();
   private readonly sessionSchemaInfoInFlight = new Set<string>();
   private readonly driver: PiSdkDriver;
+  private readonly museCliDriver: MuseCliDriver;
+  private readonly sessionRouter: SessionDriverRouter;
   private readonly catalogStore: JsonCatalogStore;
   private readonly worktreeManager: GitWorktreeManager;
   private readonly worktreeRoot: string;
@@ -356,6 +370,16 @@ export class DesktopAppStore {
     };
 
     this.driver = new PiSdkDriver(driverOptions);
+    this.museCliDriver = new MuseCliDriver({
+      catalogStorage: this.catalogStore,
+      sessionFileDir: join(options.userDataDir, "muse-sessions"),
+    });
+    this.sessionRouter = new SessionDriverRouter(
+      this.driver,
+      this.museCliDriver,
+      (sessionRef) => this.isMuseChildSession(sessionRef),
+      RUNTIME_SCHEMA_VERSION,
+    );
     this.worktreeRoot = join(options.userDataDir, "worktrees");
     this.isAppWorktreePath = appWorktreeRootMatcher(this.worktreeRoot);
     this.worktreeManager = new GitWorktreeManager({
@@ -370,7 +394,7 @@ export class DesktopAppStore {
     this.shouldKeepSessionDialogs = options.shouldKeepSessionDialogs ?? (() => false);
 
     this.conversationOwner = createConversationOwner({
-      driver: this.driver,
+      driver: this.sessionRouter,
       conversationState: {
         activeAssistantMessageBySession: this.sessionState.activeAssistantMessageBySession,
         composerAttachmentsBySession: this.sessionState.composerAttachmentsBySession,
@@ -470,7 +494,7 @@ export class DesktopAppStore {
     });
 
     this.workspaceOwner = createWorkspaceOwner({
-      driver: this.driver,
+      driver: this.sessionRouter,
       catalogStore: this.catalogStore,
       worktreeManager: this.worktreeManager,
       worktreeRoot: this.worktreeRoot,
@@ -536,7 +560,7 @@ export class DesktopAppStore {
     });
 
     this.orchestrationOwner = createOrchestrationOwner({
-      driver: this.driver,
+      driver: this.sessionRouter,
       initialize: () => this.initialize(),
       orchestrationState: () => ({
         selectedWorkspaceId: this.state.selectedWorkspaceId,
@@ -567,6 +591,11 @@ export class DesktopAppStore {
       defaultSidekickThinkingLevel: () =>
         this.state.defaultSidekickThinkingLevel ?? DEFAULT_SIDEKICK_THINKING_LEVEL,
       sessionModelFor: (sessionRef) => this.sessionModelFor(sessionRef),
+      driverForSession: (_sessionRef) => this.sessionRouter,
+      createChildSession: (workspace, options, runtime) =>
+        this.createChildSession(workspace, options, runtime),
+      resolveChildRuntime: (input) =>
+        this.resolveChildRuntimeFor(input.mode, input.model, input.parentWorkspaceId),
       sessionThinkingLevelFor: (sessionRef) =>
         this.sessionState.sessionConfigBySession.get(sessionKey(sessionRef))?.thinkingLevel,
       sessionUsageFor: (sessionRef) =>
@@ -1404,7 +1433,7 @@ export class DesktopAppStore {
     await this.initialize();
     const sessionRef = toSessionRef(target);
     await this.ensureSessionReady(sessionRef);
-    return this.driver.getSessionTree(sessionRef);
+    return this.sessionRouter.getSessionTree(sessionRef);
   }
 
   async navigateSessionTree(
@@ -1416,7 +1445,7 @@ export class DesktopAppStore {
     const sessionRef = toSessionRef(target);
     await this.ensureSessionReady(sessionRef);
 
-    const result = await this.driver.navigateSessionTree(sessionRef, targetId, options);
+    const result = await this.sessionRouter.navigateSessionTree(sessionRef, targetId, options);
     if (!result.cancelled && !result.aborted) {
       await this.reloadTranscriptFromDriver(sessionRef);
       await this.refreshSessionCommandsFor(sessionRef);
@@ -2181,7 +2210,7 @@ export class DesktopAppStore {
         .flatMap((workspaceId) => this.sessionRefsForWorkspace(workspaceId))
         // The driver resets the thread's extension UI as it reloads (a "reset" host UI
         // request, before the extensions start again), whether now or after the turn.
-        .map((sessionRef) => this.driver.reloadSessionWhenIdle(sessionRef)),
+        .map((sessionRef) => this.sessionRouter.reloadSessionWhenIdle(sessionRef)),
     );
     const failed = reloads.filter((result) => result.status === "rejected");
     for (const result of failed) {
@@ -3031,7 +3060,7 @@ export class DesktopAppStore {
     await this.ensureTranscriptLoaded(sessionRef);
     let snapshot: SessionSnapshot | undefined;
     if (!this.sessionState.sessionSubscriptions.has(sessionKey(sessionRef))) {
-      snapshot = await this.driver.openSession(sessionRef);
+      snapshot = await this.sessionRouter.openSession(sessionRef);
       this.updateSessionConfig(sessionRef, snapshot.config);
     }
     await this.ensureSessionSubscribed(sessionRef);
@@ -3041,7 +3070,7 @@ export class DesktopAppStore {
 
   async ensureSessionSubscription(sessionRef: SessionRef): Promise<void> {
     if (!this.sessionState.sessionSubscriptions.has(sessionKey(sessionRef))) {
-      const snapshot = await this.driver.openSession(sessionRef);
+      const snapshot = await this.sessionRouter.openSession(sessionRef);
       this.updateSessionConfig(sessionRef, snapshot.config);
       this.updateQueuedComposerMessages(sessionRef, snapshot.queuedMessages);
     }
@@ -3055,7 +3084,7 @@ export class DesktopAppStore {
     }
 
     const transcript = timelineFromDriverTranscript(
-      await this.driver.getTranscript(sessionRef),
+      await this.sessionRouter.getTranscript(sessionRef),
       extensionToolLabels(this.runtimeByWorkspace.get(sessionRef.workspaceId)),
     );
     this.sessionState.loadedTranscriptKeys.add(key);
@@ -3066,7 +3095,7 @@ export class DesktopAppStore {
   async reloadTranscriptFromDriver(sessionRef: SessionRef): Promise<void> {
     const key = sessionKey(sessionRef);
     const transcript = timelineFromDriverTranscript(
-      await this.driver.getTranscript(sessionRef),
+      await this.sessionRouter.getTranscript(sessionRef),
       extensionToolLabels(this.runtimeByWorkspace.get(sessionRef.workspaceId)),
     );
     this.sessionState.loadedTranscriptKeys.add(key);
@@ -3198,7 +3227,7 @@ export class DesktopAppStore {
   ): Promise<{ readonly mtimeMs: number; readonly size: number } | undefined> {
     let path: string | undefined;
     try {
-      path = await this.driver.getSessionFilePath(sessionRef);
+      path = await this.sessionRouter.getSessionFilePath(sessionRef);
     } catch {
       path = undefined;
     }
@@ -3307,7 +3336,7 @@ export class DesktopAppStore {
       return;
     }
 
-    const unsubscribe = this.driver.subscribe(sessionRef, (event) => {
+    const unsubscribe = this.sessionRouter.subscribe(sessionRef, (event) => {
       this.enqueueSessionEvent(event, key);
     });
     this.sessionState.sessionSubscriptions.set(key, unsubscribe);
@@ -3402,7 +3431,7 @@ export class DesktopAppStore {
     this.emit();
     await Promise.all(
       pendingDialogs.map((dialog) =>
-        this.driver.respondToHostUiRequest(sessionRef, {
+        this.sessionRouter.respondToHostUiRequest(sessionRef, {
           requestId: dialog.requestId,
           cancelled: true,
         } satisfies HostUiResponse),
@@ -3440,14 +3469,14 @@ export class DesktopAppStore {
     this.clearExtensionDialogTimeout(sessionRef, response.requestId);
 
     return this.withErrorHandling(async () => {
-      await this.driver.respondToHostUiRequest(sessionRef, response);
+      await this.sessionRouter.respondToHostUiRequest(sessionRef, response);
       return this.refreshState({ clearLastError: true });
     });
   }
 
   private async refreshSessionCommands(sessionRef: SessionRef): Promise<void> {
     const key = sessionKey(sessionRef);
-    const commands = await this.driver.getSessionCommands(sessionRef);
+    const commands = await this.sessionRouter.getSessionCommands(sessionRef);
     this.sessionState.sessionCommandsBySession.set(key, [...commands]);
   }
 
@@ -4528,7 +4557,7 @@ export class DesktopAppStore {
       return;
     }
     this.sessionSchemaInfoInFlight.add(key);
-    void this.driver
+    void this.sessionRouter
       .getSessionSchemaInfo(sessionRef)
       .then((info) => {
         this.sessionSchemaInfoCache.set(key, info);
@@ -5040,6 +5069,67 @@ export class DesktopAppStore {
       : undefined;
   }
 
+  /** True when the session belongs to a child tagged for the Muse CLI driver. */
+  private isMuseChildSession(sessionRef: SessionRef): boolean {
+    return this.state.orchestrationChildren.some(
+      (child) =>
+        child.runtime === "muse-cli" &&
+        child.childWorkspaceId === sessionRef.workspaceId &&
+        child.childSessionId === sessionRef.sessionId,
+    );
+  }
+
+  private async createChildSession(
+    workspace: WorkspaceRef,
+    options: CreateSessionOptions | undefined,
+    runtime: OrchestrationChildRuntime,
+  ): Promise<SessionSnapshot> {
+    if (runtime !== "muse-cli") {
+      return this.driver.createSession(workspace, options);
+    }
+    const snapshot = await this.museCliDriver.createSession(workspace, options);
+    this.sessionRouter.noteMuseSession(snapshot.ref);
+    return snapshot;
+  }
+
+  private resolveChildRuntimeFor(
+    mode: OrchestrationChildMode,
+    model: SessionModelSelection | undefined,
+    parentWorkspaceId: string,
+  ): OrchestrationChildRuntime {
+    const override = resolveSidekickRuntimeOverride();
+    if (override === "muse-cli" || override === "pi") {
+      return override;
+    }
+    if (model?.provider !== "meta" || !this.isMetaOAuthSubscription(parentWorkspaceId)) {
+      return "pi";
+    }
+    if (!museBinaryAvailable(resolveMuseBinaryPath())) {
+      console.warn("[app-store] muse CLI not found; keeping the sidekick child on pi.");
+      return "pi";
+    }
+    void mode;
+    return decideChildRuntime(override, {
+      model,
+      metaOAuth: true,
+      museAvailable: true,
+    });
+  }
+
+  /**
+   * True when the Meta credential is an OAuth subscription, read through pi's
+   * runtime provider records when available, else pi's auth file directly.
+   */
+  private isMetaOAuthSubscription(workspaceId: string): boolean {
+    const meta = this.runtimeByWorkspace
+      .get(workspaceId)
+      ?.providers.find((provider) => provider.id === "meta");
+    if (meta) {
+      return meta.authType === "oauth";
+    }
+    return readMetaCredentialType() === "oauth";
+  }
+
   private orchestratorModeRecord(): Record<string, boolean> | undefined {
     const entries: Array<[string, boolean]> = [];
     for (const [key, config] of this.sessionState.sessionConfigBySession) {
@@ -5084,9 +5174,11 @@ export class DesktopAppStore {
     // reports true the driver knows; pushing again would persist and emit
     // another sessionUpdated, looping back here with unbounded catalog writes.
     if (merged?.orchestratorMode === true && config?.orchestratorMode !== true) {
-      void this.driver.setSessionOrchestratorMode(sessionRef, true).catch((error: unknown) => {
-        console.warn(`[app-store] orchestrator rehydrate failed for ${key}:`, error);
-      });
+      void this.sessionRouter
+        .setSessionOrchestratorMode(sessionRef, true)
+        .catch((error: unknown) => {
+          console.warn(`[app-store] orchestrator rehydrate failed for ${key}:`, error);
+        });
     }
     // Rehydrate only when the driver snapshot lacks (or differs from) the selection.
     // When it already reports the same selection the driver knows; pushing again

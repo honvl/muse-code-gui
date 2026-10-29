@@ -72,7 +72,7 @@ test("scout and sidekick reasoning round-trip through ui-state", async () => {
   expect(decoded.defaultScoutThinkingLevel).toBe("low");
   expect(decoded.sidekickThinkingBySession).toEqual({ "ws:lead": "medium" });
   const written = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
-  expect(written.version).toBe(21);
+  expect(written.version).toBe(22);
 });
 
 test("ui-state without reasoning overrides loads as absent", async () => {

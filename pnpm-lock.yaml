@@ -112,6 +112,9 @@ importers:
       '@pi-gui/extension-ui':
         specifier: workspace:*
         version: link:../../packages/extension-ui
+      '@pi-gui/muse-cli-driver':
+        specifier: workspace:*
+        version: link:../../packages/muse-cli-driver
       '@pi-gui/pi-sdk-driver':
         specifier: workspace:*
         version: link:../../packages/pi-sdk-driver

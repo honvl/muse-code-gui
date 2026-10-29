@@ -414,6 +414,16 @@ export class MuseCliDriver implements SessionDriver {
     });
   }
 
+  /** Rebuilds now, or reports deferred while a turn is running. */
+  async reloadSessionWhenIdle(sessionRef: SessionRef): Promise<"reloaded" | "deferred"> {
+    const record = this.requireRecord(sessionRef);
+    if (record.running) {
+      return "deferred";
+    }
+    await this.reloadSession(sessionRef);
+    return "reloaded";
+  }
+
   async getSessionTree(_sessionRef: SessionRef): Promise<SessionTreeSnapshot> {
     throw new Error(`${UNSUPPORTED} tree navigation; the transcript is linear.`);
   }

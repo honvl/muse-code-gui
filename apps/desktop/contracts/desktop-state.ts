@@ -182,6 +182,9 @@ export interface OrchestrationChildTranscriptMessage {
 
 export type OrchestrationChildMode = "scout" | "worker";
 
+/** Which driver runs a child's session. Absent (every pre-v22 record) means pi. */
+export type OrchestrationChildRuntime = "pi" | "muse-cli";
+
 export interface OrchestrationChildThread {
   readonly id: string;
   readonly sourceToolCallId?: string;
@@ -208,6 +211,12 @@ export interface OrchestrationChildThread {
   readonly worktreePath?: string;
   readonly branch?: string;
   readonly baseCommit?: string;
+  /**
+   * Driver for this child's session: "muse-cli" routes to the Muse CLI
+   * driver, anything else (including absent) to pi-sdk-driver. Persisted so
+   * restarts route the same way.
+   */
+  readonly runtime?: OrchestrationChildRuntime;
   readonly status: OrchestrationChildThreadStatus;
   readonly latestTranscript: string;
   readonly transcript: readonly OrchestrationChildTranscriptMessage[];

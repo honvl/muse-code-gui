@@ -65,7 +65,7 @@ test("reads v15 ui-state without lastInteractedAt and writes v18", async () => {
     version: number;
     lastInteractedAtBySession: Record<string, string>;
   };
-  expect(written.version).toBe(21);
+  expect(written.version).toBe(22);
   expect(written.lastInteractedAtBySession).toEqual({ "ws:sess": "2026-09-21T12:00:00.000Z" });
 });
 
@@ -83,7 +83,7 @@ test("reads v16 ui-state without threadGrouping and writes the saved choice as v
     version: number;
     threadGrouping: string;
   };
-  expect(written.version).toBe(21);
+  expect(written.version).toBe(22);
   expect(written.threadGrouping).toBe("workspace");
 });
 
@@ -109,7 +109,7 @@ test("reads ui-state without folded folders and writes the collapsed ids", async
     version: number;
     collapsedWorkspaceIds: readonly string[];
   };
-  expect(written.version).toBe(21);
+  expect(written.version).toBe(22);
   expect(written.collapsedWorkspaceIds).toEqual(["alpha"]);
   expect((await readPersistedUiState(path)).collapsedWorkspaceIds).toEqual(["alpha"]);
 });
@@ -199,7 +199,7 @@ test("sidekick model selections round-trip through ui-state", async () => {
     version: number;
     sidekickBySession: Record<string, { provider: string; modelId: string }>;
   };
-  expect(written.version).toBe(21);
+  expect(written.version).toBe(22);
   expect(written.sidekickBySession).toEqual({
     "ws:sess": { provider: "acme", modelId: "sidekick-1" },
   });
@@ -216,7 +216,7 @@ test("default lead model round-trips through ui-state", async () => {
     version: number;
     defaultLeadModel: { provider: string; modelId: string };
   };
-  expect(written.version).toBe(21);
+  expect(written.version).toBe(22);
   expect(written.defaultLeadModel).toEqual({ provider: "acme", modelId: "lead-1" });
 });
 
@@ -252,7 +252,7 @@ test("lead and sidekick reasoning defaults round-trip and stay absent until chos
   expect(decoded.defaultSidekickThinkingLevel).toBe("off");
   const written = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
   // Optional app-global fields like the scout reasoning: no format version bump.
-  expect(written.version).toBe(21);
+  expect(written.version).toBe(22);
   expect(written.defaultLeadThinkingLevel).toBe("minimal");
   expect(written.defaultSidekickThinkingLevel).toBe("off");
 });
@@ -268,7 +268,7 @@ test("default scout model round-trips through ui-state", async () => {
     version: number;
     defaultScoutModel: { provider: string; modelId: string };
   };
-  expect(written.version).toBe(21);
+  expect(written.version).toBe(22);
   expect(written.defaultScoutModel).toEqual({ provider: "acme", modelId: "scout-1" });
 });
 
@@ -307,7 +307,7 @@ test("orchestration child write scopes round-trip through ui-state", async () =>
     ],
   });
   const written = JSON.parse(await readFile(path, "utf8")) as { version: number };
-  expect(written.version).toBe(21);
+  expect(written.version).toBe(22);
   const decoded = await readPersistedUiState(path);
   expect(decoded.orchestrationChildren?.[0]?.writeScopes).toEqual(["apps/a", "packages/b"]);
   expect(decoded.orchestrationChildren?.[1]?.writeScopes).toEqual([]);
@@ -327,7 +327,7 @@ test("a v19 ui-state without write scopes loads its workers as whole-workspace",
   expect(decoded.orchestrationChildren?.[0]?.writeScopes).toBeUndefined();
   await writePersistedUiState(path, { orchestrationChildren: decoded.orchestrationChildren });
   const rewritten = await readPersistedUiState(path);
-  expect(rewritten.version).toBe(21);
+  expect(rewritten.version).toBe(22);
   expect(rewritten.orchestrationChildren?.[0]?.writeScopes).toBeUndefined();
   // The first v21 write keeps the exact v19 bytes, so a downgrade can restore them.
   const dir = join(path, "..");
@@ -374,7 +374,7 @@ test("worktree child fields round-trip through ui-state v21", async () => {
     ],
   });
   const written = JSON.parse(await readFile(path, "utf8")) as { version: number };
-  expect(written.version).toBe(21);
+  expect(written.version).toBe(22);
   const decoded = await readPersistedUiState(path);
   expect(decoded.orchestrationChildren?.[0]).toMatchObject(WORKTREE_FIELDS);
   expect(decoded.orchestrationChildren?.[1]?.worktreePath).toBeUndefined();
@@ -393,7 +393,7 @@ test("a v20 ui-state without worktree fields loads its children as shared-checko
   expect(decoded.orchestrationChildren?.[0]?.writeScopes).toEqual(["apps/a"]);
   expect(decoded.orchestrationChildren?.[0]?.worktreePath).toBeUndefined();
   await writePersistedUiState(path, { orchestrationChildren: decoded.orchestrationChildren });
-  expect((await readPersistedUiState(path)).version).toBe(21);
+  expect((await readPersistedUiState(path)).version).toBe(22);
   const dir = join(path, "..");
   const copies = (await readdir(dir)).filter((name) =>
     /^ui-state\.pre-workbench-v20\..+\.json$/.test(name),

@@ -118,6 +118,7 @@ apps/desktop/
 packages/
   session-driver/        portable session contracts
   catalogs/              catalog contracts and storage
+  muse-cli-driver/       sidekick SessionDriver backed by the official Muse CLI
   pi-sdk-driver/         upstream Pi adapter and compatibility seams
   extension-ui/          local desktop-view author helper and Chord wire adapter
 ```
