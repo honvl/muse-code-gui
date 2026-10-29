@@ -678,6 +678,12 @@ async function createChildThreadRecord(
       {
         ...createOptions,
         ...(sidekick ? { initialModel: sidekick } : {}),
+        // Muse children shell out with --model and the Muse default differs
+        // from pi's: without an explicit initialModel the run ignores the
+        // model routing resolved above. Carry the effective model through.
+        ...(childRuntime === "muse-cli" && effectiveModel
+          ? { initialModel: effectiveModel }
+          : {}),
         initialThinkingLevel: thinkingLevel,
         title: titleFromPrompt(displayPrompt),
       },
