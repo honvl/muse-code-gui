@@ -632,12 +632,17 @@ async function createChildThreadRecord(
       store.sidekickModelFor(parentRef) ??
       (parentChild ? store.sessionModelFor(parentRef) : undefined);
     const thinkingLevel = childThinkingLevel(store, mode, parentRef);
+    // Resolve the workspace default through the same path session creation
+    // uses, so the runtime decision sees the effective model the child will
+    // actually run: the explicit pick when present, else createOptions.
+    const createOptions = await store.buildCreateSessionOptions(input.parentWorkspaceId);
+    const effectiveModel = sidekick ?? createOptions?.initialModel;
     // Meta-subscription sidekicks run on the Muse CLI driver; everything else
     // stays on pi. The tag persists on the record so restarts route the same way.
     const childRuntime =
       store.resolveChildRuntime?.({
         mode,
-        model: sidekick,
+        model: effectiveModel,
         parentWorkspaceId: input.parentWorkspaceId,
       }) ?? "pi";
     const childId = randomUUID();
@@ -653,7 +658,6 @@ async function createChildThreadRecord(
         throw new ChildWorktreeError(`Could not create the child worktree: ${errorMessage(error)}`);
       }
     }
-    const createOptions = await store.buildCreateSessionOptions(input.parentWorkspaceId);
     const session = await createChildSession(
       store,
       sessionWorkspace,
