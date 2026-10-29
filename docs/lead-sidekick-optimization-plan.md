@@ -220,6 +220,7 @@ Disjoint path scopes in one checkout still share build outputs, lockfiles and th
   - When a transcript has an `agent` tool row, link the subagent's session (found by its `agent:<type>: <desc>` name and worktree cwd in the session catalog) as a read-only lane under the parent in the thread rail. Show its type, description, status, current tool and worktree branch.
   - Delete the orphaned `use-activity-auto-open.ts` constant, or wire it up.
   - Don't modify the third-party extension. Report the resume/cwd and registry-persistence bugs upstream.
+- **8c. Enforced: lead subagent-tool gate (measured 2026-10-28).** One session spent ~$44 on Opus `agent` subagents versus ~$0.30 for equivalent `create_child_thread` children on the sidekick. The Lead-mode gate now blocks `agent` in Lead mode only (generic `leadBlockedTools`, desktop passes `["agent"]`, `agent_output` stays allowed, `PI_APP_LEAD_ALLOW_SUBAGENT_TOOL=1` escape hatch), hides it from the lead's active set via `setActiveTools` (block remains as backstop), and the lead prompt has one line directing to `create_child_thread` instead of third-party subagent tools.
 
 ### Acceptance criteria
 
