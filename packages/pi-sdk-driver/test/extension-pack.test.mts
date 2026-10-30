@@ -33,7 +33,7 @@ await test("pack package merge is additive and idempotent", () => {
 });
 
 await test("pack extension merge skips already-registered absolute paths", () => {
-  const shipped = ["/ship/muse-usage/index.ts", "/ship/subagents/index.ts"];
+  const shipped = ["/ship/muse-usage/index.ts", "/ship/extra/index.ts"];
   const first = mergePackExtensions(["/user/custom/index.ts"], shipped);
   assert.equal(first.changed, true);
   assert.deepEqual(first.extensions, ["/user/custom/index.ts", ...shipped]);
@@ -43,7 +43,6 @@ await test("pack extension merge skips already-registered absolute paths", () =>
 
   assert.deepEqual(resolvePackExtensionPaths("/ship"), [
     join("/ship", "examples/desktop-extensions/muse-usage/index.ts"),
-    join("/ship", "examples/desktop-extensions/subagents/index.ts"),
   ]);
 });
 
@@ -95,15 +94,10 @@ await test("ensureExtensionPack end to end only fills gaps", async (t) => {
   const shipped = join(root, "ship");
   const skillSource = join(root, "skillsrc");
   const agentDir = join(root, "agent");
-  for (const dir of [
-    join(shipped, "examples/desktop-extensions/muse-usage"),
-    join(shipped, "examples/desktop-extensions/subagents"),
-    skillSource,
-  ]) {
+  for (const dir of [join(shipped, "examples/desktop-extensions/muse-usage"), skillSource]) {
     await mkdir(dir, { recursive: true });
   }
   await writeFile(join(shipped, "examples/desktop-extensions/muse-usage/index.ts"), "");
-  await writeFile(join(shipped, "examples/desktop-extensions/subagents/index.ts"), "");
   for (const file of ["SKILL.md", "chrome.js", "cdp.js"]) {
     await writeFile(join(skillSource, file), file);
   }
@@ -121,7 +115,8 @@ await test("ensureExtensionPack end to end only fills gaps", async (t) => {
   });
   assert.equal(first.settingsChanged, true);
   assert.deepEqual(first.packagesAdded, PACK_PACKAGES);
-  assert.equal(first.extensionsAdded.length, 2);
+  // b962095b stopped shipping the subagents extension; muse-usage is the only one left.
+  assert.equal(first.extensionsAdded.length, 1);
   assert.equal(first.skill.installed, true);
   assert.deepEqual(first.mcpServersAdded, ["foreground-chrome"]);
 
