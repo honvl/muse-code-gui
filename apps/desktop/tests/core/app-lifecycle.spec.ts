@@ -7,7 +7,6 @@ const NORMAL_LIFECYCLE_CASES = [
   { label: "empty", value: "" },
   { label: "invalid", value: "unsupported" },
 ] as const;
-const STAYS_OPEN_ASSERTION_MS = 750;
 
 async function launchLifecycleApp(testMode: string | undefined): Promise<DesktopHarness> {
   const userDataDir = await makeUserDataDir("pi-gui-lifecycle-");
@@ -26,15 +25,6 @@ async function closeLastWindow(harness: DesktopHarness): Promise<void> {
     }
     windows[0]?.close();
   });
-}
-
-async function appClosesWithin(harness: DesktopHarness, timeoutMs: number): Promise<boolean> {
-  return Promise.race([
-    harness.electronApp.waitForEvent("close").then(() => true),
-    new Promise<false>((resolve) => {
-      setTimeout(() => resolve(false), timeoutMs);
-    }),
-  ]);
 }
 
 async function quitDesktop(harness: DesktopHarness): Promise<void> {
@@ -70,8 +60,11 @@ test.describe("macOS last-window lifecycle", () => {
     });
   }
 
+  // 9cd69705: with no running thread, background task or active scheduled task,
+  // an idle app quits with its last window instead of lingering in the dock. The
+  // keep-alive-while-working decision is covered by tests/unit/app-lifecycle.spec.ts.
   for (const { label, value } of NORMAL_LIFECYCLE_CASES) {
-    test(`retains normal behavior when PI_APP_TEST_MODE is ${label}`, async () => {
+    test(`quits after the last window closes when idle and PI_APP_TEST_MODE is ${label}`, async () => {
       test.setTimeout(30_000);
       const harness = await launchLifecycleApp(value);
       let appClosed = false;
@@ -80,23 +73,9 @@ test.describe("macOS last-window lifecycle", () => {
       });
 
       try {
+        const closed = harness.electronApp.waitForEvent("close");
         await closeLastWindow(harness);
-        expect(await appClosesWithin(harness, STAYS_OPEN_ASSERTION_MS)).toBe(false);
-        expect(
-          await harness.electronApp.evaluate(({ app, BrowserWindow }) => ({
-            appReady: app.isReady(),
-            windowCount: BrowserWindow.getAllWindows().length,
-          })),
-        ).toEqual({
-          appReady: true,
-          windowCount: 0,
-        });
-
-        const reopenedWindow = harness.electronApp.waitForEvent("window");
-        await harness.electronApp.evaluate(({ app }) => {
-          app.emit("activate");
-        });
-        await expect(await reopenedWindow).toHaveURL(/index\.html/);
+        await closed;
       } finally {
         if (!appClosed) {
           await quitDesktop(harness);
