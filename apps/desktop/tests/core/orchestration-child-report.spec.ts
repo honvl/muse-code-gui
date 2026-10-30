@@ -178,11 +178,19 @@ test("a finished child wakes its orchestrator with a visible report", async () =
 
     // The child's turn finishes, its report wakes the parent, and the parent
     // runs a turn over that report — visible as a second model request.
-    await expect.poll(() => server.prompts.length, { timeout: 60_000 }).toBeGreaterThanOrEqual(2);
-    expect(
-      server.prompts.some((prompt) => prompt.includes(CHILD_REPLY) && prompt.includes("finished.")),
-      "the parent's request carries the child's final text",
-    ).toBe(true);
+    // Two requests can be the lead's first turn and the child's own, before the report's turn.
+    await expect
+      .poll(
+        () =>
+          server.prompts.some(
+            (prompt) => prompt.includes(CHILD_REPLY) && prompt.includes("finished."),
+          ),
+        {
+          message: "the parent's request carries the child's final text",
+          timeout: 60_000,
+        },
+      )
+      .toBe(true);
 
     await expect(window.getByTestId("timeline-custom-message")).toContainText(
       "pi-gui.child-report",
