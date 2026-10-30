@@ -532,8 +532,7 @@ test("a workspace-default non-meta model with no sidekick stays on pi", async ()
 });
 
 test("an app-global pi default meta model with no sidekick routes to muse-cli", async () => {
-  const { owner, children, createChildSessionCalls, seenModel } =
-    makeAppGlobalHost(metaSidekick);
+  const { owner, children, createChildSessionCalls, seenModel } = makeAppGlobalHost(metaSidekick);
 
   await owner.createChildThreadToolResult(
     { workspaceId: "ws", sessionId: "parent" },

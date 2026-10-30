@@ -44,11 +44,7 @@ function stubCatalog() {
   };
 }
 
-function writeMarker(
-  dir: string,
-  sessionId: string,
-  payload: Record<string, unknown>,
-): void {
+function writeMarker(dir: string, sessionId: string, payload: Record<string, unknown>): void {
   writeFileSync(join(dir, `${sessionId}.json`), JSON.stringify(payload), "utf8");
 }
 
@@ -65,10 +61,7 @@ const GOOD_TITLE = "In /Users/honvl/pi-gui, read apps/de…";
 
 await test("resolveMuseRecordTitle prefers catalog, marker, orchestration, prompt, default", () => {
   assert.equal(resolveMuseRecordTitle({ catalogTitle: "  kept  " }), "kept");
-  assert.equal(
-    resolveMuseRecordTitle({ catalogTitle: "  ", markerTitle: GOOD_TITLE }),
-    GOOD_TITLE,
-  );
+  assert.equal(resolveMuseRecordTitle({ catalogTitle: "  ", markerTitle: GOOD_TITLE }), GOOD_TITLE);
   assert.equal(
     resolveMuseRecordTitle({ markerTitle: "", orchestrationTitle: "child title" }),
     "child title",
@@ -209,7 +202,10 @@ await test("openSession falls back to the orchestration child title, then the de
 test("a stored placeholder title does not block healing to the real title", async () => {
   const { resolveMuseRecordTitle, DEFAULT_MUSE_SESSION_TITLE } = await import("../dist/index.js");
   assert.equal(
-    resolveMuseRecordTitle({ catalogTitle: DEFAULT_MUSE_SESSION_TITLE, markerTitle: "Real task title" }),
+    resolveMuseRecordTitle({
+      catalogTitle: DEFAULT_MUSE_SESSION_TITLE,
+      markerTitle: "Real task title",
+    }),
     "Real task title",
   );
   assert.equal(resolveMuseRecordTitle({ catalogTitle: "" }), DEFAULT_MUSE_SESSION_TITLE);

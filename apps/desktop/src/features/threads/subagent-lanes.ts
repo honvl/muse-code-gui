@@ -54,10 +54,7 @@ function asStringArray(value: unknown): readonly string[] {
   return value.filter((entry): entry is string => typeof entry === "string");
 }
 
-function laneStatus(
-  rowStatus: string,
-  detailsStatus: unknown,
-): SubagentLaneStatus {
+function laneStatus(rowStatus: string, detailsStatus: unknown): SubagentLaneStatus {
   if (rowStatus === "running") {
     return "running";
   }
@@ -100,23 +97,27 @@ export function subagentLanesFromTranscript(
       (input && typeof input["subagent_type"] === "string" && input["subagent_type"]) ||
       "general-purpose";
     const description =
-      (input && typeof input["description"] === "string" && input["description"]) ||
-      "Subagent run";
+      (input && typeof input["description"] === "string" && input["description"]) || "Subagent run";
     const rowStatus = typeof item["status"] === "string" ? item["status"] : "";
     const output = isRecord(item["output"]) ? item["output"] : undefined;
     const details = output && isRecord(output["details"]) ? output["details"] : undefined;
     const status = laneStatus(rowStatus, details?.["status"]);
     const worktree = details && isRecord(details["worktree"]) ? details["worktree"] : undefined;
-    const branch = worktree && typeof worktree["branch"] === "string" ? worktree["branch"] : undefined;
-    const worktreeDir = worktree && typeof worktree["dir"] === "string" ? worktree["dir"] : undefined;
-    const agentId = details && typeof details["agentId"] === "string" ? details["agentId"] : undefined;
-    const finalText = details && typeof details["finalText"] === "string" ? details["finalText"] : "";
+    const branch =
+      worktree && typeof worktree["branch"] === "string" ? worktree["branch"] : undefined;
+    const worktreeDir =
+      worktree && typeof worktree["dir"] === "string" ? worktree["dir"] : undefined;
+    const agentId =
+      details && typeof details["agentId"] === "string" ? details["agentId"] : undefined;
+    const finalText =
+      details && typeof details["finalText"] === "string" ? details["finalText"] : "";
     const errorText = details && typeof details["error"] === "string" ? details["error"] : "";
     const preview = (errorText || finalText).slice(0, 500);
     lanes.set(callId, {
       key: callId,
       toolCallId: callId,
-      type: details && typeof details["type"] === "string" && details["type"] ? details["type"] : type,
+      type:
+        details && typeof details["type"] === "string" && details["type"] ? details["type"] : type,
       description:
         details && typeof details["description"] === "string" && details["description"]
           ? details["description"]
@@ -125,7 +126,9 @@ export function subagentLanesFromTranscript(
       activity: details ? asStringArray(details["activity"]) : [],
       ...(branch ? { branch } : {}),
       ...(worktreeDir ? { worktreeDir } : {}),
-      ...(worktree && typeof worktree["kept"] === "boolean" ? { worktreeKept: worktree["kept"] } : {}),
+      ...(worktree && typeof worktree["kept"] === "boolean"
+        ? { worktreeKept: worktree["kept"] }
+        : {}),
       ...(agentId ? { agentId } : {}),
       sessionName: subagentSessionName(type, description),
       ...(status !== "running" && preview ? { detailText: preview } : {}),

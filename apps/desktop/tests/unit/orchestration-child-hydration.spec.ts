@@ -84,9 +84,7 @@ function makeHost(options: {
       persistCalls += 1;
     },
     workspaceRefFromState: (workspaceId: string) =>
-      resolvable.has(workspaceId)
-        ? { workspaceId, path: `/tmp/${workspaceId}` }
-        : undefined,
+      resolvable.has(workspaceId) ? { workspaceId, path: `/tmp/${workspaceId}` } : undefined,
     sessionFromState: (ref: SessionRef) => {
       const session = options.sessions[ref.sessionId];
       return session

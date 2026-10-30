@@ -174,12 +174,14 @@ await test("collectSupersededToolNames only includes enabled built-ins", () => {
     collectSupersededToolNames(builtins, (name) => name !== "c"),
     ["list_threads", "read_thread"],
   );
-  assert.deepEqual(collectSupersededToolNames(builtins, () => false), []);
-  assert.deepEqual(collectSupersededToolNames(builtins, () => true), [
-    "list_threads",
-    "read_thread",
-    "message_thread",
-  ]);
+  assert.deepEqual(
+    collectSupersededToolNames(builtins, () => false),
+    [],
+  );
+  assert.deepEqual(
+    collectSupersededToolNames(builtins, () => true),
+    ["list_threads", "read_thread", "message_thread"],
+  );
 });
 
 await test("orchestration enabled: no tool conflicts and no message_thread; disabled: trio back", async () => {
@@ -227,10 +229,8 @@ await test("orchestration enabled: no tool conflicts and no message_thread; disa
       {
         name: "pi-gui-cross-session",
         hidden: true,
-        factory: createCrossSessionRuntimeExtension(
-          inertBridge as never,
-          undefined,
-          () => collectSupersededToolNames([ORCHESTRATION_LIKE], () => enabled),
+        factory: createCrossSessionRuntimeExtension(inertBridge as never, undefined, () =>
+          collectSupersededToolNames([ORCHESTRATION_LIKE], () => enabled),
         ),
       },
     ],

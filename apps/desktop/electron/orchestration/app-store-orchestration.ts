@@ -654,11 +654,7 @@ async function createChildThreadRecord(
     // the app-global pi default (buildCreateSessionOptions is per-repo only).
     const createOptions = await store.buildCreateSessionOptions(input.parentWorkspaceId);
     const effectiveModel =
-      (await store.effectiveChildModel?.(
-        input.parentWorkspaceId,
-        sidekick,
-        createOptions,
-      )) ??
+      (await store.effectiveChildModel?.(input.parentWorkspaceId, sidekick, createOptions)) ??
       sidekick ??
       createOptions?.initialModel;
     // Meta-subscription sidekicks run on the Muse CLI driver; everything else
@@ -691,9 +687,7 @@ async function createChildThreadRecord(
         // Muse children shell out with --model and the Muse default differs
         // from pi's: without an explicit initialModel the run ignores the
         // model routing resolved above. Carry the effective model through.
-        ...(childRuntime === "muse-cli" && effectiveModel
-          ? { initialModel: effectiveModel }
-          : {}),
+        ...(childRuntime === "muse-cli" && effectiveModel ? { initialModel: effectiveModel } : {}),
         initialThinkingLevel: thinkingLevel,
         title: titleFromPrompt(displayPrompt),
       },
@@ -1057,10 +1051,7 @@ async function createChildThreadToolResult(
     // refuses the spawn (fresh included) instead of failing another child.
     const refusal = await refuseFailedSidekickModel(store, parentRef, input.mode);
     if (refusal) {
-      return createChildThreadErrorResult(
-        (input.sourcePrompt ?? input.prompt).trim(),
-        refusal,
-      );
+      return createChildThreadErrorResult((input.sourcePrompt ?? input.prompt).trim(), refusal);
     }
     const parallel = inFlight > 0 || input.firstInTurn === false;
     const reuse = await reuseSidekickForBrief(store, parentRef, input, reuseState, parallel);

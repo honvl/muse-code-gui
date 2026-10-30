@@ -446,9 +446,7 @@ test("solo fallback model pure helpers", () => {
   };
   expect(fallbackSoloModelForSoloToggle(onLeadDefault)).toEqual(threadModel);
   // Not on the lead default: a user pick or a thread that moved on stays.
-  expect(
-    fallbackSoloModelForSoloToggle({ ...onLeadDefault, current: otherModel }),
-  ).toBeUndefined();
+  expect(fallbackSoloModelForSoloToggle({ ...onLeadDefault, current: otherModel })).toBeUndefined();
   expect(fallbackSoloModelForSoloToggle({ ...onLeadDefault, current: undefined })).toBeUndefined();
   // No lead default, or no workspace default to return to.
   expect(
@@ -482,9 +480,7 @@ test("model availability helper mirrors the picker filter", () => {
     { providerId: "openai", modelId: "gpt-5", available: true },
     { providerId: "openai", modelId: "gpt-4o", available: false },
   ];
-  expect(isModelAvailableInRuntime({ models, provider: "openai", modelId: "gpt-5" })).toBe(
-    true,
-  );
+  expect(isModelAvailableInRuntime({ models, provider: "openai", modelId: "gpt-5" })).toBe(true);
   expect(
     isModelAvailableInRuntime({
       models,
@@ -493,9 +489,7 @@ test("model availability helper mirrors the picker filter", () => {
       modelId: "gpt-5",
     }),
   ).toBe(true);
-  expect(isModelAvailableInRuntime({ models, provider: "openai", modelId: "gpt-4o" })).toBe(
-    false,
-  );
+  expect(isModelAvailableInRuntime({ models, provider: "openai", modelId: "gpt-4o" })).toBe(false);
   expect(isModelAvailableInRuntime({ models, provider: "openai", modelId: "o1" })).toBe(false);
   expect(isModelAvailableInRuntime({ provider: "openai", modelId: "gpt-5" })).toBe(false);
   expect(

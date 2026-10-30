@@ -24,7 +24,7 @@ export const SUGGESTION_SYSTEM_PROMPT =
   "Output ONLY that message, word-for-word as the user would send it: a direct instruction or " +
   "question to the agent (for example starting with a verb like Fix, Add, Run, Explain, Show, " +
   "Review). Write in the user's voice, addressing the agent — never advise the user, never start " +
-  "with \"You should\", \"You could\", \"Consider\", \"Make sure you\", or \"Ask the user\". Do not " +
+  'with "You should", "You could", "Consider", "Make sure you", or "Ask the user". Do not ' +
   "narrate, describe the user, or explain yourself. No quotes, no bullets, no preamble, no " +
   "explanation. One or two sentences, ready to send.";
 

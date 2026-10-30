@@ -86,7 +86,7 @@ function makeHost(options: {
     refreshState: async () => ({}) as never,
     emit: () => {
       emitCalls += 1;
-      return ({}) as never;
+      return {} as never;
     },
     withError: async () => ({}) as never,
     persistUiState: async () => {
@@ -231,12 +231,8 @@ test("startup hydration loads background children and re-projects them to comple
   const visibleHydrated = harness.hydrateCalls.some((ref) => ref.sessionId === "child");
   expect(visibleHydrated).toBe(true);
 
-  await expect
-    .poll(() => harness.persistCalls, { timeout: 10_000 })
-    .toBeGreaterThan(0);
-  expect(
-    harness.hydrateCalls.some((ref) => ref.sessionId === "background-child"),
-  ).toBe(true);
+  await expect.poll(() => harness.persistCalls, { timeout: 10_000 }).toBeGreaterThan(0);
+  expect(harness.hydrateCalls.some((ref) => ref.sessionId === "background-child")).toBe(true);
   const byId = new Map(harness.children().map((child) => [child.id, child]));
   expect(byId.get("child-thread-2")?.status).toBe("complete");
   expect(harness.emitCalls).toBeGreaterThan(0);

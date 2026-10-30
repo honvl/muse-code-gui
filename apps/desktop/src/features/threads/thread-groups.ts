@@ -240,10 +240,7 @@ function isHiddenSubagentSession(
   if (entry.session.pinnedAt || entry.session.archivedAt) {
     return false;
   }
-  if (
-    entry.workspaceId === selectedWorkspaceId &&
-    entry.session.id === selectedSessionId
-  ) {
+  if (entry.workspaceId === selectedWorkspaceId && entry.session.id === selectedSessionId) {
     return false;
   }
   return isSubagentSessionName(entry.session.title);

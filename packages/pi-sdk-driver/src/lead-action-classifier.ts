@@ -363,7 +363,8 @@ function classifyArgv(argv: readonly string[], inWorktree = false): LeadAction {
   }
   if (cmd === "git") return classifyGit(argv, inWorktree);
   if (["npm", "pnpm", "yarn", "bun"].includes(cmd)) return classifyPackageManager(argv, inWorktree);
-  if (["npx", "pnpx", "bunx"].includes(cmd)) return classifyArgv(stripLeadingFlags(args), inWorktree);
+  if (["npx", "pnpx", "bunx"].includes(cmd))
+    return classifyArgv(stripLeadingFlags(args), inWorktree);
   if (DIRECT_VERIFIERS.has(cmd)) return action("verification", argv);
   if (cmd === "make") {
     return args.some((arg) => /^(install|format|fmt)$/.test(arg))
@@ -480,9 +481,7 @@ function isApplicationsPath(path: string): boolean {
 const APP_BUNDLE_SEGMENT = /\.app(?:[./]|$)/;
 
 function isAppBundleLanding(paths: readonly string[]): boolean {
-  return (
-    paths.some((path) => APP_BUNDLE_SEGMENT.test(path)) && paths.some(isApplicationsPath)
-  );
+  return paths.some((path) => APP_BUNDLE_SEGMENT.test(path)) && paths.some(isApplicationsPath);
 }
 
 /* ── git and package managers ───────────────────────────────── */

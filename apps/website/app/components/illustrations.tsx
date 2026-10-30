@@ -16,14 +16,22 @@ function WindowChrome({ title, pill }: { readonly pill?: string; readonly title:
 const children = [
   { mode: "scout", title: "Map how token refresh works", status: "done", meta: "1m 12s" },
   { mode: "worker", title: "Fix refresh race · src/auth/", status: "running", meta: "editing" },
-  { mode: "worker", title: "Add retry tests · test/auth/", status: "running", meta: "running tests" },
+  {
+    mode: "worker",
+    title: "Add retry tests · test/auth/",
+    status: "running",
+    meta: "running tests",
+  },
   { mode: "scout", title: "Check other callers of refresh()", status: "queued", meta: "queued" },
 ] as const;
 
 export function LeadIllustration() {
   return (
     <div className="mock" role="img" aria-label="A lead thread delegating to four child threads">
-      <WindowChrome title="Fix flaky auth refresh" pill="Lead · Opus 5.5 · Sidekick: Muse Spark 1.3 Contributor" />
+      <WindowChrome
+        title="Fix flaky auth refresh"
+        pill="Lead · Opus 5.5 · Sidekick: Muse Spark 1.3 Contributor"
+      />
       <div className="mock__split">
         <div className="mock__thread">
           <div className="mock__bubble mock__bubble--user">
@@ -78,9 +86,7 @@ export function TasksIllustration() {
         <p className="mock__rail-title">Background tasks</p>
         {tasks.map((task) => (
           <div key={task.command} className="mock__task">
-            <span
-              className={`mock__status mock__status--${task.running ? "running" : "done"}`}
-            />
+            <span className={`mock__status mock__status--${task.running ? "running" : "done"}`} />
             <div>
               <code>{task.command}</code>
               <p className="mock__task-meta">{task.meta}</p>
@@ -103,7 +109,11 @@ export function TasksIllustration() {
 
 export function SuggestIllustration() {
   return (
-    <div className="mock" role="img" aria-label="The composer showing a suggested next prompt in grey">
+    <div
+      className="mock"
+      role="img"
+      aria-label="The composer showing a suggested next prompt in grey"
+    >
       <WindowChrome title="Composer" />
       <div className="mock__body">
         <p className="mock__assistant">
@@ -122,7 +132,11 @@ export function SuggestIllustration() {
 
 export function TranscriptIllustration() {
   return (
-    <div className="mock" role="img" aria-label="A transcript with thinking, a grouped tool row and timings">
+    <div
+      className="mock"
+      role="img"
+      aria-label="A transcript with thinking, a grouped tool row and timings"
+    >
       <WindowChrome title="Transcript" />
       <div className="mock__body">
         <div className="mock__bubble mock__bubble--user">

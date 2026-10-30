@@ -472,10 +472,11 @@ export class SessionSupervisor {
               }),
               // Evaluated on every (re)load so toggling a built-in off restores
               // the superseded tools on the session's next reload.
-              () => collectSupersededToolNames(
-                this.builtinDeclarations,
-                this.isBuiltinExtensionEnabled,
-              ),
+              () =>
+                collectSupersededToolNames(
+                  this.builtinDeclarations,
+                  this.isBuiltinExtensionEnabled,
+                ),
             ),
           },
           {
@@ -917,8 +918,7 @@ export class SessionSupervisor {
     const { sessionId, workspaceId } = task;
     if (!sessionId || !workspaceId) return;
     if (this.orchestratorModes.get(sessionId) !== true) return;
-    const outcome =
-      task.status === "completed" ? "completed" : `failed (exit ${task.exitCode})`;
+    const outcome = task.status === "completed" ? "completed" : `failed (exit ${task.exitCode})`;
     const rawCommand = task.command.replace(/\s+/g, " ").trim();
     const shownCommand = rawCommand.length > 160 ? `${rawCommand.slice(0, 157)}…` : rawCommand;
     void this.sendCustomMessage(
@@ -2039,7 +2039,10 @@ export class SessionSupervisor {
       try {
         record.session.abortBash();
       } catch (error) {
-        console.warn(`[pi-sdk-driver] rescue abortBash failed for ${sessionKey(record.ref)}:`, error);
+        console.warn(
+          `[pi-sdk-driver] rescue abortBash failed for ${sessionKey(record.ref)}:`,
+          error,
+        );
       }
       this.markInFlightToolsAborted(record, timeoutMs);
     }

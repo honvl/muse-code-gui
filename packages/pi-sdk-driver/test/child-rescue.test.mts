@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { SessionDriverEvent } from "@pi-gui/session-driver";
-import {
-  RESCUE_ABORT_TIMEOUT_MS,
-  SessionSupervisor,
-} from "../dist/session-supervisor.js";
+import { RESCUE_ABORT_TIMEOUT_MS, SessionSupervisor } from "../dist/session-supervisor.js";
 
 function makeCatalog() {
   const writes: unknown[] = [];
@@ -222,10 +219,13 @@ await test("tool start/end events maintain the in-flight set rescue reads", () =
     toolCallId: "call-2",
     args: { path: "a.ts" },
   });
-  assert.deepEqual([...record.inFlightToolCalls.entries()], [
-    ["call-1", "bash"],
-    ["call-2", "read"],
-  ]);
+  assert.deepEqual(
+    [...record.inFlightToolCalls.entries()],
+    [
+      ["call-1", "bash"],
+      ["call-2", "read"],
+    ],
+  );
   inner.mapAgentEvent(record, {
     type: "tool_execution_end",
     toolCallId: "call-1",

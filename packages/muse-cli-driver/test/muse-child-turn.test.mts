@@ -7,8 +7,12 @@ import { fileURLToPath } from "node:url";
 import type { SessionDriverEvent } from "@pi-gui/session-driver";
 import { collectExportTurns, MuseCliDriver } from "../dist/index.js";
 
-const turnFixture = fileURLToPath(new URL("./fixtures/turn-end-loaded-deltas.jsonl", import.meta.url));
-const exportFixture = fileURLToPath(new URL("./fixtures/export-commentary-final.json", import.meta.url));
+const turnFixture = fileURLToPath(
+  new URL("./fixtures/turn-end-loaded-deltas.jsonl", import.meta.url),
+);
+const exportFixture = fileURLToPath(
+  new URL("./fixtures/export-commentary-final.json", import.meta.url),
+);
 
 // Trimmed from a real `muse exec --json` stream (/tmp/muse-9a.jsonl): one turn
 // with tool lifecycles first and every assistant delta, usage and the terminal
@@ -44,10 +48,7 @@ await test("one turn emits the pi-parity sequence with exactly one runCompleted"
       assert.ok(first.snapshot.runningRunId);
     }
     // Exactly one assistant bubble for the turn, opened when text starts.
-    assert.equal(
-      types.filter((type) => type === "assistantMessageStarted").length,
-      1,
-    );
+    assert.equal(types.filter((type) => type === "assistantMessageStarted").length, 1);
     const startedAt = types.indexOf("assistantMessageStarted");
     const firstToolAt = types.findIndex(
       (type) => type === "toolStarted" || type === "toolFinished",

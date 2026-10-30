@@ -1,7 +1,8 @@
 export const SITE_NAME = "Muse Code GUI";
 export const SITE_URL = "https://muse-code-gui.vercel.app";
 export const OG_IMAGE_PATH = "/og.png";
-export const OG_IMAGE_ALT = "Muse Code GUI reviewing an agent's change next to the thread that made it";
+export const OG_IMAGE_ALT =
+  "Muse Code GUI reviewing an agent's change next to the thread that made it";
 export const OG_IMAGE_WIDTH = 1200;
 export const OG_IMAGE_HEIGHT = 630;
 

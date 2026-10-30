@@ -196,10 +196,15 @@ test("agent tool rows surface as read-only subagent lanes", async () => {
   }
 
   const parentFile = await sessionFilePathFromCatalog(userDataDir, { workspaceId, sessionId });
-  await createNamedSubagentSession(parentFile, "subagent-probe.jsonl", `agent:explore: ${FOUND_DESCRIPTION}`, [
-    { role: "user", text: "Summarize the auth flow." },
-    { role: "assistant", text: `The auth flow lives in src/auth.ts. ${SUBAGENT_SECRET}` },
-  ]);
+  await createNamedSubagentSession(
+    parentFile,
+    "subagent-probe.jsonl",
+    `agent:explore: ${FOUND_DESCRIPTION}`,
+    [
+      { role: "user", text: "Summarize the auth flow." },
+      { role: "assistant", text: `The auth flow lives in src/auth.ts. ${SUBAGENT_SECRET}` },
+    ],
+  );
 
   const run = await launchDesktop(userDataDir, {
     agentDir,

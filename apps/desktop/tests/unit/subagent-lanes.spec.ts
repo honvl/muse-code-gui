@@ -107,7 +107,7 @@ test("non-agent tools, pins and malformed rows are ignored; later duplicates win
   const lanes = subagentLanesFromTranscript([
     toolRow({ callId: "other", toolName: "bash", status: "success" }),
     { kind: "pin", id: "pin-1" } as unknown as TranscriptMessage,
-    toolRow({ callId: "bad" , toolName: 42 } as unknown as Record<string, unknown>),
+    toolRow({ callId: "bad", toolName: 42 } as unknown as Record<string, unknown>),
     toolRow({ callId: "dup", status: "running", input: { description: "First" } }),
     toolRow({
       callId: "dup",
@@ -141,4 +141,3 @@ test("empty or missing transcripts produce no lanes", () => {
   expect(subagentLanesFromTranscript(undefined)).toEqual([]);
   expect(subagentLanesFromTranscript([])).toEqual([]);
 });
-

@@ -75,8 +75,7 @@ function makeMuseModelHost() {
     buildCreateSessionOptions: async () => ({}),
     getQueuedComposerMessages: () => [],
     seedSession: () => {},
-    transcriptFor: (ref: SessionRef) =>
-      ref.sessionId === "muse-child" ? childTranscript : [],
+    transcriptFor: (ref: SessionRef) => (ref.sessionId === "muse-child" ? childTranscript : []),
     transcriptForKey: () => [],
     replaceTranscript: () => {},
     isTranscriptLoaded: () => false,

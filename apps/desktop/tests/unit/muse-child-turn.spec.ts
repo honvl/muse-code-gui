@@ -174,7 +174,12 @@ test("the lead report for a Muse child carries the final text", () => {
   const { transcript } = driveMuseTurn();
   const body = lastAssistantText(transcript);
   const report = childCompletionReportText(
-    { id: "child-1", title: "Sidekick worker", goal: "Report the routing rules", status: "complete" },
+    {
+      id: "child-1",
+      title: "Sidekick worker",
+      goal: "Report the routing rules",
+      status: "complete",
+    },
     "complete",
     body,
     undefined,
@@ -182,7 +187,7 @@ test("the lead report for a Muse child carries the final text", () => {
     true,
   );
   expect(report).toContain(finalText);
-  expect(
-    childThreadFinalDetail({ title: "Sidekick worker", status: "complete" }),
-  ).toBe('Child thread "Sidekick worker" completed.');
+  expect(childThreadFinalDetail({ title: "Sidekick worker", status: "complete" })).toBe(
+    'Child thread "Sidekick worker" completed.',
+  );
 });

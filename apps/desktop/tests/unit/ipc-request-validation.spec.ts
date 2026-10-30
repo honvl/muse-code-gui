@@ -41,9 +41,10 @@ test("IPC request validation accepts a subagent transcript request", () => {
 
   expect(parsed).toEqual(request);
   expect(parsed).not.toBe(request);
-  expect(
-    expectSubagentTranscriptRequest({ workspaceId: "ws", sessionName: "agent:x" }),
-  ).toEqual({ workspaceId: "ws", sessionName: "agent:x" });
+  expect(expectSubagentTranscriptRequest({ workspaceId: "ws", sessionName: "agent:x" })).toEqual({
+    workspaceId: "ws",
+    sessionName: "agent:x",
+  });
 });
 
 test("IPC request validation rejects malformed subagent transcript requests", () => {

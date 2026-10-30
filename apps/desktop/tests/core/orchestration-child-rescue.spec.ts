@@ -226,8 +226,7 @@ test("a lead rescue unsticks a child hanging in a bash sleep", async () => {
             sessionRef: parentRef,
             params: {},
           });
-          const text =
-            listed.content.map((item) => item.text ?? "").join("\n") ?? "";
+          const text = listed.content.map((item) => item.text ?? "").join("\n") ?? "";
           return text.includes("running: bash") ? text : undefined;
         },
         { timeout: 60_000 },
@@ -250,9 +249,7 @@ test("a lead rescue unsticks a child hanging in a bash sleep", async () => {
 
     // The killed sleep ends the stuck tool, the follow-up turn runs, and the
     // child reports its final text back to the lead.
-    await expect
-      .poll(() => server.prompts.length, { timeout: 60_000 })
-      .toBeGreaterThanOrEqual(3);
+    await expect.poll(() => server.prompts.length, { timeout: 60_000 }).toBeGreaterThanOrEqual(3);
     expect(
       server.prompts.some(
         (prompt) => prompt.includes(FOLLOW_UP_TOKEN) && prompt.includes(CHILD_DONE),
@@ -261,10 +258,13 @@ test("a lead rescue unsticks a child hanging in a bash sleep", async () => {
     ).toBe(true);
 
     await expect
-      .poll(async () => {
-        const state = await getDesktopState(window);
-        return state.orchestrationChildren[0]?.status;
-      }, { timeout: 60_000 })
+      .poll(
+        async () => {
+          const state = await getDesktopState(window);
+          return state.orchestrationChildren[0]?.status;
+        },
+        { timeout: 60_000 },
+      )
       .toBe("complete");
 
     // The rescue killed the whole process tree: no level of the sleep

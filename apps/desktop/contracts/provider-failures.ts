@@ -10,12 +10,7 @@
 
 /** How a child's provider rejection reads to the lead. */
 export type ProviderFailureClass =
-  | "attestation-denied"
-  | "auth"
-  | "rate-limited"
-  | "overloaded"
-  | "quota"
-  | "other";
+  "attestation-denied" | "auth" | "rate-limited" | "overloaded" | "quota" | "other";
 
 /** Env var overriding how long a fail-fast provider failure blocks respawns. */
 export const PROVIDER_FAILURE_MEMORY_ENV_VAR = "PI_APP_PROVIDER_FAILURE_MEMORY_MS";
@@ -34,7 +29,9 @@ export function resolveProviderFailureMemoryMs(
   const fromEnv = env?.[PROVIDER_FAILURE_MEMORY_ENV_VAR]?.trim();
   const raw =
     fromEnv ??
-    (typeof process !== "undefined" ? process.env[PROVIDER_FAILURE_MEMORY_ENV_VAR]?.trim() : undefined);
+    (typeof process !== "undefined"
+      ? process.env[PROVIDER_FAILURE_MEMORY_ENV_VAR]?.trim()
+      : undefined);
   if (raw !== undefined && raw !== "" && /^\d+$/.test(raw)) {
     const value = Number.parseInt(raw, 10);
     if (Number.isSafeInteger(value) && value >= 0) {

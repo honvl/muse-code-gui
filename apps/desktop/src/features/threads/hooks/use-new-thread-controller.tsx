@@ -103,19 +103,22 @@ export function useNewThreadController(params: UseNewThreadControllerParams) {
   const leadDefaultEnabled =
     leadDefaultModel !== undefined &&
     modelOptions.some(
-      (m) =>
-        m.providerId === leadDefaultModel.provider && m.modelId === leadDefaultModel.modelId,
+      (m) => m.providerId === leadDefaultModel.provider && m.modelId === leadDefaultModel.modelId,
     );
   const resolvedProvider =
     provider ??
     (orchestratorMode && leadDefaultEnabled && leadDefaultModel
       ? leadDefaultModel.provider
-      : (defaultEnabled ? runtime?.settings.defaultProvider : undefined));
+      : defaultEnabled
+        ? runtime?.settings.defaultProvider
+        : undefined);
   const resolvedModelId =
     modelId ??
     (orchestratorMode && leadDefaultEnabled && leadDefaultModel
       ? leadDefaultModel.modelId
-      : (defaultEnabled ? runtime?.settings.defaultModelId : undefined));
+      : defaultEnabled
+        ? runtime?.settings.defaultModelId
+        : undefined);
   // A Lead thread starts at the default lead reasoning unless a level is picked here,
   // shown as the level pi will apply on the chosen model.
   const requestedThinkingLevel =

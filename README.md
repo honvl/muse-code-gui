@@ -112,7 +112,7 @@ savings ranged 37% to 79%).
 
 - **Hard bugs and large refactors** — lead Claude Opus 5.5 · high, sidekick Muse Spark 1.3
   Contributor · xhigh. Best for work where planning quality matters. Measured: 64% lower
-  cost than Opus alone. *(Recommended)*
+  cost than Opus alone. _(Recommended)_
 - **Long-context work on big codebases** — lead Muse Wonder · high, sidekick Muse Spark 1.3
   Contributor · xhigh. Best for 1M-token context. Estimated: similar savings, since Wonder
   has the same list price as Opus 5.5.

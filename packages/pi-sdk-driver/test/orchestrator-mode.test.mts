@@ -608,11 +608,7 @@ await test("lead prompt teaches rescue for stuck children once", async () => {
     /stuck on one tool call/i,
     "prompt must name the stuck-tool rescue case",
   );
-  assert.match(
-    lines[4] ?? "",
-    /rescue:true/,
-    "prompt must teach the rescue flag",
-  );
+  assert.match(lines[4] ?? "", /rescue:true/, "prompt must teach the rescue flag");
   assert.equal(
     ORCHESTRATOR_SYSTEM_PROMPT.split("rescue:true").length - 1,
     1,
@@ -810,9 +806,7 @@ await test("lead hides the blocked subagent tool from the active set; solo keeps
   // Lead hides agent but keeps agent_output.
   {
     const { pi, handlers, activeToolsCalls } = makeHidingPi();
-    await createOrchestratorModeExtension(() => true, { leadBlockedTools: ["agent"] })(
-      pi as never,
-    );
+    await createOrchestratorModeExtension(() => true, { leadBlockedTools: ["agent"] })(pi as never);
     await (handlers["before_agent_start"] as (e: never, c: never) => Promise<unknown>)(
       makePromptEvent() as never,
       mockCtx as never,
@@ -876,9 +870,7 @@ await test("solo run after Lead restores the blocked tool; never-Lead solo touch
     },
   };
   let lead = true;
-  await createOrchestratorModeExtension(() => lead, { leadBlockedTools: ["agent"] })(
-    pi as never,
-  );
+  await createOrchestratorModeExtension(() => lead, { leadBlockedTools: ["agent"] })(pi as never);
   const before = handlers["before_agent_start"] as (e: never, c: never) => Promise<unknown>;
   // Lead run hides agent.
   await before(makePromptEvent() as never, mockCtx as never);

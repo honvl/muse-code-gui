@@ -52,8 +52,7 @@ await test("finds a subagent session by name in the workspace cwd", async () => 
     const workspacePath = join(root, "workspace");
     const { mkdir } = await import("node:fs/promises");
     await mkdir(workspacePath, { recursive: true });
-    const { workspaceId, path: canonicalPath } =
-      await supervisor.registerWorkspace(workspacePath);
+    const { workspaceId, path: canonicalPath } = await supervisor.registerWorkspace(workspacePath);
 
     const manager = SessionManager.create(canonicalPath);
     const agentId = manager.getSessionId();

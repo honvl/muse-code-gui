@@ -173,9 +173,7 @@ export function resolveMuseRecordTitle(sources: MuseTitleSources): string {
   return sources.fallback?.trim() || DEFAULT_MUSE_SESSION_TITLE;
 }
 
-function firstUserPromptOf(
-  transcript: readonly SessionTranscriptItem[],
-): string | undefined {
+function firstUserPromptOf(transcript: readonly SessionTranscriptItem[]): string | undefined {
   for (const item of transcript) {
     if (item?.kind === "message" && item.role === "user" && item.text.trim()) {
       const text = item.text.trim();
@@ -195,9 +193,10 @@ function markerTitleOf(dir: string | undefined, sessionId: string): string | und
     return undefined;
   }
   try {
-    const parsed = JSON.parse(
-      readFileSync(join(dir, `${sessionId}.json`), "utf8"),
-    ) as Record<string, unknown>;
+    const parsed = JSON.parse(readFileSync(join(dir, `${sessionId}.json`), "utf8")) as Record<
+      string,
+      unknown
+    >;
     return typeof parsed.title === "string" && parsed.title.trim()
       ? parsed.title.trim()
       : undefined;
@@ -214,8 +213,7 @@ export class MuseCliDriver implements SessionDriver {
   private readonly provider: string | undefined;
   private readonly catalogStorage: MuseCliDriverOptions["catalogStorage"];
   private readonly resolveOrchestrationTitle:
-    | ((sessionRef: SessionRef) => string | undefined)
-    | undefined;
+    ((sessionRef: SessionRef) => string | undefined) | undefined;
   private readonly sessionFileDir: string | undefined;
   private readonly killGraceMs: number;
   private readonly exportTimeoutMs: number;
@@ -247,8 +245,7 @@ export class MuseCliDriver implements SessionDriver {
     const record: MuseSessionRecord = {
       ref: { workspaceId: workspace.workspaceId, sessionId },
       workspace,
-      title:
-        options?.title?.trim() || workspace.displayName || DEFAULT_MUSE_SESSION_TITLE,
+      title: options?.title?.trim() || workspace.displayName || DEFAULT_MUSE_SESSION_TITLE,
       model: options?.initialModel,
       thinkingLevel: options?.initialThinkingLevel,
       scout: false,
@@ -1159,9 +1156,7 @@ export class MuseCliDriver implements SessionDriver {
     }
     const storedTitle =
       catalogTitle ??
-      (await this.catalogStorage?.sessions
-        .getSession(record.ref)
-        .catch(() => undefined))?.title;
+      (await this.catalogStorage?.sessions.getSession(record.ref).catch(() => undefined))?.title;
     record.title = resolveMuseRecordTitle({
       catalogTitle: storedTitle,
       markerTitle: markerTitleOf(this.sessionFileDir, record.ref.sessionId),

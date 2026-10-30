@@ -132,7 +132,7 @@ const features = [
   },
   {
     title: "Your sessions, on disk",
-    body: "Your sessions are plain files on disk, so your threads, credentials and skills carry over."
+    body: "Your sessions are plain files on disk, so your threads, credentials and skills carry over.",
   },
   {
     title: "Fork and rewind",
@@ -182,8 +182,8 @@ const faqs = [
     q: "Does it cost anything?",
     a: (
       <>
-        Muse Code GUI is free and MIT licensed. You pay your model provider. Pairing a strong
-        lead with a cheap sidekick cut costs about 64% in our measurements — see{" "}
+        Muse Code GUI is free and MIT licensed. You pay your model provider. Pairing a strong lead
+        with a cheap sidekick cut costs about 64% in our measurements — see{" "}
         <a href="#pairings">Recommended pairings</a>.
       </>
     ),
@@ -254,10 +254,9 @@ export default function Page() {
             </a>
             <h1>Coding agents that work as a team</h1>
             <p className="hero__lede">
-              Muse Code GUI is a desktop app for AI coding agents. A strong lead plans and
-              reviews, while a fast, cheap sidekick does the reading, searching and editing —
-              and you review every change, run the tests in a real terminal, and ship without
-              leaving the window.
+              Muse Code GUI is a desktop app for AI coding agents. A strong lead plans and reviews,
+              while a fast, cheap sidekick does the reading, searching and editing — and you review
+              every change, run the tests in a real terminal, and ship without leaving the window.
             </p>
             <div className="hero__actions">
               <DownloadButton className="button button--primary" />
@@ -295,8 +294,8 @@ export default function Page() {
               <span className="pairings__stat-number">64% lower cost</span>
             </p>
             <p className="section-lede">
-              A strong lead plans and reviews. A fast, cheap sidekick does the reading,
-              searching and editing.
+              A strong lead plans and reviews. A fast, cheap sidekick does the reading, searching
+              and editing.
             </p>
             <div className="pairings__bars">
               <div className="pairings__bar-row">
@@ -318,8 +317,8 @@ export default function Page() {
                 </div>
               </div>
               <p className="pairings__caption">
-                Measured: same 3 real lead threads, 12 delegated tasks. Per-thread savings
-                ranged 37% to 79%.
+                Measured: same 3 real lead threads, 12 delegated tasks. Per-thread savings ranged
+                37% to 79%.
               </p>
             </div>
             <div className="pairings__prices">
@@ -354,9 +353,7 @@ export default function Page() {
                 <p className="pairings__bestfor">
                   Best for hard bugs and large refactors where planning quality matters.
                 </p>
-                <p className="pairings__cost">
-                  Measured: 64% lower cost than Opus alone.
-                </p>
+                <p className="pairings__cost">Measured: 64% lower cost than Opus alone.</p>
               </div>
               <div className="pairings__card">
                 <h3>Long-context work on big codebases</h3>
@@ -374,15 +371,15 @@ export default function Page() {
               </div>
             </div>
             <p className="pairings__howto">
-              How to set it: Settings → Default lead model, Default scout model; or the Lead
-              toggle and Sidekick picker in the composer.
+              How to set it: Settings → Default lead model, Default scout model; or the Lead toggle
+              and Sidekick picker in the composer.
             </p>
             <p className="pairings__footnote">
-              Measured on the maintainer&apos;s own lead threads in October 2026: 3 threads led
-              by Claude Opus 5.5 with 12 child tasks on Muse Spark 1.3 Contributor. The
-              comparison prices the children&apos;s tokens at the lead model&apos;s list price,
-              assuming the lead would have used the same number of tokens. Your savings depend
-              on how much work the lead delegates.
+              Measured on the maintainer&apos;s own lead threads in October 2026: 3 threads led by
+              Claude Opus 5.5 with 12 child tasks on Muse Spark 1.3 Contributor. The comparison
+              prices the children&apos;s tokens at the lead model&apos;s list price, assuming the
+              lead would have used the same number of tokens. Your savings depend on how much work
+              the lead delegates.
             </p>
           </div>
         </section>

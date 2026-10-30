@@ -215,7 +215,9 @@ await test("formatTranscriptExcerpt caps items and characters", () => {
 
 await test("createCrossSessionRuntimeTools omits superseded tools", () => {
   const bridge = makeBridge();
-  const all = createCrossSessionRuntimeTools(bridge).map((entry) => entry.name).sort();
+  const all = createCrossSessionRuntimeTools(bridge)
+    .map((entry) => entry.name)
+    .sort();
   assert.deepEqual(all, [listThreadsToolName, messageThreadToolName, readThreadToolName]);
 
   const omitted = createCrossSessionRuntimeTools(bridge, undefined, [

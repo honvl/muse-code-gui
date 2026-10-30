@@ -663,11 +663,7 @@ function latestErrorToolDetail(
  * errors keep their label untouched. Shared with the child report via
  * contracts/provider-failures so both threads say the same thing.
  */
-function withProviderFailureNote(
-  label: string,
-  message: string,
-  code: string | undefined,
-): string {
+function withProviderFailureNote(label: string, message: string, code: string | undefined): string {
   const note = providerFailureNote(
     classifyProviderFailure([message, code].filter((part) => part).join("\n")),
   );

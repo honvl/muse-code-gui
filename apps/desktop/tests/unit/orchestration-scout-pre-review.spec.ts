@@ -286,12 +286,9 @@ function makeFlowHost(state: FlowState) {
       // of state, a scout that was never created) resolve to undefined.
       const known =
         (ref.sessionId === "lead" && ref.workspaceId === "ws") ||
-        (ref.sessionId === "worker" &&
-          ref.workspaceId === (state.worktreeWorker ? "wt" : "ws")) ||
+        (ref.sessionId === "worker" && ref.workspaceId === (state.worktreeWorker ? "wt" : "ws")) ||
         state.createdSessionIds.has(`session:${ref.workspaceId}:${ref.sessionId}`);
-      return known
-        ? { status: "idle", title: ref.sessionId, updatedAt: createdAt }
-        : undefined;
+      return known ? { status: "idle", title: ref.sessionId, updatedAt: createdAt } : undefined;
     },
     ensureSessionReady: async () => undefined,
     ensureSessionSubscription: async () => {

@@ -194,11 +194,7 @@ test("third-party subagent sessions hide from the top-level list", () => {
 
   // The selected subagent session stays reachable; the unselected one hides.
   const group = model.workspaceGroups.find((entry) => entry.workspace.id === "ws");
-  expect(group?.threads.map((thread) => thread.session.id)).toEqual([
-    "sub",
-    "other",
-    "parent",
-  ]);
+  expect(group?.threads.map((thread) => thread.session.id)).toEqual(["sub", "other", "parent"]);
   expect(model.recencyOrder.map((thread) => thread.session.id)).not.toContain("sub2");
   expect(model.pinnedThreads.map((thread) => thread.session.id)).toContain("pinned-sub");
 });

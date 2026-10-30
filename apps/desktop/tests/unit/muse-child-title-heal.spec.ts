@@ -1,10 +1,7 @@
 import { expect, test } from "@playwright/test";
 import type { SessionCatalogEntry } from "@pi-gui/catalogs";
 import { mergeSessionListings } from "../../electron/application/app-store-utils";
-import {
-  threadDisplayTitle,
-  type ThreadListEntry,
-} from "../../src/features/threads/thread-groups";
+import { threadDisplayTitle, type ThreadListEntry } from "../../src/features/threads/thread-groups";
 
 function catalogEntry(
   sessionId: string,

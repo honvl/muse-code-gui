@@ -254,9 +254,7 @@ function makeRescueHost(state: RescueHostState) {
   const cancelCalls: SessionRef[] = [];
   const sentCustom: Array<{ sessionRef: SessionRef; input: unknown; options?: unknown }> = [];
   const submitted: Array<{ sessionRef: SessionRef; text: string; options?: unknown }> = [];
-  const child = childRecord(
-    state.childRecordStatus ? { status: state.childRecordStatus } : {},
-  );
+  const child = childRecord(state.childRecordStatus ? { status: state.childRecordStatus } : {});
   const host = {
     driver: {
       cancelCurrentRun: async (ref: SessionRef) => {
@@ -307,7 +305,9 @@ function makeRescueHost(state: RescueHostState) {
           ],
         },
       ],
-      orchestrationChildren: [state.childRecordStatus ? { ...child, status: state.childRecordStatus } : child],
+      orchestrationChildren: [
+        state.childRecordStatus ? { ...child, status: state.childRecordStatus } : child,
+      ],
     }),
     replaceOrchestrationChildren: () => {},
     refreshState: async () => ({}) as never,
@@ -528,7 +528,12 @@ test("read_thread sends no stuck notice to non-lead parents", async () => {
       orchestrator: false,
       childTranscript: [toolRow({ createdAt: liveMinutesAgo(14), updatedAt: liveMinutesAgo(14) })],
     });
-    const result = await host.owner.readThreadToolResult(parentRef, "child-thread-1", {}, new Map());
+    const result = await host.owner.readThreadToolResult(
+      parentRef,
+      "child-thread-1",
+      {},
+      new Map(),
+    );
     const text = result.content[0]?.type === "text" ? result.content[0].text : "";
     expect(text).toContain("STUCK");
     expect(host.sentCustom.length).toBe(0);

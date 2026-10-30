@@ -344,7 +344,12 @@ export function sanitizeInvalidToolCallHistory(
     if (!content) continue;
     const filtered = content.filter(
       (part) =>
-        !(isRecord(part) && part.type === "toolCall" && typeof part.id === "string" && invalidIds.has(part.id)),
+        !(
+          isRecord(part) &&
+          part.type === "toolCall" &&
+          typeof part.id === "string" &&
+          invalidIds.has(part.id)
+        ),
     );
     if (filtered.length === content.length) continue;
     if (filtered.length === 0) {

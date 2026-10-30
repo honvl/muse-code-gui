@@ -1,8 +1,5 @@
 import { useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import type {
-  SubagentTranscriptResult,
-  TranscriptMessage,
-} from "../../../contracts/desktop-state";
+import type { SubagentTranscriptResult, TranscriptMessage } from "../../../contracts/desktop-state";
 import type { DisplayTimelineItem } from "../../../contracts/timeline-types";
 import type { SubagentLane } from "../threads/subagent-lanes";
 import { TimelineItem } from "./timeline-item";
@@ -99,11 +96,7 @@ export function SubagentTranscriptDialog({
           ) : transcript.status === "error" ? (
             <div className="tree-modal__empty">
               <p>{transcript.message}</p>
-              <button
-                className="button button--secondary"
-                type="button"
-                onClick={onRetry}
-              >
+              <button className="button button--secondary" type="button" onClick={onRetry}>
                 Retry
               </button>
             </div>

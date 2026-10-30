@@ -32,7 +32,9 @@ function laneStatusLabel(lane: SubagentLane): string {
  */
 export function SubagentLaneCard({ workspaceId, lanes, getTranscript }: SubagentLaneCardProps) {
   const [openKey, setOpenKey] = useState<string | null>(null);
-  const [transcripts, setTranscripts] = useState<Readonly<Record<string, SubagentDialogTranscriptState>>>({});
+  const [transcripts, setTranscripts] = useState<
+    Readonly<Record<string, SubagentDialogTranscriptState>>
+  >({});
   const [expandedToolCallIds, setExpandedToolCallIds] = useState<ReadonlySet<string>>(new Set());
 
   if (lanes.length === 0 || !workspaceId) {

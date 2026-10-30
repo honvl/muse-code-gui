@@ -342,7 +342,7 @@ Pi's prompt-cache expiry is provider-defined (often 5 minutes). Fusion notes thi
 5. Real-provider Lead verification, recording lead/sidekick token usage before and after (the session rail splits lead vs. delegated).
 6. Priority 2 parallel scoped workers (contract, migration, relaxed budget).
 7. Priority 2 child-side quality loop (7a first; it's a suffix change).
-7b. Priority 2 subagent visibility: worktree children (8a), then the read-only subagent lane (8b).
+   7b. Priority 2 subagent visibility: worktree children (8a), then the read-only subagent lane (8b).
 8. Priority 3 effort per lane, then persistent sidekick, after measuring 1–7.
 
 Every step keeps Pi-runtime behavior in Pi: the driver changes are limited to prompt sections, tool registration and the cross-session omit list, per [`packages/pi-sdk-driver/AGENTS.md`](../packages/pi-sdk-driver/AGENTS.md).

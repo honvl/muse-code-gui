@@ -59,10 +59,7 @@ function stateFromSessions(sessions: readonly SessionCatalogEntry[]): Harness {
 }
 
 /** What refreshStateNow does on every refresh: rebuild workspace rows over the live caches. */
-function rebuildWorkspaces(
-  harness: Harness,
-  sessions: readonly SessionCatalogEntry[],
-): void {
+function rebuildWorkspaces(harness: Harness, sessions: readonly SessionCatalogEntry[]): void {
   const workspaces = buildWorkspaceRecords(
     [
       {
@@ -186,8 +183,7 @@ function sessionRow(harness: Harness, childRef: SessionRef): { status: string } 
     sessions: Array<{ id: string; status: string }>;
   }>;
   return workspaces[0]?.sessions.find((session) => session.id === childRef.sessionId) as
-    | { status: string }
-    | undefined;
+    { status: string } | undefined;
 }
 
 function transcriptText(harness: Harness, childRef: SessionRef): string {
@@ -204,15 +200,12 @@ test("a Muse child missing from the session listing never reads running", () => 
   const childRef: SessionRef = { workspaceId: "ws", sessionId: "muse-child" };
   const harness = stateFromSessions([]);
   appendUserMessage(harness.cache, childRef, promptText);
-  dispatch(
-    harness,
-    {
-      type: "sessionUpdated",
-      sessionRef: childRef,
-      timestamp: createdAt,
-      snapshot: { status: "running", runningRunId: runId },
-    } as unknown as SessionDriverEvent,
-  );
+  dispatch(harness, {
+    type: "sessionUpdated",
+    sessionRef: childRef,
+    timestamp: createdAt,
+    snapshot: { status: "running", runningRunId: runId },
+  } as unknown as SessionDriverEvent);
   expect(sessionRow(harness, childRef)).toBeUndefined();
 });
 

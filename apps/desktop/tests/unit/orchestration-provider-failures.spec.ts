@@ -1,9 +1,6 @@
 import { expect, test } from "@playwright/test";
 import type { SessionDriverEvent, SessionRef } from "@pi-gui/session-driver";
-import type {
-  OrchestrationChildThread,
-  TranscriptMessage,
-} from "../../contracts/desktop-state";
+import type { OrchestrationChildThread, TranscriptMessage } from "../../contracts/desktop-state";
 import {
   activeProviderFailureNote,
   clearAllProviderFailures,
@@ -94,7 +91,10 @@ test("fail-fast memory records per provider+model and expires", () => {
   // A custom window via env.
   recordProviderFailure(meta, "auth", 0);
   expect(
-    activeProviderFailureNote(meta, { nowMs: 60_000, env: { PI_APP_PROVIDER_FAILURE_MEMORY_MS: "1000" } }),
+    activeProviderFailureNote(meta, {
+      nowMs: 60_000,
+      env: { PI_APP_PROVIDER_FAILURE_MEMORY_MS: "1000" },
+    }),
   ).toBeUndefined();
   expect(resolveProviderFailureMemoryMs({ PI_APP_PROVIDER_FAILURE_MEMORY_MS: "junk" })).toBe(
     10 * 60 * 1_000,
@@ -147,7 +147,9 @@ test("report text omits the note line without one", () => {
     goal: "trace",
     status: "failed",
   } as OrchestrationChildThread;
-  expect(childCompletionReportText(child, "failed", undefined, OTHER_ERROR)).not.toContain("note: ");
+  expect(childCompletionReportText(child, "failed", undefined, OTHER_ERROR)).not.toContain(
+    "note: ",
+  );
 });
 
 test("the child thread failure row names the remedy", () => {
@@ -334,9 +336,7 @@ test("create_child_thread refuses fast while the sidekick model is failed", asyn
       mode: "worker",
       ...extra,
     });
-    const text = result.content
-      .map((part) => (part.type === "text" ? part.text : ""))
-      .join("\n");
+    const text = result.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
     expect(text).toContain("PI_APP_SIDEKICK_RUNTIME=auto");
     expect(result.details).toMatchObject({ action: createChildThreadAction });
     expect("childThreadId" in (result.details ?? {})).toBe(false);
