@@ -429,6 +429,9 @@ function buildDesktopLaunchEnv(
     PI_APP_INITIAL_WORKSPACES: (options.initialWorkspaces ?? []).join(delimiter),
     PI_APP_TEST_MODE: options.testMode ?? process.env.PI_APP_TEST_MODE ?? "foreground",
     PI_CODING_AGENT_DIR: agentDir,
+    // The fork's extension pack would add npm/git packages to the test agent dir, which pi then
+    // installs: slow and networked on CI, and a spawn failure on a trimmed PATH.
+    MUSE_CODE_GUI_PACK: "0",
     ...(options.notificationLogPath
       ? { PI_APP_NOTIFICATION_LOG_PATH: options.notificationLogPath }
       : {}),
