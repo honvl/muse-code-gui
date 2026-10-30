@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { resolve } from "node:path";
 import type { PiSdkDriver } from "@pi-gui/pi-sdk-driver";
 import type { SessionDriverEvent, SessionRef } from "@pi-gui/session-driver";
@@ -11,6 +11,11 @@ import {
   makeUserDataDir,
   makeWorkspace,
 } from "../helpers/electron-app";
+
+// The session rail (4b33004f) has its own "Stop run" button; these specs mean the composer's.
+function composerStop(page: Page) {
+  return page.getByTestId("send").and(page.getByRole("button", { name: "Stop run", exact: true }));
+}
 
 const pendingPrompts = [
   { finish: "stop", prompt: "Keep this prompt pending until Stop" },
@@ -118,7 +123,7 @@ for (const { finish, prompt } of pendingPrompts) {
       );
       await page.getByTestId("composer").fill(prompt);
       await page.getByTestId("send").click();
-      await expect(page.getByRole("button", { name: "Stop run", exact: true })).toBeVisible();
+      await expect(composerStop(page)).toBeVisible();
       await expect(page.locator(".composer__hint")).toHaveCount(0);
       await pinnedSection.getByRole("button", { name: /^Unpin Pending prompt/ }).click();
       await expect(pinnedSection).toHaveCount(0);
@@ -145,8 +150,8 @@ for (const { finish, prompt } of pendingPrompts) {
         return;
       }
       await clickSession(page, "Pending prompt");
-      await expect(page.getByRole("button", { name: "Stop run", exact: true })).toBeVisible();
-      await page.getByRole("button", { name: "Stop run", exact: true }).click();
+      await expect(composerStop(page)).toBeVisible();
+      await composerStop(page).click();
       await expect(page.getByTestId("send")).toHaveAttribute("aria-label", "Send message", {
         timeout: 5_000,
       });

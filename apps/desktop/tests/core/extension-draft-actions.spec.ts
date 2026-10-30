@@ -157,7 +157,8 @@ export default function extension(pi) {
     await frame.getByRole("button", { name: "Prepare task draft", exact: true }).click();
     await expect(window.getByTestId("composer-prepare-task-status")).toBeVisible();
     expect(await composer.evaluate((element) => element.closest("[inert]") !== null)).toBe(true);
-    const stop = window.getByRole("button", { name: "Stop run", exact: true });
+    // The session rail (4b33004f) has its own "Stop run"; this spec means the composer's.
+    const stop = window.getByTestId("stop-while-preparing-task");
     await expect(stop).toBeEnabled();
     expect(await stop.evaluate((element) => element.closest("[inert]") === null)).toBe(true);
     await stop.click();
