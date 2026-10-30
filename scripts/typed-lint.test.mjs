@@ -182,11 +182,16 @@ test("a new workspace cannot silently receive only syntax lint", async () => {
   );
   const { readFileSync } = await import("node:fs");
   const configPath = path.join(registered, "eslint.config.mjs");
+  const typedWorkspaces =
+    '...["catalogs", "pi-sdk-driver", "session-driver", "extension-ui", "muse-cli-driver"]';
+  const config = readFileSync(configPath, "utf8");
+  // A stale list would make the replace below a silent no-op and fail for the wrong reason.
+  assert.ok(config.includes(typedWorkspaces), "typed workspace list changed; update this fixture");
   writeFileSync(
     configPath,
-    readFileSync(configPath, "utf8").replace(
-      '...["catalogs", "pi-sdk-driver", "session-driver", "extension-ui"]',
-      '...["catalogs", "pi-sdk-driver", "session-driver", "extension-ui", "new-feature"]',
+    config.replace(
+      typedWorkspaces,
+      '...["catalogs", "pi-sdk-driver", "session-driver", "extension-ui", "muse-cli-driver", "new-feature"]',
     ),
   );
   mkdirSync(path.join(registeredWorkspace, "src"));
