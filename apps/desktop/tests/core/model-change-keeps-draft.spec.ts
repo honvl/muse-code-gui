@@ -37,14 +37,9 @@ test("changing model or thinking from the composer footer keeps the typed prompt
     // Wait until the draft is saved, so the picker's state update is not masked by a pending edit.
     await expect.poll(async () => (await getDesktopState(window)).composerDraft).toBe(prompt);
 
-    await footer.getByRole("button", { name: "openai:gpt-5" }).click();
-    await footer.getByRole("button", { name: "GPT-4o" }).click();
-    await expect(footer.getByRole("button", { name: "openai:gpt-4o" })).toBeVisible();
-    await expect(window.getByTestId("transcript")).toContainText("Model set to openai:gpt-4o");
-    await expect(composer).toHaveValue(prompt);
-    await expect(attachment).toHaveCount(1);
-
-    const thinkingBadge = footer.locator(".model-selector__badge").nth(1);
+    // Thinking changes first: gpt-4o offers no thinking levels (1ae17000), so its menu is empty.
+    // The lead/sidekick badges (916712e4) sit between the model and thinking badges.
+    const thinkingBadge = footer.locator(".model-selector__badge").last();
     const initialThinking = (await thinkingBadge.textContent())?.trim();
     const nextThinking = initialThinking === "high" ? "Low" : "High";
     await thinkingBadge.click();
@@ -53,6 +48,13 @@ test("changing model or thinking from the composer footer keeps the typed prompt
     await expect(composer).toHaveValue(prompt);
     await expect(attachment).toHaveCount(1);
     await expect.poll(async () => (await getDesktopState(window)).composerDraft).toBe(prompt);
+
+    await footer.getByRole("button", { name: "openai:gpt-5" }).click();
+    await footer.getByRole("button", { name: "GPT-4o" }).click();
+    await expect(footer.getByRole("button", { name: "openai:gpt-4o" })).toBeVisible();
+    await expect(window.getByTestId("transcript")).toContainText("Model set to openai:gpt-4o");
+    await expect(composer).toHaveValue(prompt);
+    await expect(attachment).toHaveCount(1);
 
     // Picking from the /model menu consumes only the command text; the saved "/model" must not
     // return, and the attachment stays.
