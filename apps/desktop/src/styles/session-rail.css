@@ -34,6 +34,18 @@
   grid-column: 3;
 }
 
+/* Narrow windows: main.css turns the side panel into an overlay, so the rail
+ * keeps its column and the panel leaves the grid instead of being squeezed in. */
+@media (max-width: 980px) {
+  .main:has(> .session-rail).main--with-side-panel {
+    grid-template-columns: minmax(0, 1fr) 280px;
+  }
+
+  .main:has(> .session-rail).main--with-side-panel > .side-panel {
+    grid-column: auto;
+  }
+}
+
 .session-rail__header {
   display: flex;
   align-items: center;
