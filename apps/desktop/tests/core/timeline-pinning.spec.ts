@@ -769,6 +769,17 @@ test("keeps the mid-thread viewport stable when the composer grows away from the
     const composerShell = window.locator(".composer");
     const sentinelRow = window.locator(".timeline-item--assistant", { hasText: sentinelMarker });
     await expect(sentinelRow).toBeVisible();
+    // The session rail (4b33004f) narrows the chat column, so rows wrap taller and the sentinel can
+    // sit above the viewport. The reading anchor is the top visible row; make the sentinel that row.
+    await sentinelRow.evaluate((element) => element.scrollIntoView({ block: "start" }));
+    await expect
+      .poll(async () => {
+        const rowBox = await sentinelRow.boundingBox();
+        return rowBox
+          ? Math.abs(rowBox.y - (await window.getByTestId("timeline-pane").boundingBox())!.y)
+          : Number.POSITIVE_INFINITY;
+      })
+      .toBeLessThanOrEqual(12);
 
     const beforeComposerHeight = (await composerShell.boundingBox())?.height ?? 0;
     const beforeSentinelY = (await sentinelRow.boundingBox())?.y ?? 0;
