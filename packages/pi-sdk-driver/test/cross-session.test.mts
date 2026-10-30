@@ -255,20 +255,22 @@ await test("createCrossSessionRuntimeExtension registers only non-superseded too
   ]);
 });
 
-await test("createCrossSessionRuntimeExtension re-evaluates the omit list on every load", () => {
+await test("createCrossSessionRuntimeExtension re-evaluates the omit list on every load", async () => {
   const bridge = makeBridge();
   let enabled = true;
   const factory = createCrossSessionRuntimeExtension(bridge, undefined, () =>
     enabled ? [messageThreadToolName] : [],
   );
-  const run = () => {
+  const run = async () => {
     const registered: string[] = [];
-    factory({ registerTool: (tool: { name: string }) => void registered.push(tool.name) } as never);
+    await factory({
+      registerTool: (tool: { name: string }) => void registered.push(tool.name),
+    } as never);
     return registered.sort();
   };
-  assert.deepEqual(run(), [listThreadsToolName, readThreadToolName]);
+  assert.deepEqual(await run(), [listThreadsToolName, readThreadToolName]);
   enabled = false;
-  assert.deepEqual(run(), [listThreadsToolName, messageThreadToolName, readThreadToolName]);
+  assert.deepEqual(await run(), [listThreadsToolName, messageThreadToolName, readThreadToolName]);
 });
 
 function makeCatalog() {

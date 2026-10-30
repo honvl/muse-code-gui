@@ -14,7 +14,7 @@ function stubBinary(): string {
   return bin;
 }
 
-test("openSession right after createSession returns the empty session instead of throwing", async () => {
+await test("openSession right after createSession returns the empty session instead of throwing", async () => {
   const dir = mkdtempSync(join(tmpdir(), "muse-ws-"));
   const driver = new MuseCliDriver({ binaryPath: stubBinary() } as never);
   const workspace = { workspaceId: dir, path: dir, displayName: "ws" } as never;

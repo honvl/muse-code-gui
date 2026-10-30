@@ -199,7 +199,7 @@ await test("openSession falls back to the orchestration child title, then the de
   const fallback = await withoutChild.openSession({ workspaceId: "ws", sessionId: "session-5" });
   assert.equal(fallback.title, DEFAULT_MUSE_SESSION_TITLE);
 });
-test("a stored placeholder title does not block healing to the real title", async () => {
+await test("a stored placeholder title does not block healing to the real title", async () => {
   const { resolveMuseRecordTitle, DEFAULT_MUSE_SESSION_TITLE } = await import("../dist/index.js");
   assert.equal(
     resolveMuseRecordTitle({

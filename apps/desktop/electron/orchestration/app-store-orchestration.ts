@@ -2403,7 +2403,10 @@ function startScoutPreReview(
   };
   preReviews.set(callId, pending);
   pending.timer = setTimeout(() => {
-    void releasePreReview(store, preReviews, callId, { kind: "unavailable", reason: "timeout" });
+    releasePreReviewInBackground(store, preReviews, callId, {
+      kind: "unavailable",
+      reason: "timeout",
+    });
   }, resolveScoutPreReviewTimeoutMs());
   pending.timer.unref?.();
 
@@ -2428,7 +2431,7 @@ function startScoutPreReview(
       // hides whether the reviewer broke (bad runtime, unknown workspace)
       // or the diff did. The worker report still goes out alone.
       const error = errorMessage(cause).trim();
-      void releasePreReview(store, preReviews, callId, {
+      releasePreReviewInBackground(store, preReviews, callId, {
         kind: "unavailable",
         reason: "failed",
         ...(error ? { error } : {}),
@@ -2438,6 +2441,18 @@ function startScoutPreReview(
 }
 
 /** Deliver a held worker report once, with the review outcome; later calls are no-ops. */
+// Timer and spawn-failure paths have no caller to await the release, so a rejection is logged.
+function releasePreReviewInBackground(
+  store: OrchestrationOwnerHost,
+  preReviews: PreReviews,
+  callId: string,
+  outcome: PreReviewOutcome,
+): void {
+  releasePreReview(store, preReviews, callId, outcome).catch((cause: unknown) => {
+    console.warn("[orchestration] scout pre-review release failed", cause);
+  });
+}
+
 async function releasePreReview(
   store: OrchestrationOwnerHost,
   preReviews: PreReviews,

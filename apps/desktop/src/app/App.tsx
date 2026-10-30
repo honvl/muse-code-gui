@@ -21,7 +21,6 @@ import { useTurnChanges } from "../features/conversation/hooks/use-turn-changes"
 import { formatRelativeTime } from "../lib/string-utils";
 import { restoreTopmostDialogFocus } from "../ui/dialog-focus";
 import { ComposerPanel } from "../features/conversation/composer-panel";
-import { sidekickFailureWarning } from "../features/conversation/model-selector";
 import { ThreadRailColumn } from "../features/conversation/thread-rail-column";
 import { DiffPanel } from "../features/workbench/diff-panel";
 import type { DiffPanelFileRequest } from "../features/workbench/diff-panel-types";
@@ -1240,13 +1239,7 @@ export default function App() {
                 onToggleOrchestrator={setOrchestratorMode}
                 sidekickProvider={sidekick?.provider}
                 sidekickModelId={sidekick?.modelId}
-                sidekickWarning={sidekickFailureWarning({
-                  sidekickProvider: sidekick?.provider,
-                  sidekickModelId: sidekick?.modelId,
-                  defaultProvider: selectedModelRuntime?.settings.defaultProvider,
-                  defaultModelId: selectedModelRuntime?.settings.defaultModelId,
-                  failureNotes: snapshot.providerFailureNotes,
-                })}
+                providerFailureNotes={snapshot.providerFailureNotes}
                 onSetSidekickModel={(provider, modelId) => setSidekick({ provider, modelId })}
                 onClearSidekickModel={() => setSidekick(null)}
                 sidekickThinkingLevel={snapshot.sidekickThinkingBySession?.[selectedSessionKey]}

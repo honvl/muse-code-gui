@@ -82,7 +82,7 @@ await test("one turn emits the pi-parity sequence with exactly one runCompleted"
 // rows plus the terminal record. The rebuild must keep every text row.
 await test("export rebuild keeps commentary and final text with tool rows", async () => {
   const raw = readFileSync(exportFixture, "utf8");
-  const turns = collectExportTurns(JSON.parse(raw));
+  const turns = collectExportTurns(JSON.parse(raw) as Parameters<typeof collectExportTurns>[0]);
   assert.equal(turns.length, 1);
   const turn = turns[0];
   assert.ok(turn);

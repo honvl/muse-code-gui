@@ -218,13 +218,11 @@ function makeHost(state: BoundsHostState) {
     defaultSidekickThinkingLevel: () => "xhigh" as const,
     defaultScoutThinkingLevel: () => undefined,
     seedSession: () => {},
-    refreshState: async () => ({}) as never,
     isOrchestratorSession: () => lead,
     sidekickModelFor: () => undefined,
     sessionModelFor: () => undefined,
     buildCreateSessionOptions: async () => undefined,
     getQueuedComposerMessages: () => [],
-    seedSession: () => {},
     transcriptFor: (ref: SessionRef) => {
       if (ref.sessionId === childRef.sessionId) {
         return state.childTranscript;

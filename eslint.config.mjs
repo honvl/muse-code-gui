@@ -90,9 +90,10 @@ export default [
     // App.tsx composes the screen. Put new behavior in a feature hook or component
     // (commands: app/use-desktop-commands.ts) and lower this limit when App.tsx shrinks.
     // Sidebar activity composition (running threads/tasks + subagents deep-link) adds
-    // two prop lines; the behavior lives in features/threads/.
+    // two prop lines; the behavior lives in features/threads/. Provider fail-fast notes add one
+    // prop line; the warning itself is derived in features/conversation/model-selector.tsx.
     files: ["apps/desktop/src/app/App.tsx"],
-    rules: { "max-lines": ["error", { max: 1449 }] },
+    rules: { "max-lines": ["error", { max: 1450 }] },
   },
   typedProject(["apps/desktop/src/**/*.{ts,tsx,mts,cts}"], "apps/desktop/tsconfig.json"),
   typedProject(

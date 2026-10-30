@@ -32,7 +32,7 @@ function driveMuseTurn(): {
   const active = new Map<string, string>();
   const runtime = {
     runMetricsBySession: new Map(),
-    runningSinceBySession: new Map(),
+    runningSinceBySession: new Map<string, string>(),
     activeAssistantMessageBySession: active,
     pendingAssistantMessageBySession: new Map<string, string>(),
     activeWorkingActivityBySession: new Map<string, string>(),
@@ -57,7 +57,13 @@ function driveMuseTurn(): {
       return;
     }
     applyTimelineEvent(cache, event, runtime);
-    state = applySessionEventState(state, event, cache, runtime.runningSinceBySession, new Map());
+    state = applySessionEventState(
+      state,
+      event,
+      cache,
+      runtime.runningSinceBySession,
+      new Map<string, string>(),
+    );
   };
 
   appendUserMessage(cache, childRef, "Read sidekick-runtime.ts and report the routing rules.");
@@ -136,7 +142,7 @@ test("a Muse child session is running until runCompleted, then idle", () => {
   const cache = new Map<string, readonly TranscriptMessage[]>();
   const runtime = {
     runMetricsBySession: new Map(),
-    runningSinceBySession: new Map(),
+    runningSinceBySession: new Map<string, string>(),
     activeAssistantMessageBySession: new Map<string, string>(),
     pendingAssistantMessageBySession: new Map<string, string>(),
     activeWorkingActivityBySession: new Map<string, string>(),
@@ -155,7 +161,13 @@ test("a Muse child session is running until runCompleted, then idle", () => {
     snapshot: { status: "running", runningRunId: runId },
   } as unknown as SessionDriverEvent;
   applyTimelineEvent(cache, running, runtime);
-  state = applySessionEventState(state, running, cache, runtime.runningSinceBySession, new Map());
+  state = applySessionEventState(
+    state,
+    running,
+    cache,
+    runtime.runningSinceBySession,
+    new Map<string, string>(),
+  );
   // The child reads `running` (never `complete`) while the run is in flight.
   expect(status()).toBe("running");
   const done = {
@@ -166,7 +178,13 @@ test("a Muse child session is running until runCompleted, then idle", () => {
     snapshot: { status: "idle", preview: finalText },
   } as unknown as SessionDriverEvent;
   applyTimelineEvent(cache, done, runtime);
-  state = applySessionEventState(state, done, cache, runtime.runningSinceBySession, new Map());
+  state = applySessionEventState(
+    state,
+    done,
+    cache,
+    runtime.runningSinceBySession,
+    new Map<string, string>(),
+  );
   expect(status()).toBe("idle");
 });
 
